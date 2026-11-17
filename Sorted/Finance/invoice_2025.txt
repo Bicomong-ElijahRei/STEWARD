@@ -1,0 +1,7 @@
+INVOICE #INV-2025-001
+Date: 2025-06-11
+Client: Acme Corp
+Amount: $1,250.00
+Due date: 2025-07-11
+Payment terms: Net 30
+Description: Consulting services for Q2 2025

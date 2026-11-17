@@ -1,0 +1,6 @@
+{
+    "reportGeneralTypeIssues": false,
+    "reportMissingImports": false,
+    "reportOptionalMemberAccess": false,
+    "reportIndexIssue": false
+}
