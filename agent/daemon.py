@@ -2,12 +2,12 @@ import os
 import time
 import re
 import shutil
-import threading      # <-- add this line
-import ollama
+import threading
 from threading import Event
-from tkinter import messagebox
 from watchdog.events import FileSystemEventHandler
 from utils.helpers import read_file_content_simple
+
+# tkinter import removed - not used in daemon module
 
 class FileCreationHandler(FileSystemEventHandler):
     def __init__(self, agent, dest_base, root):

@@ -1,12 +1,20 @@
 import tkinter as tk
-from tkinter import ttk, messagebox   # messagebox added
+from tkinter import ttk, messagebox
 import pystray
 from PIL import Image, ImageDraw
 import threading
+import logging
+
 from agent.core import StewardAgent
+from agents.supervisor import SupervisorAgent
+from agents.file_agent import FileAgent
+from core.litellm_client import LiteLLMClient
 from gui.chat_tab import ChatTab
 from gui.organizer_tab import OrganizerTab
 from gui.settings_tab import SettingsTab
+
+logger = logging.getLogger(__name__)
+
 
 class StewardGUI:
     def __init__(self, root):
@@ -15,17 +23,24 @@ class StewardGUI:
         root.geometry("800x600")
         root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        self.agent = StewardAgent()
+        # Initialize core LLM client
+        self.llm_client = LiteLLMClient()
+
+        # Initialize agents
+        self.supervisor = SupervisorAgent(llm_client=self.llm_client)
+        self.file_agent = FileAgent(llm_client=self.llm_client, dry_run=True)
+        self.legacy_agent = StewardAgent()  # Backward compatibility
+
         self.observer = None
         self.daemon_running = False
 
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Create tabs
-        self.chat_tab = ChatTab(self.notebook, self.agent)
-        self.org_tab = OrganizerTab(self.notebook, self.agent, self)
-        self.settings_tab = SettingsTab(self.notebook, self.agent, self)
+        # Create tabs - pass both supervisor and file_agent
+        self.chat_tab = ChatTab(self.notebook, self.supervisor, self.file_agent)
+        self.org_tab = OrganizerTab(self.notebook, self.file_agent, self)
+        self.settings_tab = SettingsTab(self.notebook, self.legacy_agent, self)
 
         self.notebook.add(self.chat_tab.frame, text="Chat")
         self.notebook.add(self.org_tab.frame, text="File Organizer")

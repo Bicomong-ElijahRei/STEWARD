@@ -1,0 +1,41 @@
+# ==========================================
+# 🔐 Environment & Secrets (CRITICAL)
+# ==========================================
+.env
+.env.local
+.env.*.local
+
+# ==========================================
+# 🐍 Python Virtual Environments
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+
+# ==========================================
+# 🐍 Python Cache & Build Files
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+
+# ==========================================
+# 📁 STEWARD Specific Data & Logs
+# ==========================================
+# Ignore the operation log so it doesn't spam your repo
+steward_operations.json
+# Ignore your working directories if they contain personal files
+Incoming/
+Sorted/
+*.log
+
+# ==========================================
+# 💻 OS & IDE Files
+# ==========================================
+.vscode/
+.DS_Store
+Thumbs.db
