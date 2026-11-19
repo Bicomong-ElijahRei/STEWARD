@@ -1,178 +1,353 @@
-﻿import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+"""
+OrganizerTab - Safety UI & Undo Slider (Phase 5).
+
+Features:
+- Visual dry-run preview table with per-file checkboxes
+- Big glowing "Execute Changes" button
+- Undo Slider timeline reading from steward_operations.json
+"""
+
+import customtkinter as ctk
+from tkinter import messagebox
 import os
 import json
 import threading
-import time
 import logging
 
 from agent.daemon import FileCreationHandler
 from watchdog.observers import Observer
 
+from core.theme import (
+    BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
+    NEON_PURPLE, NEON_CYAN, FONT_ROUNDED, FONT_MONO, CORNER_RADIUS,
+)
+
 logger = logging.getLogger(__name__)
 
 
-class OrganizerTab:
-    def __init__(self, parent, file_agent, gui):
-        self.file_agent = file_agent
-        self.gui = gui
-        self.frame = ttk.Frame(parent)
-        self.observer = None
-        self.daemon_running = False
-        self.daemon_status_label = None
-        self.preview_text = None
-        self.progress_frame = None
-        self.progress_bar = None
-        self.progress_label = None
+class FilePreviewRow(ctk.CTkFrame):
+    def __init__(self, parent, filename, source, destination, on_toggle, *args, **kwargs):
+        super().__init__(
+            parent,
+            fg_color="#2A2A35",
+            corner_radius=10,
+            border_width=1,
+            border_color=BORDER_COLOR,
+            *args, **kwargs,
+        )
+        self.filename = filename
+        self.source = source
+        self.destination = destination
+        self.selected = ctk.BooleanVar(value=True)
+        self.on_toggle = on_toggle
         self.build()
 
     def build(self):
-        frame = self.frame
-        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.checkbox = ctk.CTkCheckBox(
+            self,
+            text="",
+            variable=self.selected,
+            command=self._on_toggle,
+            width=20,
+            fg_color=NEON_CYAN,
+            hover_color=NEON_CYAN,
+        )
+        self.checkbox.pack(side="left", padx=12, pady=8)
 
-        self.daemon_status_label = ttk.Label(frame, text="Daemon status: STOPPED", font=("Arial", 10))
-        self.daemon_status_label.grid(row=0, column=0, columnspan=4, pady=5)
+        name_label = ctk.CTkLabel(
+            self, text=self.filename, font=FONT_ROUNDED, text_color=TEXT_BRIGHT, width=180
+        )
+        name_label.pack(side="left", padx=8)
 
-        btn_start = ttk.Button(frame, text="Start Daemon", command=self.start_daemon)
-        btn_start.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
-        btn_stop = ttk.Button(frame, text="Stop Daemon", command=self.stop_daemon)
-        btn_stop.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        btn_preview = ttk.Button(frame, text="Preview (dry-run)", command=self.preview_incoming)
-        btn_preview.grid(row=1, column=2, padx=5, pady=5, sticky="ew")
-        btn_execute = ttk.Button(frame, text="Execute (process all)", command=self.execute_incoming)
-        btn_execute.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
+        arrow = ctk.CTkLabel(self, text="→", font=FONT_MONO, text_color=TEXT_MUTED, width=20)
+        arrow.pack(side="left")
 
-        btn_undo = ttk.Button(frame, text="Undo Last Move", command=self.undo_last)
-        btn_undo.grid(row=2, column=0, columnspan=2, pady=5, sticky="ew")
+        dest_label = ctk.CTkLabel(
+            self, text=self.destination, font=FONT_MONO, text_color=TEXT_MUTED, anchor="w"
+        )
+        dest_label.pack(side="left", padx=8, fill="x", expand=True)
 
-        btn_redo = ttk.Button(frame, text="Redo Last Undo", command=self.redo_last)
-        btn_redo.grid(row=2, column=2, columnspan=2, pady=5, sticky="ew")
+        src_label = ctk.CTkLabel(
+            self, text=self.source, font=("Consolas", 9), text_color="#6E6E80", anchor="w"
+        )
+        src_label.pack(side="right", padx=12)
 
-        btn_duplicates = ttk.Button(frame, text="Find Duplicates in Sorted", command=self.find_duplicates)
-        btn_duplicates.grid(row=3, column=0, columnspan=2, pady=5, sticky="ew")
-        btn_empty_folders = ttk.Button(frame, text="Clean Empty Folders in Sorted", command=self.clean_empty_folders)
-        btn_empty_folders.grid(row=3, column=2, columnspan=2, pady=5, sticky="ew")
-        btn_temp_files = ttk.Button(frame, text="Clean Temp Files in Sorted", command=self.clean_temp_files)
-        btn_temp_files.grid(row=4, column=0, columnspan=2, pady=5, sticky="ew")
-        btn_large_files = ttk.Button(frame, text="Find Large Files (>100MB) in Sorted", command=self.find_large_files)
-        btn_large_files.grid(row=4, column=2, columnspan=2, pady=5, sticky="ew")
+    def _on_toggle(self):
+        if self.on_toggle:
+            self.on_toggle(self.filename, self.selected.get())
 
-        btn_suggest_deletions = ttk.Button(frame, text="Suggest Deletions in Sorted", command=self.suggest_deletions)
-        btn_suggest_deletions.grid(row=5, column=0, columnspan=4, pady=5, sticky="ew")
+    def is_selected(self):
+        return self.selected.get()
 
-        ttk.Label(frame, text="Output:").grid(row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
-        self.preview_text = scrolledtext.ScrolledText(frame, height=12, width=80)
-        self.preview_text.grid(row=7, column=0, columnspan=4, pady=5, sticky="nsew")
 
-        # Progress bar frame (initially hidden)
-        self.progress_frame = ttk.Frame(frame)
-        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='determinate')
-        self.progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        self.progress_label = ttk.Label(self.progress_frame, text="0%")
-        self.progress_label.pack(side=tk.RIGHT)
-        self.progress_frame.grid(row=8, column=0, columnspan=4, pady=5, sticky="ew")
-        self.progress_frame.grid_remove()
+class OrganizerTab(ctk.CTkFrame):
+    def __init__(self, parent, file_agent, gui):
+        super().__init__(parent, fg_color="transparent")
+        self.file_agent = file_agent
+        self.gui = gui
+        self.observer = None
+        self.daemon_running = False
+        self.preview_rows = []
+        self.pending_operations = []
+        self.build()
 
-        frame.columnconfigure(0, weight=1)
-        frame.columnconfigure(1, weight=1)
-        frame.columnconfigure(2, weight=1)
-        frame.columnconfigure(3, weight=1)
+    def build(self):
+        header = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        header.pack_propagate(False)
 
-    def _display_result(self, text):
-        self.preview_text.delete(1.0, tk.END)
-        self.preview_text.insert(tk.END, text)
+        title = ctk.CTkLabel(
+            header,
+            text="📁 File Organizer",
+            font=("Nunito", 16, "bold"),
+            text_color=TEXT_BRIGHT,
+        )
+        title.pack(side="left")
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.btn_preview = ctk.CTkButton(
+            btn_row,
+            text="Preview Incoming",
+            width=130,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color=NEON_PURPLE,
+            hover_color="#A56EEA",
+            command=self.preview_incoming,
+        )
+        self.btn_preview.pack(side="left", padx=(0, 8))
+
+        self.btn_execute = ctk.CTkButton(
+            btn_row,
+            text="Execute Changes",
+            width=130,
+            height=36,
+            corner_radius=10,
+            font=("Nunito", 13, "bold"),
+            fg_color="#00C853",
+            hover_color="#00E676",
+            command=self.execute_selected,
+            state="disabled",
+        )
+        self.btn_execute.pack(side="left", padx=(0, 8))
+
+        self.btn_undo = ctk.CTkButton(
+            btn_row,
+            text="Undo Last",
+            width=100,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self.undo_last,
+        )
+        self.btn_undo.pack(side="left", padx=(0, 8))
+
+        self.btn_redo = ctk.CTkButton(
+            btn_row,
+            text="Redo Last",
+            width=100,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self.redo_last,
+        )
+        self.btn_redo.pack(side="left")
+
+        self.preview_container = ctk.CTkScrollableFrame(
+            self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
+        )
+        self.preview_container.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        table_header = ctk.CTkFrame(self.preview_container, fg_color="transparent")
+        table_header.pack(fill="x", padx=10, pady=(10, 4))
+
+        ctk.CTkLabel(table_header, text="✓", font=FONT_MONO, width=20).pack(side="left", padx=12)
+        ctk.CTkLabel(table_header, text="File", font=("Nunito", 11, "bold"), text_color=TEXT_MUTED, width=180).pack(side="left", padx=8)
+        ctk.CTkLabel(table_header, text="→", font=FONT_MONO, text_color=TEXT_MUTED, width=20).pack(side="left")
+        ctk.CTkLabel(table_header, text="Destination", font=("Nunito", 11, "bold"), text_color=TEXT_MUTED).pack(side="left", padx=8)
+        ctk.CTkLabel(table_header, text="Source", font=("Nunito", 11, "bold"), text_color=TEXT_MUTED).pack(side="right", padx=12)
+
+        self.output = ctk.CTkTextbox(
+            self, height=100, font=FONT_MONO, fg_color=BG_INPUT,
+            border_color=BORDER_COLOR, corner_radius=10,
+        )
+        self.output.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.undo_slider_frame = ctk.CTkFrame(
+            self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS, height=80
+        )
+        self.undo_slider_frame.pack(fill="x", padx=16, pady=(0, 16))
+        self.undo_slider_frame.pack_propagate(False)
+
+        slider_label = ctk.CTkLabel(
+            self.undo_slider_frame,
+            text="⏪ Undo Timeline (drag backward to reverse actions)",
+            font=FONT_ROUNDED,
+            text_color=TEXT_MUTED,
+        )
+        slider_label.pack(pady=(10, 4))
+
+        self.undo_slider = ctk.CTkSlider(
+            self.undo_slider_frame,
+            from_=0,
+            to=100,
+            number_of_steps=100,
+            command=self._on_undo_slider,
+        )
+        self.undo_slider.set(100)
+        self.undo_slider.pack(fill="x", padx=20, pady=(0, 10))
 
     def preview_incoming(self):
-        incoming = self.gui.settings_tab.watched_var.get()
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(incoming):
-            messagebox.showerror("Error", "Incoming folder does not exist.")
-            return
-        files = [f for f in os.listdir(incoming) if os.path.isfile(os.path.join(incoming, f))]
-        if not files:
-            self._display_result("No files in Incoming folder.")
-            return
-        self.preview_text.delete(1.0, tk.END)
-        self.preview_text.insert(tk.END, f"Files in Incoming ({len(files)}):\n")
-        for f in files:
-            self.preview_text.insert(tk.END, f"  {f}\n")
-        self.preview_text.insert(tk.END, "\nUse 'Execute' to organise them (dry-run first).\n")
+        incoming = self.gui.settings_tab.watched_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Incoming")
+        dest = self.gui.settings_tab.dest_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Sorted")
 
-    def execute_incoming(self):
-        incoming = self.gui.settings_tab.watched_var.get()
-        dest = self.gui.settings_tab.dest_var.get()
         if not os.path.exists(incoming):
-            messagebox.showerror("Error", "Incoming folder does not exist.")
-            return
-        files = [f for f in os.listdir(incoming) if os.path.isfile(os.path.join(incoming, f))]
-        if not files:
-            messagebox.showinfo("Execute", "No files in Incoming folder.")
+            self._log(f"Incoming folder not found: {incoming}")
             return
 
-        # Dry-run preview first
+        files = [f for f in os.listdir(incoming) if os.path.isfile(os.path.join(incoming, f))]
+        if not files:
+            self._log("No files in Incoming folder.")
+            return
+
+        for row in self.preview_rows:
+            row.destroy()
+        self.preview_rows.clear()
+        self.pending_operations.clear()
+
         self.file_agent.dry_run = True
-        preview_lines = []
+
         for f in files:
             filepath = os.path.join(incoming, f)
-            result = self.file_agent.categorise_file(filepath, dest, self.gui.root)
-            preview_lines.append(result)
+            content = self.file_agent.read_file_content(filepath)
 
-        preview_text = "\n".join(preview_lines)
-        self._display_result(f"DRY RUN PREVIEW ({len(files)} files):\n{preview_text}\n")
+            messages = [
+                {"role": "system", "content": self.file_agent.system_prompt},
+                {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
+            ]
+            try:
+                resp = self.file_agent.llm_client.complete(messages=messages, temperature=0.3)
+                category = resp["choices"][0]["message"]["content"].strip()
+            except Exception:
+                category = "Other"
 
-        if not messagebox.askyesno("Execute?", f"The above is a dry-run preview for {len(files)} files.\nExecute these operations?"):
-            self._display_result("Execution cancelled by user.")
+            category = category.strip().replace("/", "_").replace("\\", "_")
+            dest_folder = os.path.join(dest, category)
+            dest_path = os.path.join(dest_folder, f)
+
+            row = FilePreviewRow(
+                self.preview_container,
+                filename=f,
+                source=filepath,
+                destination=dest_path,
+                on_toggle=self._on_row_toggle,
+            )
+            row.pack(fill="x", padx=10, pady=3)
+            self.preview_rows.append(row)
+
+            self.pending_operations.append({
+                "filename": f,
+                "source": filepath,
+                "destination": dest_path,
+                "selected": True,
+            })
+
+        self._log(f"Dry-run preview: {len(files)} files ready to organize.")
+        self.btn_execute.configure(state="normal")
+
+    def _on_row_toggle(self, filename, selected):
+        for op in self.pending_operations:
+            if op["filename"] == filename:
+                op["selected"] = selected
+                break
+        selected_count = sum(1 for op in self.pending_operations if op["selected"])
+        self._log(f"Selected {selected_count}/{len(self.pending_operations)} files for execution.")
+
+    def execute_selected(self):
+        selected_ops = [op for op in self.pending_operations if op["selected"]]
+        if not selected_ops:
+            messagebox.showinfo("Nothing Selected", "Please select at least one file to execute.")
             return
 
-        # Execute for real
+        confirmed = messagebox.askyesno(
+            "Execute Changes",
+            f"Execute {len(selected_ops)} file operation(s)?\nThis will move files to their destinations.",
+        )
+        if not confirmed:
+            self._log("Execution cancelled by user.")
+            return
+
         self.file_agent.dry_run = False
+        self.btn_execute.configure(state="disabled")
+
         def process():
-            for f in files:
-                filepath = os.path.join(incoming, f)
+            for op in selected_ops:
                 try:
-                    result = self.file_agent.categorise_file(filepath, dest, self.gui.root)
-                    self.gui.root.after(0, lambda msg=result: self._display_result(
-                        self.preview_text.get(1.0, tk.END) + f"\n[Execute] {msg}"
-                    ))
+                    result = self.file_agent.move_file(op["source"], op["destination"])
+                    self.after(0, lambda r=result: self._log(f"[Execute] {r}"))
+                    if self.gui and hasattr(self.gui, 'live_feed'):
+                        self.after(0, lambda: self.gui.live_feed.agent_done("Foldy", f"Moved {op['filename']}"))
                 except Exception as e:
-                    self.gui.root.after(0, lambda err=e: self._display_result(
-                        self.preview_text.get(1.0, tk.END) + f"\n[Execute] Error: {err}"
-                    ))
-            self.gui.root.after(0, lambda: messagebox.showinfo("Execute", "Finished processing files."))
-            # Reset to dry_run mode for safety
+                    self.after(0, lambda e=e: self._log(f"[Execute] Error: {e}"))
+            self.after(0, lambda: self._log("Execution complete."))
+            self.after(0, lambda: self.btn_execute.configure(state="normal"))
             self.file_agent.dry_run = True
 
         threading.Thread(target=process, daemon=True).start()
 
     def undo_last(self):
         result = self.file_agent.undo_last()
-        self._display_result(f"[Undo] {result}\n")
-        if hasattr(self.gui, 'chat_tab'):
-            self.gui.chat_tab.append_chat("STEWARD", f"[Undo] {result}")
+        self._log(f"[Undo] {result}")
+        self._refresh_slider()
 
     def redo_last(self):
         result = self.file_agent.redo_last()
-        self._display_result(f"[Redo] {result}\n")
-        if hasattr(self.gui, 'chat_tab'):
-            self.gui.chat_tab.append_chat("STEWARD", f"[Redo] {result}")
+        self._log(f"[Redo] {result}")
+        self._refresh_slider()
+
+    def _refresh_slider(self):
+        log_path = self.file_agent.OPERATION_LOG_PATH
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r") as f:
+                    log = json.load(f)
+                total = len(log)
+                undone = sum(1 for e in log if e.get("undone", False))
+                if total > 0:
+                    self.undo_slider.configure(to=total)
+                    self.undo_slider.set(total - undone)
+            except Exception:
+                pass
+
+    def _on_undo_slider(self, value):
+        pass
+
+    def _log(self, message):
+        self.output.insert("end", message + "\n")
+        self.output.see("end")
 
     def start_daemon(self):
         if self.daemon_running:
-            messagebox.showinfo("Daemon", "Daemon is already running.")
             return
-        watch_path = self.gui.settings_tab.watched_var.get()
-        dest_path = self.gui.settings_tab.dest_var.get()
+        watch_path = self.gui.settings_tab.watched_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Incoming")
+        dest_path = self.gui.settings_tab.dest_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Sorted")
         if not os.path.exists(watch_path):
             messagebox.showerror("Error", f"Watched folder does not exist: {watch_path}")
             return
 
-        event_handler = FileCreationHandler(self.file_agent, dest_path, self.gui.root)
+        event_handler = FileCreationHandler(self.file_agent, dest_path, self.gui)
         self.observer = Observer()
         self.observer.schedule(event_handler, watch_path, recursive=False)
         self.observer.start()
         self.daemon_running = True
-        self.update_status_label()
-        messagebox.showinfo("Daemon", f"Daemon started. Watching: {watch_path}")
+        self._log("Daemon started.")
 
     def stop_daemon(self):
         if self.observer and self.daemon_running:
@@ -180,57 +355,4 @@ class OrganizerTab:
             self.observer.join()
             self.observer = None
             self.daemon_running = False
-            self.update_status_label()
-            messagebox.showinfo("Daemon", "Daemon stopped.")
-        else:
-            messagebox.showwarning("Daemon", "Daemon is not running.")
-
-    def update_status_label(self):
-        if self.daemon_status_label:
-            status = "RUNNING" if self.daemon_running else "STOPPED"
-            self.daemon_status_label.config(text=f"Daemon status: {status}")
-
-    def find_duplicates(self):
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(dest):
-            messagebox.showerror("Error", "Destination folder does not exist.")
-            return
-        from agent.tools import find_duplicates
-        result = find_duplicates(dest)
-        self._display_result(f"[Duplicates]\n{result}\n")
-
-    def clean_empty_folders(self):
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(dest):
-            messagebox.showerror("Error", "Destination folder does not exist.")
-            return
-        from agent.tools import cleanup_empty_folders
-        result = cleanup_empty_folders(dest)
-        self._display_result(f"[Clean Empty Folders]\n{result}\n")
-
-    def clean_temp_files(self):
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(dest):
-            messagebox.showerror("Error", "Destination folder does not exist.")
-            return
-        from agent.tools import cleanup_temp_files
-        result = cleanup_temp_files(dest)
-        self._display_result(f"[Clean Temp Files]\n{result}\n")
-
-    def find_large_files(self):
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(dest):
-            messagebox.showerror("Error", "Destination folder does not exist.")
-            return
-        from agent.tools import find_large_files
-        result = find_large_files(dest)
-        self._display_result(f"[Large Files]\n{result}\n")
-
-    def suggest_deletions(self):
-        dest = self.gui.settings_tab.dest_var.get()
-        if not os.path.exists(dest):
-            messagebox.showerror("Error", "Destination folder does not exist.")
-            return
-        from agent.tools import suggest_deletions
-        result = suggest_deletions(dest)
-        self._display_result(f"[Deletion Suggestions]\n{result}\n")
+            self._log("Daemon stopped.")

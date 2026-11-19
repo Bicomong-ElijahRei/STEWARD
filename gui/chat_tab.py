@@ -1,108 +1,233 @@
-﻿import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+﻿"""
+ChatTab - Left panel chat interface for Mission Control.
+
+Routes user messages through SupervisorAgent, executes via FileAgent,
+and emits real-time events to the LiveFeedWidget.
+"""
+
+import customtkinter as ctk
+from tkinter import messagebox
 import json
 import threading
 import logging
 
 from agents.supervisor import (
-    AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN
+    AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
 )
+from core.theme import (
+    BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, NEON_PURPLE, NEON_CYAN,
+    NEON_LIME, NEON_BLUE, NEON_ORANGE, FONT_ROUNDED, FONT_MONO, CORNER_RADIUS,
+)
+from agents.agent_config import AGENT_CONFIG, AGENT_ROUTING_KEYS
 
 logger = logging.getLogger(__name__)
 
+AGENT_COLOR_MAP = {
+    "Cortex": NEON_PURPLE,
+    "Foldy": NEON_CYAN,
+    "Click": NEON_LIME,
+    "Scout": NEON_BLUE,
+    "Syntax": NEON_ORANGE,
+}
 
-class ChatTab:
-    def __init__(self, parent, supervisor, file_agent):
+
+class ChatTab(ctk.CTkFrame):
+    def __init__(self, parent, supervisor, file_agent, live_feed=None):
+        super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
-        self.frame = ttk.Frame(parent)
+        self.live_feed = live_feed
         self.build()
 
     def build(self):
-        self.chat_display = scrolledtext.ScrolledText(self.frame, height=20, state=tk.DISABLED)
-        self.chat_display.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        header = ctk.CTkFrame(self, fg_color="transparent", height=50)
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        header.pack_propagate(False)
 
-        frame = ttk.Frame(self.frame)
-        frame.pack(fill=tk.X, padx=10, pady=5)
-        self.chat_entry = ttk.Entry(frame)
-        self.chat_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        title = ctk.CTkLabel(
+            header,
+            text="💬 STEWARD Chat",
+            font=("Nunito", 16, "bold"),
+            text_color=TEXT_BRIGHT,
+        )
+        title.pack(side="left")
+
+        self.chat_display = ctk.CTkScrollableFrame(
+            self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
+        )
+        self.chat_display.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        input_frame = ctk.CTkFrame(self, fg_color="transparent", height=60)
+        input_frame.pack(fill="x", padx=16, pady=(0, 16))
+        input_frame.pack_propagate(False)
+
+        self.chat_entry = ctk.CTkEntry(
+            input_frame,
+            placeholder_text="Ask STEWARD to organize files, move items, or run tasks…",
+            font=FONT_ROUNDED,
+            height=36,
+            corner_radius=CORNER_RADIUS,
+            fg_color=BG_INPUT,
+            border_color="#4A4A5A",
+        )
+        self.chat_entry.pack(side="left", fill="both", expand=True, padx=(0, 8))
         self.chat_entry.bind("<Return>", lambda e: self.send_chat())
-        ttk.Button(frame, text="Send", command=self.send_chat).pack(side=tk.RIGHT)
+
+        self.send_btn = ctk.CTkButton(
+            input_frame,
+            text="Send",
+            width=80,
+            height=36,
+            corner_radius=CORNER_RADIUS,
+            font=("Nunito", 12, "bold"),
+            fg_color=NEON_PURPLE,
+            hover_color="#A56EEA",
+            command=self.send_chat,
+        )
+        self.send_btn.pack(side="right")
 
     def send_chat(self):
         user_msg = self.chat_entry.get().strip()
         if not user_msg:
             return
-        self.chat_entry.delete(0, tk.END)
-        self.append_chat("You", user_msg)
+        self.chat_entry.delete(0, "end")
+        self._add_bubble("You", user_msg, TEXT_BRIGHT, align="right")
 
         def process():
             try:
-                # Step 1: Supervisor routes the request
                 routing = self.supervisor.route(user_msg)
                 agent_type = routing.get("agent", "UNKNOWN")
                 action = routing.get("action", user_msg)
 
-                self.frame.after(0, lambda: self.append_chat(
-                    "STEWARD", f"[Router] Routing to {agent_type}: {action}"
+                agent_name = AGENT_ROUTING_KEYS.get(agent_type, "Cortex")
+                color = AGENT_CONFIG.get(agent_name, {}).get("color", TEXT_MUTED)
+
+                self.after(0, lambda: self._add_bubble(
+                    "STEWARD", f"[{agent_name}] Routing: {action}",
+                    color, align="left",
                 ))
 
+                if self.live_feed:
+                    self.after(0, lambda: self.live_feed.agent_working(
+                        agent_name, f"Routing: {action}"
+                    ))
+
                 if agent_type == AGENT_FILE_OP:
-                    # Step 2: Dry-run preview first
-                    self.frame.after(0, lambda: self.append_chat(
-                        "STEWARD", "[FileAgent] Generating dry-run preview..."
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD", "[Foldy] Generating dry-run preview…",
+                        NEON_CYAN, align="left",
                     ))
 
                     def confirm_callback(tool_name, args):
                         preview = f"Tool: {tool_name}\nArguments: {json.dumps(args, indent=2)}"
                         return messagebox.askyesno(
                             "Confirm File Operation",
-                            f"DRY RUN PREVIEW:\n{preview}\n\nExecute this operation?"
+                            f"DRY RUN PREVIEW:\n{preview}\n\nExecute this operation?",
                         )
 
-                    # First pass: dry_run=True to get preview
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
-                    self.frame.after(0, lambda: self.append_chat("STEWARD", preview_result))
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD", preview_result, NEON_CYAN, align="left",
+                    ))
 
-                    # Ask user if they want to execute
-                    if messagebox.askyesno("Execute?", "The above is a dry-run preview.\nExecute these operations?"):
-                        # Second pass: dry_run=False to execute
+                    if self.live_feed:
+                        self.after(0, lambda: self.live_feed.agent_done(
+                            "Foldy", "Dry-run preview generated"
+                        ))
+
+                    if messagebox.askyesno(
+                        "Execute?",
+                        "The above is a dry-run preview.\nExecute these operations?",
+                    ):
                         exec_result = self.file_agent.run(
                             user_msg, dry_run=False, confirm_callback=confirm_callback
                         )
-                        self.frame.after(0, lambda: self.append_chat("STEWARD", exec_result))
+                        self.after(0, lambda: self._add_bubble(
+                            "STEWARD", exec_result, NEON_CYAN, align="left",
+                        ))
+                        if self.live_feed:
+                            self.after(0, lambda: self.live_feed.agent_done(
+                                "Foldy", "Operations executed"
+                            ))
                     else:
-                        self.frame.after(0, lambda: self.append_chat(
-                            "STEWARD", "Execution cancelled by user."
+                        self.after(0, lambda: self._add_bubble(
+                            "STEWARD", "Execution cancelled by user.",
+                            TEXT_MUTED, align="left",
                         ))
 
                 elif agent_type == AGENT_PC_CONTROL:
-                    self.frame.after(0, lambda: self.append_chat(
-                        "STEWARD", f"[PCAgent] PC control requested: {action}\n(PCAgent is a skeleton - not yet implemented)"
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD",
+                        f"[Click] PC control requested: {action}\n(Coming soon)",
+                        NEON_LIME, align="left",
                     ))
+                    if self.live_feed:
+                        self.after(0, lambda: self.live_feed.agent_done("Click"))
                 elif agent_type == AGENT_RAG:
-                    self.frame.after(0, lambda: self.append_chat(
-                        "STEWARD", f"[RAGAgent] Semantic search requested: {action}\n(RAGAgent is a skeleton - not yet implemented)"
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD",
+                        f"[Scout] Semantic search: {action}\n(Coming soon)",
+                        NEON_BLUE, align="left",
                     ))
+                    if self.live_feed:
+                        self.after(0, lambda: self.live_feed.agent_done("Scout"))
                 elif agent_type == AGENT_CODING:
-                    self.frame.after(0, lambda: self.append_chat(
-                        "STEWARD", f"[CodingAgent] Coding task requested: {action}\n(CodingAgent is a skeleton - not yet implemented)"
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD",
+                        f"[Syntax] Coding task: {action}\n(Coming soon)",
+                        NEON_ORANGE, align="left",
                     ))
+                    if self.live_feed:
+                        self.after(0, lambda: self.live_feed.agent_done("Syntax"))
                 else:
-                    self.frame.after(0, lambda: self.append_chat(
-                        "STEWARD", f"[Supervisor] Could not classify request: {user_msg}"
+                    self.after(0, lambda: self._add_bubble(
+                        "STEWARD",
+                        f"[Cortex] I'm not sure how to help with: {user_msg}",
+                        NEON_PURPLE, align="left",
                     ))
+                    if self.live_feed:
+                        self.after(0, lambda: self.live_feed.agent_done("Cortex"))
 
             except Exception as e:
                 logger.error(f"Chat processing error: {e}")
-                self.frame.after(0, lambda: self.append_chat("STEWARD", f"Error: {e}"))
+                self.after(0, lambda: self._add_bubble(
+                    "STEWARD", f"Error: {e}", "#FF5555", align="left",
+                ))
 
         threading.Thread(target=process, daemon=True).start()
 
+    def _add_bubble(self, sender, message, color, align="left"):
+        bubble = ctk.CTkFrame(self.chat_display, fg_color="#353545", corner_radius=12)
+        bubble.pack(fill="x", padx=10, pady=4, anchor="e" if align == "right" else "w")
+
+        sender_label = ctk.CTkLabel(
+            bubble,
+            text=sender,
+            font=("Nunito", 10, "bold"),
+            text_color=color,
+            anchor="w",
+        )
+        sender_label.pack(fill="x", padx=10, pady=(6, 0))
+
+        msg_label = ctk.CTkLabel(
+            bubble,
+            text=message,
+            font=FONT_MONO,
+            text_color=TEXT_BRIGHT,
+            anchor="w",
+            justify="left",
+            wraplength=500,
+        )
+        msg_label.pack(fill="x", padx=10, pady=(0, 6))
+
+        self.after_idle(self._scroll_chat)
+
+    def _scroll_chat(self):
+        self.chat_display._parent_canvas.yview_moveto(1.0)
+
     def append_chat(self, sender, message):
-        self.chat_display.config(state=tk.NORMAL)
-        self.chat_display.insert(tk.END, f"{sender}: {message}\n")
-        self.chat_display.see(tk.END)
-        self.chat_display.config(state=tk.DISABLED)
+        self._add_bubble(sender, message, TEXT_BRIGHT, align="left")
+
+
