@@ -294,25 +294,29 @@ def suggest_deletions(directory, size_mb_threshold=100, age_days_threshold=30, u
         report += f"  {path} ({size_mb} MB, modified {mtime_str})\n"
 
     if use_ai:
-        # Use AI to recommend deletions via LiteLLM
+        # Use AI to recommend deletions via APIManager
         try:
-            from core.litellm_client import LiteLLMClient
-            client = LiteLLMClient()
+            from core.database import init_db
+            from core.router import APIManager
+            init_db()
+            api_manager = APIManager()
             prompt = "Here are files with large size or old age. Suggest which ones to delete, with reasons. List files by full path.\n\n"
             for path, size, mtime in candidates:
                 size_mb = size // (1024*1024)
                 mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
                 prompt += f"- {path} (Size: {size_mb} MB, Modified: {mtime_str})\n"
             prompt += "\nReply with a bullet list of files to delete and a short reason for each. Only recommend deletion if it's safe (e.g., duplicates, old large files, temporary files)."
-            response = client.complete(
+            response = api_manager.route_request(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1024,
+                agent_name="FileAgent",
             )
-            ai_suggestions = response["choices"][0]["message"]["content"]
-            report += f"\n--- AI Recommendations ---\n{ai_suggestions}\n"
+            ai_suggestions = response["choices"][0]["message"].get("content", "").strip()
+            if ai_suggestions:
+                report += f"\n--- AI Recommendations ---\n{ai_suggestions}\n"
+            else:
+                report += "\nNo AI recommendations returned. Consider manual review.\n"
         except Exception as e:
-            report += f"\n--- AI Failed ---\nError: {e}\n"
+            report += f"\n--- AI Unavailable (Fallback) ---\nCould not get AI recommendations: {e}\nConsider manual deletion of large/old files.\n"
     else:
         report += "\nNo AI used. Consider manual deletion of large/old files."
     return report

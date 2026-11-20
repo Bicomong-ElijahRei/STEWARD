@@ -5,7 +5,6 @@ from PIL import Image, ImageDraw
 import threading
 import logging
 
-from agent.core import StewardAgent
 from agents.supervisor import SupervisorAgent
 from agents.file_agent import FileAgent
 from core.router import APIManager
@@ -37,7 +36,6 @@ class StewardGUI:
         self.api_manager = APIManager()
         self.supervisor = SupervisorAgent(api_manager=self.api_manager)
         self.file_agent = FileAgent(api_manager=self.api_manager, dry_run=True)
-        self.legacy_agent = StewardAgent()
 
         self.observer = None
         self.daemon_running = False

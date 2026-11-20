@@ -126,6 +126,29 @@ class DatabaseManager:
                 providers.append(p)
             return providers
 
+    def get_all_providers(self):
+        """Return all providers, active and inactive, with decrypted API keys."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM providers")
+            rows = cursor.fetchall()
+            providers = []
+            for row in rows:
+                p = dict(row)
+                p['api_key'] = self._decrypt(p['api_key_encrypted'])
+                for field in ("is_local", "is_active", "supports_tools"):
+                    p[field] = bool(p[field])
+                providers.append(p)
+            return providers
+
+    def delete_provider(self, name: str) -> bool:
+        """Delete a provider by name."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM providers WHERE name = ?", (name,))
+            self._conn.commit()
+            return cursor.rowcount > 0
+
     def get_provider(self, name):
         """Return one provider by name, including its decrypted API key."""
         with self._lock:

@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import threading
+from tkinter import messagebox
 from core.theme import (
     BG_PANEL, CORNER_RADIUS, NEON_PURPLE, NEON_CYAN, TEXT_BRIGHT, TEXT_MUTED
 )
@@ -145,27 +146,83 @@ class SettingsTab(ctk.CTkFrame):
 
         try:
             db = get_db()
-            providers = db.get_active_providers()
+            providers = db.get_all_providers()
             
             if not providers:
-                ctk.CTkLabel(self.provider_list, text="No active providers yet.", text_color=TEXT_MUTED).pack(pady=20)
+                ctk.CTkLabel(self.provider_list, text="No providers configured yet.", text_color=TEXT_MUTED).pack(pady=20)
                 return
 
             for p in providers:
                 card = ctk.CTkFrame(self.provider_list, fg_color="#2A2A35", corner_radius=10)
                 card.pack(fill="x", pady=5, padx=5)
                 
-                # Green dot
-                dot = ctk.CTkLabel(card, text="🟢", font=("", 16))
+                # Active status dot
+                is_active = p.get('is_active', False)
+                dot = ctk.CTkLabel(card, text="🟢" if is_active else "⚪", font=("", 16))
                 dot.pack(side="left", padx=10, pady=10)
                 
+                status_text = "" if is_active else " [Disabled]"
                 info = ctk.CTkLabel(
                     card, 
-                    text=f"{p['name']} | {p['model_name']} | {p['speed_score_ms']}ms | {p['intelligence_tier']}", 
+                    text=f"{p['name']} | {p['model_name']} | {p['speed_score_ms']}ms | {p['intelligence_tier']}{status_text}", 
                     font=("Consolas", 12),
-                    text_color=TEXT_BRIGHT
+                    text_color=TEXT_BRIGHT if is_active else TEXT_MUTED,
+                    anchor="w"
                 )
-                info.pack(side="left", padx=10)
+                info.pack(side="left", padx=10, fill="x", expand=True)
+
+                # Delete Button
+                btn_delete = ctk.CTkButton(
+                    card,
+                    text="Delete",
+                    width=65,
+                    height=28,
+                    corner_radius=8,
+                    font=("Nunito", 11, "bold"),
+                    fg_color="#DC2626",
+                    hover_color="#B91C1C",
+                    command=lambda name=p['name']: self._delete_provider(name)
+                )
+                btn_delete.pack(side="right", padx=(4, 10), pady=6)
+
+                # Toggle Active / Disable Button
+                toggle_text = "Disable" if is_active else "Enable"
+                toggle_fg = "#4A4A5A" if is_active else "#10B981"
+                toggle_hover = "#5A5A6A" if is_active else "#059669"
+                btn_toggle = ctk.CTkButton(
+                    card,
+                    text=toggle_text,
+                    width=75,
+                    height=28,
+                    corner_radius=8,
+                    font=("Nunito", 11, "bold"),
+                    fg_color=toggle_fg,
+                    hover_color=toggle_hover,
+                    command=lambda name=p['name'], state=is_active: self._toggle_provider(name, not state)
+                )
+                btn_toggle.pack(side="right", padx=(4, 4), pady=6)
 
         except Exception as e:
             ctk.CTkLabel(self.provider_list, text=f"Error loading DB: {e}", text_color="red").pack()
+
+    def _toggle_provider(self, name: str, new_state: bool):
+        try:
+            db = get_db()
+            db.update_provider_fields(name, is_active=1 if new_state else 0)
+            self.refresh_provider_list()
+        except Exception as e:
+            self.status_label.configure(text=f"❌ Error updating provider: {e}", text_color="red")
+
+    def _delete_provider(self, name: str):
+        confirmed = messagebox.askyesno(
+            "Delete Provider",
+            f"Are you sure you want to delete '{name}' from the API Hub?\nThis cannot be undone."
+        )
+        if confirmed:
+            try:
+                db = get_db()
+                db.delete_provider(name)
+                self.refresh_provider_list()
+                self.status_label.configure(text=f"Removed provider '{name}'.", text_color=TEXT_MUTED)
+            except Exception as e:
+                self.status_label.configure(text=f"❌ Error deleting provider: {e}", text_color="red")
