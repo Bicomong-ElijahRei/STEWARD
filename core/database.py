@@ -118,8 +118,63 @@ class DatabaseManager:
             for row in rows:
                 p = dict(row)
                 p['api_key'] = self._decrypt(p['api_key_encrypted']) # Decrypt for use
+                for field in ("is_local", "is_active", "supports_tools"):
+                    p[field] = bool(p[field])
                 providers.append(p)
             return providers
+
+    def get_provider(self, name):
+        """Return one provider by name, including its decrypted API key."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM providers WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            provider = dict(row)
+            provider["api_key"] = self._decrypt(provider["api_key_encrypted"])
+            for field in ("is_local", "is_active", "supports_tools"):
+                provider[field] = bool(provider[field])
+            return provider
+
+    def update_provider_fields(self, name, **fields):
+        """Update whitelisted provider fields and commit the change."""
+        allowed_fields = {
+            "base_url", "model_name", "is_local", "is_active",
+            "speed_score_ms", "intelligence_tier", "supports_tools",
+            "cooldown_until", "failure_count",
+        }
+        invalid_fields = set(fields) - allowed_fields
+        if invalid_fields:
+            raise ValueError(f"Unsupported provider fields: {sorted(invalid_fields)}")
+        if not fields:
+            return
+
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        values = list(fields.values()) + [name]
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                f"UPDATE providers SET {assignments} WHERE name = ?", values
+            )
+            self._conn.commit()
+
+    def record_usage(self, provider_id, tokens_used=0):
+        """Add one request and its token count to the current hourly window."""
+        window_start = datetime.now().replace(
+            minute=0, second=0, microsecond=0
+        ).isoformat()
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                INSERT INTO usage_ledger
+                    (provider_id, window_start, requests_used, tokens_used)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(provider_id, window_start) DO UPDATE SET
+                    requests_used = requests_used + 1,
+                    tokens_used = tokens_used + excluded.tokens_used
+            """, (provider_id, window_start, int(tokens_used or 0)))
+            self._conn.commit()
 
     def record_trace(self, agent_name, latency_ms, provider_chain, status, error_msg=""):
         with self._lock:

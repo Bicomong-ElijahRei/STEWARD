@@ -40,7 +40,7 @@ from agent.tools import (
     get_file_info as _get_file_info,
     tool_functions as _legacy_tool_functions,
 )
-from core.litellm_client import LiteLLMClient
+from core.router import APIManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,12 @@ class FileAgent:
 
     def __init__(
         self,
+        api_manager: APIManager,
         root_path: Optional[str] = None,
-        llm_client: Optional[LiteLLMClient] = None,
         dry_run: bool = True,
     ):
         self.root_path = root_path or os.getcwd()
-        self.llm_client = llm_client or LiteLLMClient()
+        self.api_manager = api_manager
         self.dry_run = dry_run
         self._lock = threading.Lock()
         self._operation_log = self._load_operation_log()
@@ -367,8 +367,11 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
         tools = self._get_tool_definitions()
 
         try:
-            response = self.llm_client.complete(
-                messages=messages, tools=tools, temperature=0.3
+            response = self.api_manager.route_request(
+                messages=messages,
+                agent_name="FileAgent",
+                require_tools=True,
+                tools=tools,
             )
             assistant_msg = response["choices"][0]["message"]
             messages.append(assistant_msg)
@@ -432,7 +435,11 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
                     )
                 messages.extend(tool_results)
 
-                final_response = self.llm_client.complete(messages=messages, temperature=0.3)
+                final_response = self.api_manager.route_request(
+                    messages=messages,
+                    agent_name="FileAgent",
+                    require_tools=True,
+                )
                 final_content = final_response["choices"][0]["message"]["content"]
                 return final_content
 
@@ -491,7 +498,9 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
         ]
 
         try:
-            response = self.llm_client.complete(messages=messages, temperature=0.3)
+            response = self.api_manager.route_request(
+                messages=messages, agent_name="FileAgent"
+            )
             category = response["choices"][0]["message"]["content"].strip()
         except Exception as e:
             category = "Other"

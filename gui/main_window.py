@@ -8,7 +8,7 @@ import logging
 from agent.core import StewardAgent
 from agents.supervisor import SupervisorAgent
 from agents.file_agent import FileAgent
-from core.litellm_client import LiteLLMClient
+from core.router import APIManager
 from core.theme import (
     apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE,
     NEON_CYAN, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
@@ -34,8 +34,9 @@ class StewardGUI:
         from core.database import init_db
         init_db() # Initialize SQLite Database
 
-        self.supervisor = SupervisorAgent()
-        self.file_agent = FileAgent(dry_run=True)
+        self.api_manager = APIManager()
+        self.supervisor = SupervisorAgent(api_manager=self.api_manager)
+        self.file_agent = FileAgent(api_manager=self.api_manager, dry_run=True)
         self.legacy_agent = StewardAgent()
 
         self.observer = None

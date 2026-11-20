@@ -7,8 +7,8 @@ Does NOT execute file operations directly - only produces routing decisions.
 
 import json
 import logging
-from typing import Dict, Any, Optional
-from core.litellm_client import LiteLLMClient, get_llm_response
+from typing import Dict, Any
+from core.router import APIManager
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,8 @@ class SupervisorAgent:
     Returns a strict JSON classification dict.
     """
 
-    def __init__(self, llm_client: Optional[LiteLLMClient] = None):
-        self.llm_client = llm_client or LiteLLMClient()
+    def __init__(self, api_manager: APIManager):
+        self.api_manager = api_manager
         self._system_prompt = SUPERVISOR_SYSTEM_PROMPT
 
     def route(self, user_input: str) -> Dict[str, Any]:
@@ -81,7 +81,9 @@ class SupervisorAgent:
         ]
 
         try:
-            response = self.llm_client.complete(messages=messages, temperature=0.1)
+            response = self.api_manager.route_request(
+                messages=messages, agent_name="Supervisor"
+            )
             content = response["choices"][0]["message"]["content"].strip()
 
             # Parse JSON from response

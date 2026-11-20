@@ -234,7 +234,9 @@ class OrganizerTab(ctk.CTkFrame):
                     {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
                 ]
                 try:
-                    resp = self.file_agent.llm_client.complete(messages=messages, temperature=0.3)
+                    resp = self.file_agent.api_manager.route_request(
+                        messages=messages, agent_name="FileAgent"
+                    )
                     category = resp["choices"][0]["message"]["content"].strip()
                 except Exception:
                     category = "Other"
