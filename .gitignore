@@ -39,3 +39,7 @@ Sorted/
 .vscode/
 .DS_Store
 Thumbs.db
+# Security - Do not commit database or encryption keys
+secret.key
+steward.db
+*.db

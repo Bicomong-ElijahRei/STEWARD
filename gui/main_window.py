@@ -31,9 +31,11 @@ class StewardGUI:
 
         apply_theme()
 
-        self.llm_client = LiteLLMClient()
-        self.supervisor = SupervisorAgent(llm_client=self.llm_client)
-        self.file_agent = FileAgent(llm_client=self.llm_client, dry_run=True)
+        from core.database import init_db
+        init_db() # Initialize SQLite Database
+
+        self.supervisor = SupervisorAgent()
+        self.file_agent = FileAgent(dry_run=True)
         self.legacy_agent = StewardAgent()
 
         self.observer = None
@@ -84,7 +86,7 @@ class StewardGUI:
 
         self.tabs["chat"] = ChatTab(self.content, self.supervisor, self.file_agent, None)
         self.tabs["organizer"] = OrganizerTab(self.content, self.file_agent, self)
-        self.tabs["settings"] = SettingsTab(self.content, self.legacy_agent, self)
+        self.tabs["settings"] = SettingsTab(self.content, main_app=self)
 
         self.switch_tab("chat")
 
