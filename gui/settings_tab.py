@@ -1,17 +1,36 @@
 import customtkinter as ctk
 import threading
-from tkinter import messagebox
+from datetime import datetime
+from tkinter import messagebox, simpledialog
 from core.theme import (
     BG_PANEL, CORNER_RADIUS, NEON_PURPLE, NEON_CYAN, TEXT_BRIGHT, TEXT_MUTED
 )
 from core.database import get_db
-from core.validator import validate_provider
+from core.discovery import start_discovery
+from core.validator import validate_provider, ValidationResult
 
 class SettingsTab(ctk.CTkFrame):
     def __init__(self, parent, legacy_agent=None, main_app=None):
         # We accept legacy_agent to prevent crashes, but we don't use it anymore.
         super().__init__(parent, fg_color="transparent")
         self.main_app = main_app
+        self._pending_activations = set()
+
+    def _is_alive(self) -> bool:
+        """Check if this frame and its toplevel window still exist."""
+        try:
+            return bool(self.winfo_exists())
+        except Exception:
+            return False
+
+    def _safe_after(self, callback):
+        """Schedule a callback on the Tkinter main thread if widget still exists."""
+        if not self._is_alive():
+            return
+        try:
+            self.after(0, callback)
+        except Exception:
+            pass
 
         # Title
         self.title = ctk.CTkLabel(
@@ -51,7 +70,15 @@ class SettingsTab(ctk.CTkFrame):
             font=("Nunito", 14, "bold"),
             command=self._start_verification
         )
-        self.verify_btn.pack(anchor="w", padx=20, pady=(10, 20))
+        self.verify_btn.pack(anchor="w", padx=20, pady=(10, 5))
+
+        self.discover_btn = ctk.CTkButton(
+            self.form_frame, text="Discover Free Models",
+            fg_color=NEON_CYAN, hover_color="#04B5A1", text_color="#1E1E24",
+            font=("Nunito", 14, "bold"),
+            command=self._start_discovery,
+        )
+        self.discover_btn.pack(anchor="w", padx=20, pady=(0, 20))
 
         # --- List of Active Providers ---
         self.list_title = ctk.CTkLabel(
@@ -89,12 +116,20 @@ class SettingsTab(ctk.CTkFrame):
         threading.Thread(target=self._run_validation, args=(name, url, key, model), daemon=True).start()
 
     def _run_validation(self, name, url, key, model):
-        result = validate_provider(name, url, key, model)
+        try:
+            result = validate_provider(name, url, key, model)
+        except Exception as exc:
+            result = ValidationResult(name)
+            result.status = "error"
+            result.error = str(exc)
+            result.success = False
         
         # Update UI safely from thread
-        self.after(0, lambda: self._on_validation_complete(result, name, url, key, model))
+        self._safe_after(lambda: self._on_validation_complete(result, name, url, key, model))
 
     def _on_validation_complete(self, result, name, url, key, model):
+        if not self._is_alive():
+            return
         self.verify_btn.configure(state="normal", text="Verify & Save")
         
         if result.status == "invalid_key":
@@ -112,7 +147,9 @@ class SettingsTab(ctk.CTkFrame):
         # Save to SQLite Database
         try:
             db = get_db()
-            # Assuming add_provider accepts these kwargs based on the schema
+            speed_score = result.speed_ms if result.speed_ms is not None else 9999
+            intelligence_tier = result.intel_tier or "Unknown"
+            supports_tools = bool(result.supports_tools)
             db.add_provider(
                 name=name, 
                 base_url=url, 
@@ -120,12 +157,15 @@ class SettingsTab(ctk.CTkFrame):
                 model_name=model,
                 is_local=False, 
                 is_active=True,
-                speed_score_ms=result.speed_ms,
-                intelligence_tier=result.intel_tier,
-                supports_tools=result.supports_tools
+                speed_score_ms=speed_score,
+                intelligence_tier=intelligence_tier,
+                supports_tools=supports_tools
+            )
+            db.update_provider_fields(
+                name, is_active=1, cooldown_until=None, failure_count=0
             )
             self.status_label.configure(
-                text=f"✅ Saved! Speed: {result.speed_ms}ms | IQ: {result.intel_tier}", 
+                text=f"✅ Saved! Speed: {speed_score}ms | IQ: {intelligence_tier}", 
                 text_color="#00FFCC"
             )
             self.refresh_provider_list()
@@ -139,7 +179,63 @@ class SettingsTab(ctk.CTkFrame):
         except Exception as e:
             self.status_label.configure(text=f"❌ DB Error: {str(e)}", text_color="red")
 
+    def _start_discovery(self):
+        """Start catalog discovery without blocking the Tkinter event loop."""
+        self.discover_btn.configure(state="disabled", text="Discovering...")
+        self.status_label.configure(
+            text="🔎 Discovering free OpenRouter models...", text_color=NEON_CYAN
+        )
+        start_discovery(callback=self._on_discovery_result)
+
+    def _on_discovery_result(self, result):
+        # start_discovery invokes this callback on its worker thread.
+        self._safe_after(lambda: self._on_discovery_complete(result))
+
+    def _on_discovery_complete(self, result):
+        if not self._is_alive():
+            return
+        self.discover_btn.configure(state="normal", text="Discover Free Models")
+        if result.error:
+            self.status_label.configure(
+                text=f"❌ Discovery failed: {result.error}", text_color="red"
+            )
+            return
+
+        self.status_label.configure(
+            text=(
+                f"✅ Found {result.discovered} free models: "
+                f"{result.added} added, {result.skipped} already present."
+            ),
+            text_color="#00FFCC",
+        )
+        self.refresh_provider_list()
+
+    @staticmethod
+    def _is_cooling_down(cooldown_until) -> bool:
+        if not cooldown_until:
+            return False
+        try:
+            cooldown = datetime.fromisoformat(
+                str(cooldown_until).replace("Z", "+00:00")
+            )
+            now = datetime.now(cooldown.tzinfo) if cooldown.tzinfo else datetime.now()
+            return cooldown > now
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _provider_status_dot(provider) -> str:
+        if provider.get("is_local", False):
+            return "🟣"
+        if not provider.get("is_active", False):
+            return "🔴"
+        if SettingsTab._is_cooling_down(provider.get("cooldown_until")):
+            return "🟡"
+        return "🟢"
+
     def refresh_provider_list(self):
+        if not self._is_alive():
+            return
         # Clear existing
         for widget in self.provider_list.winfo_children():
             widget.destroy()
@@ -156,12 +252,26 @@ class SettingsTab(ctk.CTkFrame):
                 card = ctk.CTkFrame(self.provider_list, fg_color="#2A2A35", corner_radius=10)
                 card.pack(fill="x", pady=5, padx=5)
                 
-                # Active status dot
-                is_active = p.get('is_active', False)
-                dot = ctk.CTkLabel(card, text="🟢" if is_active else "⚪", font=("", 16))
+                # Provider state: local, disabled, cooling down, or ready.
+                is_active = p.get("is_active", False)
+                is_local = p.get("is_local", False)
+                is_pending = p["name"] in self._pending_activations
+                cooling_down = is_active and self._is_cooling_down(
+                    p.get("cooldown_until")
+                )
+                dot = ctk.CTkLabel(
+                    card, text=self._provider_status_dot(p), font=("", 16)
+                )
                 dot.pack(side="left", padx=10, pady=10)
-                
-                status_text = "" if is_active else " [Disabled]"
+
+                if is_local:
+                    status_text = " [Local]" if is_active else " [Local, Disabled]"
+                elif not is_active:
+                    status_text = " [Disabled]"
+                elif cooling_down:
+                    status_text = " [Cooldown]"
+                else:
+                    status_text = ""
                 info = ctk.CTkLabel(
                     card, 
                     text=f"{p['name']} | {p['model_name']} | {p['speed_score_ms']}ms | {p['intelligence_tier']}{status_text}", 
@@ -181,12 +291,16 @@ class SettingsTab(ctk.CTkFrame):
                     font=("Nunito", 11, "bold"),
                     fg_color="#DC2626",
                     hover_color="#B91C1C",
+                    state="disabled" if is_pending else "normal",
                     command=lambda name=p['name']: self._delete_provider(name)
                 )
                 btn_delete.pack(side="right", padx=(4, 10), pady=6)
 
                 # Toggle Active / Disable Button
-                toggle_text = "Disable" if is_active else "Enable"
+                toggle_text = (
+                    "Checking..." if is_pending
+                    else ("Disable" if is_active else "Enable")
+                )
                 toggle_fg = "#4A4A5A" if is_active else "#10B981"
                 toggle_hover = "#5A5A6A" if is_active else "#059669"
                 btn_toggle = ctk.CTkButton(
@@ -198,6 +312,7 @@ class SettingsTab(ctk.CTkFrame):
                     font=("Nunito", 11, "bold"),
                     fg_color=toggle_fg,
                     hover_color=toggle_hover,
+                    state="disabled" if is_pending else "normal",
                     command=lambda name=p['name'], state=is_active: self._toggle_provider(name, not state)
                 )
                 btn_toggle.pack(side="right", padx=(4, 4), pady=6)
@@ -205,18 +320,173 @@ class SettingsTab(ctk.CTkFrame):
         except Exception as e:
             ctk.CTkLabel(self.provider_list, text=f"Error loading DB: {e}", text_color="red").pack()
 
+    @staticmethod
+    def _find_reusable_key(provider, providers):
+        """Find a saved key for the same endpoint, preferring active providers."""
+        base_url = str(provider.get("base_url") or "").rstrip("/")
+        if not base_url:
+            return None
+
+        for candidate in sorted(
+            providers, key=lambda item: not item.get("is_active", False)
+        ):
+            if candidate.get("name") == provider.get("name"):
+                continue
+            candidate_url = str(candidate.get("base_url") or "").rstrip("/")
+            key = str(candidate.get("api_key") or "").strip()
+            if candidate_url == base_url and key:
+                return key, candidate.get("name")
+        return None
+
     def _toggle_provider(self, name: str, new_state: bool):
+        if name in self._pending_activations:
+            return
+
         try:
             db = get_db()
-            db.update_provider_fields(name, is_active=1 if new_state else 0)
+            provider = db.get_provider(name)
+            if provider is None:
+                raise ValueError(f"Provider '{name}' no longer exists.")
+
+            if not new_state:
+                db.update_provider_fields(name, is_active=0)
+                self.status_label.configure(
+                    text=f"Disabled '{name}'.", text_color=TEXT_MUTED
+                )
+                self.refresh_provider_list()
+                return
+
+            # Existing credentials and local providers need no extra API key.
+            if provider.get("is_local") or str(provider.get("api_key") or "").strip():
+                db.update_provider_fields(name, is_active=1)
+                self.status_label.configure(
+                    text=f"Enabled '{name}'.", text_color="#00FFCC"
+                )
+                self.refresh_provider_list()
+                return
+
+            reusable = self._find_reusable_key(provider, db.get_all_providers())
+            if reusable:
+                key, key_source = reusable
+            else:
+                dialog_parent = self.winfo_toplevel() if self._is_alive() else self
+                key = simpledialog.askstring(
+                    "API Key Required",
+                    f"Enter an API key for '{name}'\n({provider['base_url']}):",
+                    parent=dialog_parent,
+                    show="*",
+                )
+                if key is None:
+                    self.status_label.configure(
+                        text=f"Activation of '{name}' cancelled.",
+                        text_color=TEXT_MUTED,
+                    )
+                    return
+                key = key.strip()
+                if not key:
+                    self.status_label.configure(
+                        text="❌ An API key is required to enable this provider.",
+                        text_color="red",
+                    )
+                    return
+                key_source = None
+
+            self._pending_activations.add(name)
+            source_text = f" using the saved key from '{key_source}'" if key_source else ""
+            self.status_label.configure(
+                text=f"🔐 Validating '{name}'{source_text}...", text_color="orange"
+            )
             self.refresh_provider_list()
+            threading.Thread(
+                target=self._run_provider_activation,
+                args=(provider, key, key_source),
+                daemon=True,
+            ).start()
         except Exception as e:
-            self.status_label.configure(text=f"❌ Error updating provider: {e}", text_color="red")
+            self._pending_activations.discard(name)
+            self.status_label.configure(
+                text=f"❌ Error updating provider: {e}", text_color="red"
+            )
+
+    def _run_provider_activation(self, provider, key, key_source):
+        name = provider["name"]
+        try:
+            result = validate_provider(
+                name, provider["base_url"], key, provider.get("model_name") or "default"
+            )
+        except Exception as exc:
+            error = str(exc)
+            self._safe_after(
+                lambda: self._on_activation_failed(name, error)
+            )
+            return
+
+        self._safe_after(
+            lambda: self._on_provider_activation_complete(
+                provider, key, key_source, result
+            )
+        )
+
+    def _on_activation_failed(self, name, error):
+        if not self._is_alive():
+            return
+        self._pending_activations.discard(name)
+        self.status_label.configure(
+            text=f"❌ Could not activate '{name}': {error}", text_color="red"
+        )
+        self.refresh_provider_list()
+
+    def _on_provider_activation_complete(self, provider, key, key_source, result):
+        if not self._is_alive():
+            return
+        name = provider["name"]
+        self._pending_activations.discard(name)
+        if not result.success:
+            self.status_label.configure(
+                text=(
+                    f"❌ Could not activate '{name}': "
+                    f"{result.error or 'validation failed'}"
+                ),
+                text_color="red",
+            )
+            self.refresh_provider_list()
+            return
+
+        try:
+            db = get_db()
+            speed_score = result.speed_ms if result.speed_ms is not None else 9999
+            intelligence_tier = result.intel_tier or "Unknown"
+            supports_tools = bool(result.supports_tools)
+            db.add_provider(
+                name=name,
+                base_url=provider["base_url"],
+                api_key=key,
+                model_name=provider.get("model_name") or "default",
+                is_local=provider.get("is_local", False),
+                is_active=True,
+                speed_score_ms=speed_score,
+                intelligence_tier=intelligence_tier,
+                supports_tools=supports_tools,
+            )
+            db.update_provider_fields(
+                name, is_active=1, cooldown_until=None, failure_count=0
+            )
+            source_text = f" using the saved key from '{key_source}'" if key_source else ""
+            self.status_label.configure(
+                text=f"✅ Activated '{name}'{source_text}.", text_color="#00FFCC"
+            )
+        except Exception as e:
+            self.status_label.configure(
+                text=f"❌ DB Error activating '{name}': {e}", text_color="red"
+            )
+        self.refresh_provider_list()
 
     def _delete_provider(self, name: str):
+        dialog_parent = self.winfo_toplevel() if self._is_alive() else self
         confirmed = messagebox.askyesno(
             "Delete Provider",
-            f"Are you sure you want to delete '{name}' from the API Hub?\nThis cannot be undone."
+            f"Are you sure you want to delete '{name}' from the API Hub?\nThis cannot be undone.",
+            parent=dialog_parent
         )
         if confirmed:
             try:
