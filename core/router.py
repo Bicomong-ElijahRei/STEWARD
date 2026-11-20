@@ -40,11 +40,22 @@ class APIManager:
         eligible.sort(key=self._speed_score)
 
         cloud_providers = [provider for provider in eligible if not provider.get("is_local")]
-        local_providers = sorted(
-            (provider for provider in providers if provider.get("is_local")),
-            key=self._speed_score,
-        )
+        local_providers = [provider for provider in eligible if provider.get("is_local")]
         candidates = cloud_providers + local_providers[:1]
+
+        # Graceful fallback: If require_tools was set but no provider has supports_tools=True,
+        # fallback to general active providers so requests don't instantly crash.
+        if not candidates and require_tools:
+            fallback_eligible = [
+                provider
+                for provider in providers
+                if not self._is_cooling_down(provider.get("cooldown_until"), now)
+                and (required_tier is None or provider.get("intelligence_tier") == required_tier)
+            ]
+            fallback_eligible.sort(key=self._speed_score)
+            cloud_fallback = [p for p in fallback_eligible if not p.get("is_local")]
+            local_fallback = [p for p in fallback_eligible if p.get("is_local")]
+            candidates = cloud_fallback + local_fallback[:1]
 
         provider_chain = []
         last_error = "No active providers match the requested capabilities."
@@ -151,7 +162,12 @@ class APIManager:
 
     @staticmethod
     def _endpoint(base_url: str) -> str:
-        return f"{base_url.rstrip('/')}/chat/completions"
+        url = base_url.rstrip("/")
+        if url.endswith("/chat/completions"):
+            return url
+        if url.endswith("/v1") or "/v1" in url or "/openai" in url:
+            return f"{url}/chat/completions"
+        return f"{url}/v1/chat/completions"
 
     @staticmethod
     def _payload(

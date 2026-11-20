@@ -161,7 +161,7 @@ def cleanup_empty_folders(directory, progress_callback=None):
     directory = os.path.normpath(directory)
     try:
         all_dirs = []
-        for root, dirs, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory, topdown=False):
             for dir_name in dirs:
                 all_dirs.append(os.path.join(root, dir_name))
         total = len(all_dirs)
@@ -170,7 +170,7 @@ def cleanup_empty_folders(directory, progress_callback=None):
             if progress_callback:
                 progress_callback(i + 1, total, dir_path)
             try:
-                if not os.listdir(dir_path):
+                if os.path.isdir(dir_path) and not os.listdir(dir_path):
                     os.rmdir(dir_path)
                     count += 1
             except OSError:

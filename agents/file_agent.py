@@ -170,7 +170,7 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
 
     def redo_last(self) -> str:
         with self._lock:
-            for entry in reversed(self._operation_log):
+            for entry in self._operation_log:
                 if entry.get("undone", False):
                     operation = entry["operation"]
                     source = entry["source"]
@@ -435,13 +435,22 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
                     )
                 messages.extend(tool_results)
 
-                final_response = self.api_manager.route_request(
-                    messages=messages,
-                    agent_name="FileAgent",
-                    require_tools=True,
-                )
-                final_content = final_response["choices"][0]["message"]["content"]
-                return final_content
+                try:
+                    final_response = self.api_manager.route_request(
+                        messages=messages,
+                        agent_name="FileAgent",
+                        require_tools=False,
+                    )
+                    final_content = final_response["choices"][0]["message"].get("content", "")
+                except Exception as e:
+                    logger.warning(f"Failed to get final LLM explanation: {e}")
+                    final_content = ""
+
+                if dry_run:
+                    if final_content:
+                        return "\n".join(results) + "\n\n" + final_content
+                    return "\n".join(results)
+                return final_content if final_content else "\n".join(results)
 
             return "\n".join(results)
 

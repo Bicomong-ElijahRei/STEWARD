@@ -30,7 +30,17 @@ def _build_phone_number_prompt() -> str:
     )
 
 
-def _build_tool_call_probe() -> tuple[str, dict]:
+def normalize_chat_endpoint(base_url: str) -> str:
+    """Normalize base URL to point directly to /chat/completions."""
+    url = base_url.rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1") or "/v1" in url or "/openai" in url:
+        return f"{url}/chat/completions"
+    return f"{url}/v1/chat/completions"
+
+
+def _build_tool_call_probe(model_name: str = "default") -> tuple[str, dict]:
     """
     A minimal tool definition that the provider should acknowledge
     by emitting a tool-call JSON block.
@@ -57,7 +67,7 @@ def _build_tool_call_probe() -> tuple[str, dict]:
         }
     ]
     payload = {
-        "model": "placeholder",
+        "model": model_name or "default",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": "What is the weather in Paris?"},
@@ -95,17 +105,17 @@ class ValidationResult:
 
 # ── Health check (speed) ──────────────────────────────────────────────────
 
-def health_check(base_url: str, api_key: str, timeout: float = 15.0) -> ValidationResult:
+def health_check(base_url: str, api_key: str, timeout: float = 15.0, model_name: str = "default") -> ValidationResult:
     """
     Send a minimal 'Say "OK"' payload and measure time from request start
     until we have the first byte of the response body.
     Returns a ValidationResult with speed_ms set on success.
     """
     result = ValidationResult(base_url)
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    url = normalize_chat_endpoint(base_url)
 
     payload = {
-        "model": "benchmark",
+        "model": model_name or "default",
         "messages": [{"role": "user", "content": "Say 'OK' and nothing else."}],
         "temperature": 0.0,
         "max_tokens": 5,
@@ -129,6 +139,11 @@ def health_check(base_url: str, api_key: str, timeout: float = 15.0) -> Validati
             result.status = "rate_limited"
             result.error = f"HTTP 429 - Rate limited for {base_url}"
             result.speed_ms = int(elapsed)
+            return result
+        if not (200 <= resp.status_code < 300):
+            result.status = "error"
+            error_detail = (resp.text or "").strip()[:300]
+            result.error = f"HTTP {resp.status_code} - {error_detail}"
             return result
 
         try:
@@ -158,7 +173,7 @@ def health_check(base_url: str, api_key: str, timeout: float = 15.0) -> Validati
 
 # ── Intelligence probe (tiering) ──────────────────────────────────────────
 
-def intelligence_probe(base_url: str, api_key: str, timeout: float = 15.0) -> ValidationResult:
+def intelligence_probe(base_url: str, api_key: str, timeout: float = 15.0, model_name: str = "default") -> ValidationResult:
     """
     Send a standardized logic puzzle and parse the answer.
     Correct "(555) 123-4567"   -> Tier 1: Genius
@@ -166,16 +181,16 @@ def intelligence_probe(base_url: str, api_key: str, timeout: float = 15.0) -> Va
     Gibberish                -> Tier 3: Fast
     Falls back to the speed probe result if the puzzle fails.
     """
-    result = health_check(base_url, api_key, timeout=timeout)
+    result = health_check(base_url, api_key, timeout=timeout, model_name=model_name)
     if not result.success:
         return result
 
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    url = normalize_chat_endpoint(base_url)
     system_prompt = _build_system_prompt()
     prompt = _build_phone_number_prompt()
 
     payload = {
-        "model": "benchmark",
+        "model": model_name or "default",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
@@ -198,12 +213,16 @@ def intelligence_probe(base_url: str, api_key: str, timeout: float = 15.0) -> Va
             result.status = "rate_limited"
             result.error = f"HTTP 429 - Rate limited for {base_url}"
             return result
+        if not (200 <= resp.status_code < 300):
+            result.status = "error"
+            result.error = f"HTTP {resp.status_code} - {(resp.text or '').strip()[:200]}"
+            return result
 
         data = resp.json()
         content = ""
         for choice in data.get("choices", []):
             if "message" in choice and "content" in choice["message"]:
-                content += choice["message"]["content"]
+                content += choice["message"]["content"] or ""
 
         match = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", content)
         clean = content.strip().replace("\n", " ").replace("  ", " ")
@@ -226,17 +245,17 @@ def intelligence_probe(base_url: str, api_key: str, timeout: float = 15.0) -> Va
 
 # ── Tool Calling Check (function calling support) ─────────────────────────
 
-def tool_calling_check(base_url: str, api_key: str, timeout: float = 15.0) -> ValidationResult:
+def tool_calling_check(base_url: str, api_key: str, timeout: float = 15.0, model_name: str = "default") -> ValidationResult:
     """
     Send a dummy tools array with a get_weather function. If the provider
     returns a valid tool-call JSON block in the response, supports_tools = True.
     """
-    result = health_check(base_url, api_key, timeout=timeout)
+    result = health_check(base_url, api_key, timeout=timeout, model_name=model_name)
     if not result.success:
         return result
 
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    system_prompt, payload = _build_tool_call_probe()
+    url = normalize_chat_endpoint(base_url)
+    system_prompt, payload = _build_tool_call_probe(model_name=model_name)
 
     try:
         resp = requests.post(
@@ -253,12 +272,15 @@ def tool_calling_check(base_url: str, api_key: str, timeout: float = 15.0) -> Va
             result.status = "rate_limited"
             result.error = f"HTTP 429 - Rate limited for {base_url}"
             return result
+        if not (200 <= resp.status_code < 300):
+            result.supports_tools = False
+            return result
 
         data = resp.json()
         tool_calls = 0
         for choice in data.get("choices", []):
             message = choice.get("message", {})
-            if "tool_calls" in message:
+            if "tool_calls" in message and message["tool_calls"]:
                 tool_calls = len(message["tool_calls"])
 
         result.supports_tools = tool_calls > 0
@@ -268,6 +290,7 @@ def tool_calling_check(base_url: str, api_key: str, timeout: float = 15.0) -> Va
 
     except Exception as e:
         result.error = f"Tool-call probe error: {e}"
+        result.supports_tools = False
         return result
 
 
@@ -277,7 +300,7 @@ def validate_provider(
     name: str,
     base_url: str,
     api_key: str,
-    model_name: str = "benchmark",
+    model_name: str = "default",
 ) -> ValidationResult:
     """
     Run health check, intelligence probe, and tool-calling check in sequence.
@@ -286,34 +309,25 @@ def validate_provider(
     result = ValidationResult(name)
 
     # 1. Speed
-    speed = health_check(base_url, api_key)
+    speed = health_check(base_url, api_key, model_name=model_name)
     result.speed_ms = speed.speed_ms
-    if speed.status == "invalid_key":
-        result.status = "invalid_key"
-        result.error = speed.error
-        return result
-    if speed.status == "rate_limited":
-        result.status = "rate_limited"
-        result.error = speed.error
-        return result
-    if speed.status != "healthy":
+    if not speed.success:
         result.status = speed.status
         result.error = speed.error
         return result
 
     # 2. Intelligence
-    intel = intelligence_probe(base_url, api_key)
+    intel = intelligence_probe(base_url, api_key, model_name=model_name)
     if intel.success:
         result.intel_tier = intel.intel_tier
-    elif intel.status == "invalid_key":
-        result.status = "invalid_key"
+    elif intel.status in ("invalid_key", "rate_limited"):
+        result.status = intel.status
         result.error = intel.error
         return result
 
     # 3. Tools
-    tools = tool_calling_check(base_url, api_key)
-    if tools.success:
-        result.supports_tools = tools.supports_tools
+    tools = tool_calling_check(base_url, api_key, model_name=model_name)
+    result.supports_tools = bool(tools.supports_tools) if tools.success else False
 
     result.status = "healthy"
     result.success = True

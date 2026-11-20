@@ -154,10 +154,17 @@ class ChatTab(ctk.CTkFrame):
 
                     def confirm_callback(tool_name, args):
                         preview = f"Tool: {tool_name}\nArguments: {json.dumps(args, indent=2)}"
-                        return messagebox.askyesno(
-                            "Confirm File Operation",
-                            f"DRY RUN PREVIEW:\n{preview}\n\nExecute this operation?",
-                        )
+                        evt = threading.Event()
+                        user_choice = [False]
+                        def ask():
+                            user_choice[0] = messagebox.askyesno(
+                                "Confirm File Operation",
+                                f"The agent wants to execute:\n{preview}\n\nExecute?",
+                            )
+                            evt.set()
+                        self.after(0, ask)
+                        evt.wait()
+                        return user_choice[0]
 
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
@@ -171,12 +178,20 @@ class ChatTab(ctk.CTkFrame):
                             "Foldy", "Dry-run preview generated"
                         ))
 
-                    if messagebox.askyesno(
-                        "Execute?",
-                        "The above is a dry-run preview.\nExecute these operations?",
-                    ):
+                    exec_evt = threading.Event()
+                    exec_choice = [False]
+                    def ask_exec():
+                        exec_choice[0] = messagebox.askyesno(
+                            "Execute Operations?",
+                            "The above is a dry-run preview.\nExecute these operations?",
+                        )
+                        exec_evt.set()
+                    self.after(0, ask_exec)
+                    exec_evt.wait()
+
+                    if exec_choice[0]:
                         exec_result = self.file_agent.run(
-                            user_msg, dry_run=False, confirm_callback=confirm_callback
+                            user_msg, dry_run=False, confirm_callback=None
                         )
                         self.after(0, lambda: self._add_bubble(
                             "STEWARD", exec_result, NEON_CYAN, align="left",

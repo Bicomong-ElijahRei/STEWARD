@@ -87,6 +87,8 @@ class OrganizerTab(ctk.CTkFrame):
         self.gui = gui
         self.observer = None
         self.daemon_running = False
+        self.watched_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Incoming"))
+        self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
         self.preview_rows = []
         self.pending_operations = []
         self.build()
@@ -158,7 +160,41 @@ class OrganizerTab(ctk.CTkFrame):
             hover_color="#5A5A6A",
             command=self.redo_last,
         )
-        self.btn_redo.pack(side="left")
+        self.btn_redo.pack(side="left", padx=(0, 16))
+
+        self.btn_start_daemon = ctk.CTkButton(
+            btn_row,
+            text="Start Daemon",
+            width=110,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color="#0284C7",
+            hover_color="#0369A1",
+            command=self.start_daemon,
+        )
+        self.btn_start_daemon.pack(side="left", padx=(0, 6))
+
+        self.btn_stop_daemon = ctk.CTkButton(
+            btn_row,
+            text="Stop Daemon",
+            width=110,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color="#DC2626",
+            hover_color="#B91C1C",
+            command=self.stop_daemon,
+        )
+        self.btn_stop_daemon.pack(side="left", padx=(0, 12))
+
+        self.daemon_status_label = ctk.CTkLabel(
+            btn_row,
+            text="Daemon: STOPPED",
+            font=("Nunito", 11, "bold"),
+            text_color="#9CA3AF",
+        )
+        self.daemon_status_label.pack(side="left")
 
         self.preview_container = ctk.CTkScrollableFrame(
             self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
@@ -199,14 +235,14 @@ class OrganizerTab(ctk.CTkFrame):
             from_=0,
             to=100,
             number_of_steps=100,
-            command=self._on_undo_slider,
         )
+        self.undo_slider.bind("<ButtonRelease-1>", lambda e: self._on_undo_slider(self.undo_slider.get()))
         self.undo_slider.set(100)
         self.undo_slider.pack(fill="x", padx=20, pady=(0, 10))
 
     def preview_incoming(self):
-        incoming = self.gui.settings_tab.watched_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Incoming")
-        dest = self.gui.settings_tab.dest_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Sorted")
+        incoming = self.watched_var.get()
+        dest = self.dest_var.get()
 
         if not os.path.exists(incoming):
             self._log(f"Incoming folder not found: {incoming}")
@@ -297,8 +333,8 @@ class OrganizerTab(ctk.CTkFrame):
                 try:
                     result = self.file_agent.move_file(op["source"], op["destination"])
                     self.after(0, lambda r=result: self._log(f"[Execute] {r}"))
-                    if self.gui and hasattr(self.gui, 'live_feed'):
-                        self.after(0, lambda: self.gui.live_feed.agent_done("Foldy", f"Moved {op['filename']}"))
+                    if self.gui:
+                        self.after(0, lambda op=op: self.gui.feed_agent_done("Foldy", f"Moved {op['filename']}"))
                 except Exception as e:
                     self.after(0, lambda e=e: self._log(f"[Execute] Error: {e}"))
             self.after(0, lambda: self._log("Execution complete."))
@@ -369,8 +405,8 @@ class OrganizerTab(ctk.CTkFrame):
     def start_daemon(self):
         if self.daemon_running:
             return
-        watch_path = self.gui.settings_tab.watched_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Incoming")
-        dest_path = self.gui.settings_tab.dest_var.get() if hasattr(self.gui, 'settings_tab') else os.path.join(os.getcwd(), "Sorted")
+        watch_path = self.watched_var.get()
+        dest_path = self.dest_var.get()
         if not os.path.exists(watch_path):
             messagebox.showerror("Error", f"Watched folder does not exist: {watch_path}")
             return
@@ -380,7 +416,8 @@ class OrganizerTab(ctk.CTkFrame):
         self.observer.schedule(event_handler, watch_path, recursive=False)
         self.observer.start()
         self.daemon_running = True
-        self._log("Daemon started.")
+        self.daemon_status_label.configure(text="Daemon: RUNNING", text_color="#10B981")
+        self._log(f"Daemon started. Watching: {watch_path}")
 
     def stop_daemon(self):
         if self.observer and self.daemon_running:
@@ -388,4 +425,5 @@ class OrganizerTab(ctk.CTkFrame):
             self.observer.join()
             self.observer = None
             self.daemon_running = False
+            self.daemon_status_label.configure(text="Daemon: STOPPED", text_color="#9CA3AF")
             self._log("Daemon stopped.")

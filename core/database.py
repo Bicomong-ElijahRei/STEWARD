@@ -108,6 +108,9 @@ class DatabaseManager:
                 supports_tools=excluded.supports_tools
             """, (name, base_url, enc_key, model_name, is_local, is_active, speed_score_ms, intelligence_tier, supports_tools))
             self._conn.commit()
+            cursor.execute("SELECT id FROM providers WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            return row["id"] if row else cursor.lastrowid
 
     def get_active_providers(self):
         with self._lock:
@@ -195,10 +198,10 @@ class DatabaseManager:
 
 _db_instance = None
 
-def init_db(db_path: str = DB_PATH, key_path: str = KEY_PATH):
+def init_db(db_path: str = DB_PATH, key_path: str = KEY_PATH, force_new: bool = False):
     """Initialize the global database instance."""
     global _db_instance
-    if _db_instance is None:
+    if _db_instance is None or force_new or (db_path != getattr(_db_instance, "db_path", None)):
         _db_instance = DatabaseManager(db_path, key_path)
     return _db_instance
 
