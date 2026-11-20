@@ -97,6 +97,10 @@ class StewardGUI:
             self.tabs[self.current_tab].pack_forget()
 
         self.tabs[tab_name].pack(fill="both", expand=True, padx=20, pady=20)
+        if tab_name == "settings":
+            # Repopulate canvas-hosted cards after pack_forget()/pack() and
+            # show the latest provider state whenever API Hub is opened.
+            self.tabs[tab_name].refresh_provider_list()
         self.current_tab = tab_name
 
         for tid, btn in self.nav_buttons.items():

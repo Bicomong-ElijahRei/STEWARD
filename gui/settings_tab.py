@@ -16,22 +16,6 @@ class SettingsTab(ctk.CTkFrame):
         self.main_app = main_app
         self._pending_activations = set()
 
-    def _is_alive(self) -> bool:
-        """Check if this frame and its toplevel window still exist."""
-        try:
-            return bool(self.winfo_exists())
-        except Exception:
-            return False
-
-    def _safe_after(self, callback):
-        """Schedule a callback on the Tkinter main thread if widget still exists."""
-        if not self._is_alive():
-            return
-        try:
-            self.after(0, callback)
-        except Exception:
-            pass
-
         # Title
         self.title = ctk.CTkLabel(
             self, text="🔌 API Hub", 
@@ -93,6 +77,22 @@ class SettingsTab(ctk.CTkFrame):
         self.provider_list.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self.refresh_provider_list()
+
+    def _is_alive(self) -> bool:
+        """Check if this frame and its toplevel window still exist."""
+        try:
+            return bool(self.winfo_exists())
+        except Exception:
+            return False
+
+    def _safe_after(self, callback):
+        """Schedule a callback on the Tkinter main thread if widget still exists."""
+        if not self._is_alive():
+            return
+        try:
+            self.after(0, callback)
+        except Exception:
+            pass
 
     def _create_input(self, placeholder):
         entry = ctk.CTkEntry(self.form_frame, placeholder_text=placeholder, width=400)
