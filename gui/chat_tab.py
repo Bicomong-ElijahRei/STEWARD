@@ -19,6 +19,7 @@ from core.theme import (
     NEON_LIME, NEON_BLUE, NEON_ORANGE, FONT_ROUNDED, FONT_MONO, CORNER_RADIUS,
 )
 from agents.agent_config import AGENT_CONFIG, AGENT_ROUTING_KEYS
+from gui.live_feed import LiveFeedWidget
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,44 @@ class ChatTab(ctk.CTkFrame):
         )
         title.pack(side="left")
 
-        self.chat_display = ctk.CTkScrollableFrame(
-            self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
-        )
-        self.chat_display.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        # Split container: chat (left) + live feed (right)
+        self.split_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.split_container.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
+        # Left: Chat display
+        self.chat_panel = ctk.CTkFrame(
+            self.split_container, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
+        )
+        self.chat_panel.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        self.chat_display = ctk.CTkScrollableFrame(
+            self.chat_panel, fg_color="transparent", corner_radius=CORNER_RADIUS
+        )
+        self.chat_display.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Right: Live Feed
+        self.feed_panel = ctk.CTkFrame(
+            self.split_container, fg_color="#2A2A35", corner_radius=CORNER_RADIUS, width=320
+        )
+        self.feed_panel.pack(side="right", fill="y", padx=(8, 0))
+        self.feed_panel.pack_propagate(False)
+
+        feed_title = ctk.CTkLabel(
+            self.feed_panel,
+            text="📡 Live Feed",
+            font=("Nunito", 14, "bold"),
+            text_color=NEON_PURPLE,
+        )
+        feed_title.pack(pady=(14, 8), padx=10, anchor="w")
+
+        if self.live_feed is None:
+            self.live_feed = LiveFeedWidget(self.feed_panel, width=300)
+        self.live_feed.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+
+        self.live_feed.agent_idle("Cortex")
+        self.live_feed.agent_idle("Foldy")
+
+        # Input area
         input_frame = ctk.CTkFrame(self, fg_color="transparent", height=60)
         input_frame.pack(fill="x", padx=16, pady=(0, 16))
         input_frame.pack_propagate(False)

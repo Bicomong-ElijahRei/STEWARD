@@ -13,6 +13,7 @@ from tkinter import messagebox
 import threading
 import logging
 import time
+import os
 
 from core.theme import (
     BG_PANEL, BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
@@ -21,6 +22,45 @@ from core.theme import (
 )
 
 logger = logging.getLogger(__name__)
+
+ENV_PATH = os.path.join(os.getcwd(), ".env")
+
+
+def _save_api_key_to_env(provider_id: str, api_key: str):
+    """Persist an API key to the .env file."""
+    env_var_map = {
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+    }
+    env_var = env_var_map.get(provider_id)
+    if not env_var:
+        return
+
+    # Read existing .env
+    lines = []
+    if os.path.exists(ENV_PATH):
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    # Update or add the key
+    key_line = f"{env_var}={api_key}\n"
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{env_var}="):
+            lines[i] = key_line
+            found = True
+            break
+    if not found:
+        lines.append(key_line)
+
+    with open(ENV_PATH, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    # Reload environment
+    os.environ[env_var] = api_key
 
 PROVIDERS = [
     {"id": "openai", "name": "OpenAI", "emoji": "🟢", "color": "#FFFFFF", "model_hint": "gpt-4o, gpt-3.5-turbo"},
@@ -157,6 +197,12 @@ class APIKeyCard(ctk.CTkFrame):
         self.cost_label.configure(text=f"Cost: {key[2]}", text_color=TEXT_BRIGHT)
         self.stats_frame.pack(fill="x", padx=14, pady=(0, 12))
 
+        # Persist the API key to .env
+        api_key = self.key_entry.get().strip()
+        if api_key:
+            _save_api_key_to_env(self.provider["id"], api_key)
+            logger.info(f"API key saved for {self.provider['name']}")
+
         if self.on_verify:
             self.on_verify(self.provider["id"], True)
 
@@ -184,6 +230,29 @@ class SettingsTab(ctk.CTkFrame):
             anchor="w",
         )
         subtitle.pack(pady=(0, 20), anchor="w", padx=20)
+
+        # ── Watched & Destination folders (needed by OrganizerTab) ──
+        folder_frame = ctk.CTkFrame(self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS)
+        folder_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        self.watched_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Incoming"))
+        self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
+
+        ctk.CTkLabel(
+            folder_frame, text="Watched folder:", font=FONT_ROUNDED, text_color=TEXT_BRIGHT,
+        ).pack(anchor="w", padx=16, pady=(16, 4))
+        ctk.CTkEntry(
+            folder_frame, textvariable=self.watched_var, font=FONT_MONO,
+            height=32, corner_radius=8, fg_color=BG_INPUT, border_color=BORDER_COLOR,
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(
+            folder_frame, text="Destination folder:", font=FONT_ROUNDED, text_color=TEXT_BRIGHT,
+        ).pack(anchor="w", padx=16, pady=(4, 4))
+        ctk.CTkEntry(
+            folder_frame, textvariable=self.dest_var, font=FONT_MONO,
+            height=32, corner_radius=8, fg_color=BG_INPUT, border_color=BORDER_COLOR,
+        ).pack(fill="x", padx=16, pady=(0, 16))
 
         self.provider_scroll = ctk.CTkScrollableFrame(
             self, fg_color="transparent", height=420

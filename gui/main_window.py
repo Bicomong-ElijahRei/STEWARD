@@ -1,4 +1,4 @@
-import customtkinter as ctk
+﻿import customtkinter as ctk
 from tkinter import messagebox
 import pystray
 from PIL import Image, ImageDraw
@@ -10,7 +10,8 @@ from agents.supervisor import SupervisorAgent
 from agents.file_agent import FileAgent
 from core.litellm_client import LiteLLMClient
 from core.theme import (
-    apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE
+    apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE,
+    NEON_CYAN, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
 )
 from gui.chat_tab import ChatTab
 from gui.organizer_tab import OrganizerTab
@@ -24,7 +25,7 @@ class StewardGUI:
     def __init__(self, root):
         self.root = root
         root.title("STEWARD – Cyber-Kawaii Mission Control")
-        root.geometry("1200x800")
+        root.geometry("1400x850")
         root.configure(fg_color=BG_DEEP_SPACE)
         root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -38,65 +39,91 @@ class StewardGUI:
         self.observer = None
         self.daemon_running = False
 
-        self.main_container = ctk.CTkFrame(root, fg_color="transparent")
-        self.main_container.pack(fill="both", expand=True, padx=12, pady=12)
+        self.current_tab = None
+        self.tabs = {}
 
-        self.left_panel = ctk.CTkFrame(
-            self.main_container, fg_color=BG_PANEL, corner_radius=CORNER_RADIUS
+        self.outer = ctk.CTkFrame(root, fg_color=BG_DEEP_SPACE)
+        self.outer.pack(fill="both", expand=True, padx=0, pady=0)
+
+        self.sidebar = ctk.CTkFrame(self.outer, fg_color="#25252E", corner_radius=0, width=200)
+        self.sidebar.pack(side="left", fill="y", padx=0, pady=0)
+        self.sidebar.pack_propagate(False)
+
+        self.sidebar_title = ctk.CTkLabel(
+            self.sidebar, text="STEWARD",
+            font=("Nunito", 20, "bold"), text_color=NEON_PURPLE,
         )
-        self.left_panel.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.sidebar_title.pack(pady=(30, 10))
 
-        self.right_panel = ctk.CTkFrame(
-            self.main_container, fg_color=BG_PANEL, corner_radius=CORNER_RADIUS, width=400
+        self.sidebar_subtitle = ctk.CTkLabel(
+            self.sidebar, text="Mission Control",
+            font=("Nunito", 11), text_color=TEXT_MUTED,
         )
-        self.right_panel.pack(side="right", fill="both", expand=False, padx=(6, 0))
-        self.right_panel.pack_propagate(False)
+        self.sidebar_subtitle.pack(pady=(0, 30))
 
-        self.feed_header = ctk.CTkFrame(self.right_panel, fg_color="transparent")
-        self.feed_header.pack(fill="x", padx=16, pady=(16, 8))
+        self.nav_buttons = {}
+        nav_items = [
+            ("chat", "💬 Chat", NEON_PURPLE),
+            ("organizer", "📁 Organizer", NEON_CYAN),
+            ("settings", "🔌 API Hub", "#D97706"),
+        ]
 
-        self.feed_title = ctk.CTkLabel(
-            self.feed_header,
-            text="📡 LIVE FEED",
-            font=("Nunito", 16, "bold"),
-            text_color=NEON_PURPLE,
-        )
-        self.feed_title.pack(side="left")
+        for tab_id, label, color in nav_items:
+            btn = ctk.CTkButton(
+                self.sidebar, text=label, width=160, height=40, corner_radius=10,
+                font=("Nunito", 13, "bold"), fg_color="transparent",
+                hover_color="#3A3A4A", text_color=TEXT_BRIGHT,
+                border_width=2, border_color=color,
+                command=lambda t=tab_id: self.switch_tab(t),
+            )
+            btn.pack(pady=6, padx=20)
+            self.nav_buttons[tab_id] = btn
 
-        self.feed_clear = ctk.CTkButton(
-            self.feed_header,
-            text="Clear",
-            width=60,
-            height=28,
-            fg_color="#3A3A4A",
-            hover_color="#4A4A5A",
-            font=("Nunito", 10),
-            command=self.live_feed_clear,
-        )
-        self.feed_clear.pack(side="right")
+        self.content = ctk.CTkFrame(self.outer, fg_color=BG_DEEP_SPACE, corner_radius=0)
+        self.content.pack(side="right", fill="both", expand=True, padx=0, pady=0)
 
-        self.live_feed = LiveFeedWidget(self.right_panel, width=360)
-        self.live_feed.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.tabs["chat"] = ChatTab(self.content, self.supervisor, self.file_agent, None)
+        self.tabs["organizer"] = OrganizerTab(self.content, self.file_agent, self)
+        self.tabs["settings"] = SettingsTab(self.content, self.legacy_agent, self)
 
-        self.live_feed.agent_idle("Cortex")
-        self.live_feed.agent_idle("Foldy")
-
-        self.chat_tab = ChatTab(self.left_panel, self.supervisor, self.file_agent, self.live_feed)
-        self.chat_tab.pack(fill="both", expand=True, padx=12, pady=12)
+        self.switch_tab("chat")
 
         self.setup_tray()
 
+    def switch_tab(self, tab_name):
+        """Hide the current tab and show the requested one."""
+        if self.current_tab is not None:
+            self.tabs[self.current_tab].pack_forget()
+
+        self.tabs[tab_name].pack(fill="both", expand=True, padx=20, pady=20)
+        self.current_tab = tab_name
+
+        for tid, btn in self.nav_buttons.items():
+            if tid == tab_name:
+                color_map = {"chat": NEON_PURPLE, "organizer": NEON_CYAN, "settings": "#D97706"}
+                btn.configure(fg_color=color_map.get(tid, NEON_PURPLE), text_color="#FFFFFF")
+            else:
+                btn.configure(fg_color="transparent", text_color=TEXT_BRIGHT)
+
     def live_feed_clear(self):
-        self.live_feed.clear()
+        chat_tab = self.tabs.get("chat")
+        if chat_tab and chat_tab.live_feed:
+            chat_tab.live_feed.clear()
 
     def feed_agent_working(self, agent_name: str, detail: str = ""):
-        self.live_feed.agent_working(agent_name, detail)
+        chat_tab = self.tabs.get("chat")
+        if chat_tab and chat_tab.live_feed:
+            chat_tab.live_feed.agent_working(agent_name, detail)
 
     def feed_agent_done(self, agent_name: str, detail: str = ""):
-        self.live_feed.agent_done(agent_name, detail)
+        chat_tab = self.tabs.get("chat")
+        if chat_tab and chat_tab.live_feed:
+            chat_tab.live_feed.agent_done(agent_name, detail)
 
     def feed_agent_idle(self, agent_name: str):
-        self.live_feed.agent_idle(agent_name)
+        chat_tab = self.tabs.get("chat")
+        if chat_tab and chat_tab.live_feed:
+            chat_tab.live_feed.agent_idle(agent_name)
 
     def setup_tray(self):
         image = Image.new('RGB', (64, 64), color='black')

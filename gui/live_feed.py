@@ -108,7 +108,10 @@ class LiveFeedWidget(ctk.CTkScrollableFrame):
         self.after_idle(self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
-        self._parent_canvas.yview_moveto(1.0)
+        try:
+            self._parent_canvas.yview_moveto(1.0)
+        except AttributeError:
+            pass
 
     def clear(self):
         for card in self.cards:

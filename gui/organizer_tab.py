@@ -224,43 +224,46 @@ class OrganizerTab(ctk.CTkFrame):
 
         self.file_agent.dry_run = True
 
-        for f in files:
-            filepath = os.path.join(incoming, f)
-            content = self.file_agent.read_file_content(filepath)
+        def process():
+            for f in files:
+                filepath = os.path.join(incoming, f)
+                content = self.file_agent.read_file_content(filepath)
 
-            messages = [
-                {"role": "system", "content": self.file_agent.system_prompt},
-                {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
-            ]
-            try:
-                resp = self.file_agent.llm_client.complete(messages=messages, temperature=0.3)
-                category = resp["choices"][0]["message"]["content"].strip()
-            except Exception:
-                category = "Other"
+                messages = [
+                    {"role": "system", "content": self.file_agent.system_prompt},
+                    {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
+                ]
+                try:
+                    resp = self.file_agent.llm_client.complete(messages=messages, temperature=0.3)
+                    category = resp["choices"][0]["message"]["content"].strip()
+                except Exception:
+                    category = "Other"
 
-            category = category.strip().replace("/", "_").replace("\\", "_")
-            dest_folder = os.path.join(dest, category)
-            dest_path = os.path.join(dest_folder, f)
+                category = category.strip().replace("/", "_").replace("\\", "_")
+                dest_folder = os.path.join(dest, category)
+                dest_path = os.path.join(dest_folder, f)
 
-            row = FilePreviewRow(
-                self.preview_container,
-                filename=f,
-                source=filepath,
-                destination=dest_path,
-                on_toggle=self._on_row_toggle,
-            )
-            row.pack(fill="x", padx=10, pady=3)
-            self.preview_rows.append(row)
+                row = FilePreviewRow(
+                    self.preview_container,
+                    filename=f,
+                    source=filepath,
+                    destination=dest_path,
+                    on_toggle=self._on_row_toggle,
+                )
+                self.after(0, lambda r=row: r.pack(fill="x", padx=10, pady=3))
+                self.after(0, lambda r=row: self.preview_rows.append(r))
 
-            self.pending_operations.append({
-                "filename": f,
-                "source": filepath,
-                "destination": dest_path,
-                "selected": True,
-            })
+                self.pending_operations.append({
+                    "filename": f,
+                    "source": filepath,
+                    "destination": dest_path,
+                    "selected": True,
+                })
 
-        self._log(f"Dry-run preview: {len(files)} files ready to organize.")
-        self.btn_execute.configure(state="normal")
+            self.after(0, lambda: self._log(f"Dry-run preview: {len(files)} files ready to organize."))
+            self.after(0, lambda: self.btn_execute.configure(state="normal"))
+
+        threading.Thread(target=process, daemon=True).start()
 
     def _on_row_toggle(self, filename, selected):
         for op in self.pending_operations:
@@ -327,7 +330,35 @@ class OrganizerTab(ctk.CTkFrame):
                 pass
 
     def _on_undo_slider(self, value):
-        pass
+        """When the undo slider moves, undo operations to match the slider position."""
+        value = int(value)
+        log_path = self.file_agent.OPERATION_LOG_PATH
+        if not os.path.exists(log_path):
+            return
+        try:
+            with open(log_path, "r") as f:
+                log = json.load(f)
+        except Exception:
+            return
+
+        total = len(log)
+        undone = sum(1 for e in log if e.get("undone", False))
+        active = total - undone
+
+        # If slider moved backward (lower value), undo more operations
+        if value < active:
+            diff = active - value
+            for _ in range(diff):
+                result = self.file_agent.undo_last()
+                self._log(f"[Undo Slider] {result}")
+            self._refresh_slider()
+        # If slider moved forward (higher value), redo operations
+        elif value > active:
+            diff = value - active
+            for _ in range(diff):
+                result = self.file_agent.redo_last()
+                self._log(f"[Redo Slider] {result}")
+            self._refresh_slider()
 
     def _log(self, message):
         self.output.insert("end", message + "\n")
