@@ -128,6 +128,9 @@ class ChatTab(ctk.CTkFrame):
             return
         self.chat_entry.delete(0, "end")
         self._add_bubble("You", user_msg, TEXT_BRIGHT, align="right")
+        # Prevent concurrent submissions while a preview/approval is in flight.
+        self.send_btn.configure(state="disabled")
+        self.chat_entry.unbind("<Return>")
 
         def process():
             try:
@@ -172,6 +175,7 @@ class ChatTab(ctk.CTkFrame):
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
+                    self._pending_plan_id = self.file_agent._pending_plan_id
                     foldy_detail = self._report_provider("Foldy")
                     preview_message = preview_result
                     if foldy_detail:
@@ -197,7 +201,9 @@ class ChatTab(ctk.CTkFrame):
                     exec_evt.wait()
 
                     if exec_choice[0]:
-                        exec_result = self.file_agent.execute_pending_plan()
+                        exec_result = self.file_agent.execute_pending_plan(
+                            self._pending_plan_id
+                        )
                         self.after(0, lambda: self._add_bubble(
                             "STEWARD", exec_result, NEON_CYAN, align="left",
                         ))
@@ -247,8 +253,15 @@ class ChatTab(ctk.CTkFrame):
 
             except Exception as e:
                 logger.error(f"Chat processing error: {e}")
-                self.after(0, lambda: self._add_bubble(
+                self.after(0, lambda e=e: self._add_bubble(
                     "STEWARD", f"Error: {e}", "#FF5555", align="left",
+                ))
+            finally:
+                # Always re-enable input once preview/approval is complete,
+                # regardless of which agent branch ran or whether it errored.
+                self.after(0, lambda: self.send_btn.configure(state="normal"))
+                self.after(0, lambda: self.chat_entry.bind(
+                    "<Return>", lambda e: self.send_chat()
                 ))
 
         threading.Thread(target=process, daemon=True).start()

@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import copy
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
 
@@ -65,6 +66,7 @@ class FileAgent:
         self._lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._pending_plan = None
+        self._pending_plan_id = None
         self.last_provider = None
         self._operation_log = self._load_operation_log()
 
@@ -139,6 +141,18 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         elif func_name == "batch_move":
             safe_args["source_pattern"] = self._sandbox_path(args.get("source_pattern"))
             safe_args["destination_folder"] = self._sandbox_path(args.get("destination_folder"))
+        elif func_name == "read_file_content":
+            safe_args["file_path"] = self._sandbox_path(args.get("file_path"))
+        elif func_name == "list_directory":
+            safe_args["directory"] = self._sandbox_path(args.get("directory"))
+        elif func_name == "get_file_info":
+            safe_args["file_path"] = self._sandbox_path(args.get("file_path"))
+        elif func_name == "find_duplicates":
+            safe_args["directory"] = self._sandbox_path(args.get("directory"))
+        elif func_name == "find_large_files":
+            safe_args["directory"] = self._sandbox_path(args.get("directory"))
+        elif func_name == "suggest_deletions":
+            safe_args["directory"] = self._sandbox_path(args.get("directory"))
         return safe_args
 
     def _load_operation_log(self) -> List[Dict[str, Any]]:
@@ -492,6 +506,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             if dry_run:
                 with self._plan_lock:
                     self._pending_plan = copy.deepcopy(parsed_plan)
+                    self._pending_plan_id = str(uuid.uuid4())
                 if final_content:
                     return "\n".join(results) + "\n\n" + final_content
             return final_content if final_content else "\n".join(results)
@@ -525,11 +540,19 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         confirm_callback: Optional[Callable[[str, dict], bool]] = None,
     ) -> List[str]:
         if not dry_run:
-            # Reject the whole plan before the first mutation if any path is unsafe.
+            # Declared schema (from _get_tool_definitions) is the approved dispatch set.
+            # Undeclared tools (cleanup_temp_files, batch_move, find_duplicates,
+            # cleanup_empty_folders, find_large_files, suggest_deletions) are rejected.
+            approved = {t["function"]["name"] for t in self._get_tool_definitions()}
+            # Reject the whole plan before the first mutation if any path is unsafe
+            # or any tool is not in the declared schema.
             try:
                 for tool_call in tool_calls:
+                    func_name = tool_call["function"]["name"]
+                    if func_name not in approved:
+                        raise ValueError(f"Unapproved tool: {func_name}")
                     self._validate_mutation(
-                        tool_call["function"]["name"],
+                        func_name,
                         tool_call["function"]["arguments"],
                     )
             except (OSError, TypeError, ValueError) as exc:
@@ -570,8 +593,17 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 if result.startswith("Error"):
                     continue
                 if func_name == "move_file":
+                    # shutil.move(destination_dir) resolves to
+                    # destination_dir/basename(source); log the concrete file path
+                    # so undo moves exactly one file and never a directory.
+                    actual_dest = safe_args["destination"]
+                    if os.path.isdir(safe_args["destination"]):
+                        actual_dest = os.path.join(
+                            safe_args["destination"],
+                            os.path.basename(safe_args["source"]),
+                        )
                     self._record_operation(
-                        "move", safe_args["source"], safe_args["destination"], result,
+                        "move", safe_args["source"], actual_dest, result,
                     )
                 elif func_name == "rename_file":
                     self._record_operation(
@@ -588,13 +620,22 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
         return results
 
-    def execute_pending_plan(self) -> str:
-        """Execute the exact previewed tool calls without consulting the LLM."""
+    def execute_pending_plan(self, plan_id: str) -> str:
+        """Execute the exact previewed tool calls without consulting the LLM.
+
+        ``plan_id`` is mandatory and must match the current pending plan; a
+        missing, stale, superseded, or already-executed plan is refused.
+        """
         with self._plan_lock:
             if self._pending_plan is None:
                 raise RuntimeError("No previewed execution plan is awaiting confirmation.")
+            if plan_id is None or self._pending_plan_id is None:
+                return "Error: A valid preview plan ID is required for execution."
+            if plan_id != self._pending_plan_id:
+                return f"Error: Plan {plan_id} is stale or superseded."
             plan = self._pending_plan
             self._pending_plan = None
+            self._pending_plan_id = None
 
         results = self._execute_tool_plan(
             copy.deepcopy(plan), dry_run=False, confirm_callback=None
@@ -605,6 +646,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         """Invalidate a preview when it is declined or superseded."""
         with self._plan_lock:
             self._pending_plan = None
+            self._pending_plan_id = None
 
     # ------------------------------------------------------------------
     # Convenience methods (direct tool access)
@@ -619,8 +661,14 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             return f"Error: {exc}"
         result = _move_file(**safe_args)
         if not result.startswith("Error"):
+            actual_dest = safe_args["destination"]
+            if os.path.isdir(safe_args["destination"]):
+                actual_dest = os.path.join(
+                    safe_args["destination"],
+                    os.path.basename(safe_args["source"]),
+                )
             self._record_operation(
-                "move", safe_args["source"], safe_args["destination"], result
+                "move", safe_args["source"], actual_dest, result
             )
         return result
 
