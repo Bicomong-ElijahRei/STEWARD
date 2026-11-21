@@ -308,7 +308,7 @@ def suggest_deletions(directory, size_mb_threshold=100, age_days_threshold=30, u
             prompt += "\nReply with a bullet list of files to delete and a short reason for each. Only recommend deletion if it's safe (e.g., duplicates, old large files, temporary files)."
             response = api_manager.route_request(
                 messages=[{"role": "user", "content": prompt}],
-                agent_name="FileAgent",
+                agent_name="Foldy",
             )
             ai_suggestions = response["choices"][0]["message"].get("content", "").strip()
             if ai_suggestions:

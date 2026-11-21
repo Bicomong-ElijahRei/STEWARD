@@ -62,6 +62,16 @@ class StewardGUI:
         )
         self.sidebar_subtitle.pack(pady=(0, 30))
 
+        self.provider_status_label = ctk.CTkLabel(
+            self.sidebar,
+            text="Provider: not used yet",
+            font=("Consolas", 9),
+            text_color=TEXT_MUTED,
+            wraplength=170,
+            justify="center",
+        )
+        self.provider_status_label.pack(pady=(0, 20), padx=12)
+
         self.nav_buttons = {}
         nav_items = [
             ("chat", "💬 Chat", NEON_PURPLE),
@@ -83,7 +93,13 @@ class StewardGUI:
         self.content = ctk.CTkFrame(self.outer, fg_color=BG_DEEP_SPACE, corner_radius=0)
         self.content.pack(side="right", fill="both", expand=True, padx=0, pady=0)
 
-        self.tabs["chat"] = ChatTab(self.content, self.supervisor, self.file_agent, None)
+        self.tabs["chat"] = ChatTab(
+            self.content,
+            self.supervisor,
+            self.file_agent,
+            None,
+            provider_callback=self.show_provider_used,
+        )
         self.tabs["organizer"] = OrganizerTab(self.content, self.file_agent, self)
         self.tabs["settings"] = SettingsTab(self.content, main_app=self)
 
@@ -109,6 +125,17 @@ class StewardGUI:
                 btn.configure(fg_color=color_map.get(tid, NEON_PURPLE), text_color="#FFFFFF")
             else:
                 btn.configure(fg_color="transparent", text_color=TEXT_BRIGHT)
+
+    def show_provider_used(self, agent_name, provider_info):
+        """Display the provider and model selected by the router."""
+        if not provider_info:
+            return
+        provider = provider_info.get("provider", "Unknown")
+        model = provider_info.get("model", "default")
+        text = f"{agent_name}\n{provider}\n{model}"
+        self.root.after(
+            0, lambda: self.provider_status_label.configure(text=text)
+        )
 
     def live_feed_clear(self):
         chat_tab = self.tabs.get("chat")

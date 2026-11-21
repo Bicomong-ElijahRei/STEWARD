@@ -66,6 +66,7 @@ class SupervisorAgent:
     def __init__(self, api_manager: APIManager):
         self.api_manager = api_manager
         self._system_prompt = SUPERVISOR_SYSTEM_PROMPT
+        self.last_provider = None
 
     def route(self, user_input: str) -> Dict[str, Any]:
         """
@@ -80,10 +81,12 @@ class SupervisorAgent:
             {"role": "user", "content": user_input},
         ]
 
+        self.last_provider = None
         try:
             response = self.api_manager.route_request(
-                messages=messages, agent_name="Supervisor"
+                messages=messages, agent_name="Cortex"
             )
+            self.last_provider = response.get("_steward")
             content = response["choices"][0]["message"]["content"].strip()
 
             # Parse JSON from response

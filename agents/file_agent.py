@@ -11,6 +11,7 @@ import shutil
 import json
 import logging
 import threading
+import copy
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
 
@@ -54,10 +55,17 @@ class FileAgent:
         root_path: Optional[str] = None,
         dry_run: bool = True,
     ):
-        self.root_path = root_path or os.getcwd()
+        self.root_path = os.path.realpath(os.path.abspath(root_path or os.getcwd()))
+        self.allowed_roots = tuple(
+            os.path.realpath(os.path.join(self.root_path, folder))
+            for folder in ("Incoming", "Sorted")
+        )
         self.api_manager = api_manager
         self.dry_run = dry_run
         self._lock = threading.Lock()
+        self._plan_lock = threading.Lock()
+        self._pending_plan = None
+        self.last_provider = None
         self._operation_log = self._load_operation_log()
 
         self.system_prompt = f"""You are STEWARD File Agent, an AI file manager for: {self.root_path}
@@ -92,8 +100,46 @@ When the user asks to organize files:
 5. Wait for user confirmation
 6. Execute (dry_run=False)
 
-Never create folders outside {{root_path}}\\Sorted unless the user gives an absolute path.
+All file mutations are restricted to {{root_path}}\\Incoming and {{root_path}}\\Sorted.
+Absolute paths supplied by the user or model never bypass this sandbox.
 """.format(root_path=self.root_path)
+
+    def _sandbox_path(self, path: str) -> str:
+        """Resolve a path and require it to remain inside Incoming or Sorted."""
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("File operation paths must be non-empty strings.")
+        absolute_path = path if os.path.isabs(path) else os.path.join(self.root_path, path)
+        resolved = os.path.realpath(os.path.abspath(absolute_path))
+        for allowed_root in self.allowed_roots:
+            try:
+                common = os.path.commonpath((resolved, allowed_root))
+            except ValueError:
+                # Different Windows drives can never share a sandbox root.
+                continue
+            if os.path.normcase(common) == os.path.normcase(allowed_root):
+                return resolved
+        raise PermissionError(
+            f"Sandbox violation: '{path}' is outside the configured Incoming and Sorted directories."
+        )
+
+    def _validate_mutation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate mutation paths and return canonical arguments for execution."""
+        safe_args = copy.deepcopy(args)
+        if func_name == "move_file":
+            safe_args["source"] = self._sandbox_path(args.get("source"))
+            safe_args["destination"] = self._sandbox_path(args.get("destination"))
+        elif func_name == "rename_file":
+            old_path = self._sandbox_path(args.get("old_path"))
+            self._sandbox_path(os.path.join(os.path.dirname(old_path), args.get("new_name")))
+            safe_args["old_path"] = old_path
+        elif func_name in ("delete_file", "create_folder"):
+            safe_args["path"] = self._sandbox_path(args.get("path"))
+        elif func_name in ("cleanup_empty_folders", "cleanup_temp_files"):
+            safe_args["directory"] = self._sandbox_path(args.get("directory"))
+        elif func_name == "batch_move":
+            safe_args["source_pattern"] = self._sandbox_path(args.get("source_pattern"))
+            safe_args["destination_folder"] = self._sandbox_path(args.get("destination_folder"))
+        return safe_args
 
     def _load_operation_log(self) -> List[Dict[str, Any]]:
         if os.path.exists(self.OPERATION_LOG_PATH):
@@ -142,15 +188,27 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
                     destination = entry.get("destination")
                     try:
                         if operation == "move" and destination:
-                            shutil.move(destination, source)
+                            safe_args = self._validate_mutation(
+                                "move_file", {"source": source, "destination": destination}
+                            )
+                            shutil.move(safe_args["destination"], safe_args["source"])
                             result = f"Undid move: '{destination}' → '{source}'"
                         elif operation == "rename" and destination:
-                            new_path = os.path.join(os.path.dirname(source), destination)
-                            os.rename(new_path, source)
+                            safe_args = self._validate_mutation(
+                                "rename_file", {"old_path": source, "new_name": destination}
+                            )
+                            new_path = os.path.join(
+                                os.path.dirname(safe_args["old_path"]), safe_args["new_name"]
+                            )
+                            os.rename(new_path, safe_args["old_path"])
                             result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
                         elif operation == "delete":
                             result = "Cannot undo delete (sent to recycle bin)"
                         elif operation == "create_folder":
+                            safe_args = self._validate_mutation(
+                                "create_folder", {"path": source}
+                            )
+                            source = safe_args["path"]
                             if os.path.exists(source) and os.path.isdir(source):
                                 try:
                                     os.rmdir(source)
@@ -177,14 +235,25 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
                     destination = entry.get("destination")
                     try:
                         if operation == "move" and destination:
-                            shutil.move(source, destination)
+                            safe_args = self._validate_mutation(
+                                "move_file", {"source": source, "destination": destination}
+                            )
+                            shutil.move(safe_args["source"], safe_args["destination"])
                             result = f"Redid move: '{source}' → '{destination}'"
                         elif operation == "rename" and destination:
-                            new_path = os.path.join(os.path.dirname(source), destination)
-                            os.rename(source, new_path)
+                            safe_args = self._validate_mutation(
+                                "rename_file", {"old_path": source, "new_name": destination}
+                            )
+                            new_path = os.path.join(
+                                os.path.dirname(safe_args["old_path"]), safe_args["new_name"]
+                            )
+                            os.rename(safe_args["old_path"], new_path)
                             result = f"Redid rename: '{source}' → '{destination}'"
                         elif operation == "create_folder":
-                            os.makedirs(source, exist_ok=True)
+                            safe_args = self._validate_mutation(
+                                "create_folder", {"path": source}
+                            )
+                            os.makedirs(safe_args["path"], exist_ok=True)
                             result = f"Redid create_folder: '{source}'"
                         else:
                             result = f"Unknown operation type: {operation}"
@@ -359,6 +428,10 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
         dry_run: bool = True,
         confirm_callback: Optional[Callable[[str, dict], bool]] = None,
     ) -> str:
+        """Process a task and retain its dry-run plan for immutable approval."""
+        self.discard_pending_plan()
+        self.last_provider = None
+        failovers = []
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": task_description},
@@ -369,121 +442,217 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
         try:
             response = self.api_manager.route_request(
                 messages=messages,
-                agent_name="FileAgent",
+                agent_name="Foldy",
                 require_tools=True,
                 tools=tools,
             )
+            failovers.extend(response.get("_steward", {}).get("failovers", []))
+            self.last_provider = response.get("_steward")
             assistant_msg = response["choices"][0]["message"]
             messages.append(assistant_msg)
 
             tool_calls = assistant_msg.get("tool_calls", [])
-
             if not tool_calls:
+                if self.last_provider:
+                    self.last_provider = {**self.last_provider, "failovers": failovers}
                 return assistant_msg.get("content", "No action needed.")
 
-            results = []
+            parsed_plan = self._parse_tool_plan(tool_calls)
+            results = self._execute_tool_plan(
+                parsed_plan, dry_run=dry_run, confirm_callback=confirm_callback
+            )
+
             for tool_call in tool_calls:
-                func_name = tool_call["function"]["name"]
-                args = tool_call["function"]["arguments"]
-                if isinstance(args, str):
-                    args = json.loads(args)
+                messages.append({
+                    "role": "tool",
+                    "content": str(results),
+                    "tool_call_id": tool_call.get("id", "unknown"),
+                })
 
-                preview = f"[Dry Run] {func_name}({json.dumps(args, indent=2)})"
-                results.append(preview)
-                logger.info(preview)
+            try:
+                final_response = self.api_manager.route_request(
+                    messages=messages,
+                    agent_name="Foldy",
+                    require_tools=False,
+                )
+                failovers.extend(
+                    (final_response.get("_steward") or {}).get("failovers", [])
+                )
+                provider_info = final_response.get("_steward")
+                if provider_info:
+                    self.last_provider = {**provider_info, "failovers": failovers}
+                final_content = final_response["choices"][0]["message"].get("content", "")
+            except Exception as e:
+                logger.warning(f"Failed to get final LLM explanation: {e}")
+                final_content = ""
 
-                if dry_run:
-                    results.append("  → (preview only, not executed)")
-                    continue
-
-                if confirm_callback and not confirm_callback(func_name, args):
-                    results.append("  → (cancelled by user)")
-                    continue
-
-                if func_name in _legacy_tool_functions:
-                    try:
-                        result = _legacy_tool_functions[func_name](**args)
-                        results.append(f"  → {result}")
-
-                        if func_name == "move_file":
-                            self._record_operation(
-                                "move", args.get("source", ""), args.get("destination", ""), result
-                            )
-                        elif func_name == "rename_file":
-                            self._record_operation(
-                                "rename", args.get("old_path", ""), args.get("new_name", ""), result
-                            )
-                        elif func_name == "delete_file":
-                            self._record_operation("delete", args.get("path", ""), None, result)
-                        elif func_name == "create_folder":
-                            self._record_operation("create_folder", args.get("path", ""), None, result)
-
-                    except Exception as e:
-                        results.append(f"  → Error: {e}")
-                else:
-                    results.append(f"  → Unknown tool: {func_name}")
-
-            if results:
-                tool_results = []
-                for tool_call in tool_calls:
-                    tool_results.append(
-                        {
-                            "role": "tool",
-                            "content": str(results),
-                            "tool_call_id": tool_call.get("id", "unknown"),
-                        }
-                    )
-                messages.extend(tool_results)
-
-                try:
-                    final_response = self.api_manager.route_request(
-                        messages=messages,
-                        agent_name="FileAgent",
-                        require_tools=False,
-                    )
-                    final_content = final_response["choices"][0]["message"].get("content", "")
-                except Exception as e:
-                    logger.warning(f"Failed to get final LLM explanation: {e}")
-                    final_content = ""
-
-                if dry_run:
-                    if final_content:
-                        return "\n".join(results) + "\n\n" + final_content
-                    return "\n".join(results)
-                return final_content if final_content else "\n".join(results)
-
-            return "\n".join(results)
+            if dry_run:
+                with self._plan_lock:
+                    self._pending_plan = copy.deepcopy(parsed_plan)
+                if final_content:
+                    return "\n".join(results) + "\n\n" + final_content
+            return final_content if final_content else "\n".join(results)
 
         except Exception as e:
             logger.error(f"FileAgent.run failed: {e}")
             return f"Error processing task: {e}"
+
+    @staticmethod
+    def _parse_tool_plan(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Parse and detach tool calls so the approved plan cannot be mutated."""
+        parsed_plan = []
+        for tool_call in tool_calls:
+            parsed_call = copy.deepcopy(tool_call)
+            function = parsed_call.get("function")
+            if not isinstance(function, dict) or not function.get("name"):
+                raise ValueError("Tool call is missing a function name.")
+            args = function.get("arguments", {})
+            if isinstance(args, str):
+                args = json.loads(args)
+            if not isinstance(args, dict):
+                raise ValueError("Tool call arguments must be a JSON object.")
+            function["arguments"] = copy.deepcopy(args)
+            parsed_plan.append(parsed_call)
+        return parsed_plan
+
+    def _execute_tool_plan(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        dry_run: bool,
+        confirm_callback: Optional[Callable[[str, dict], bool]] = None,
+    ) -> List[str]:
+        if not dry_run:
+            # Reject the whole plan before the first mutation if any path is unsafe.
+            try:
+                for tool_call in tool_calls:
+                    self._validate_mutation(
+                        tool_call["function"]["name"],
+                        tool_call["function"]["arguments"],
+                    )
+            except (OSError, TypeError, ValueError) as exc:
+                return [f"Error: {exc}"]
+
+        results = []
+        for tool_call in tool_calls:
+            function = tool_call["function"]
+            func_name = function["name"]
+            args = function["arguments"]
+            logger.info(
+                "[FileAgent] Tool: %s(%s) [dry_run=%s]",
+                func_name,
+                json.dumps(args),
+                dry_run,
+            )
+            preview = f"[Dry Run] {func_name}({json.dumps(args, indent=2)})"
+            results.append(preview)
+            logger.info(preview)
+
+            if dry_run:
+                results.append("  → (preview only, not executed)")
+                continue
+
+            if confirm_callback and not confirm_callback(func_name, args):
+                results.append("  → (cancelled by user)")
+                continue
+
+            if func_name not in _legacy_tool_functions:
+                results.append(f"  → Unknown tool: {func_name}")
+                continue
+
+            try:
+                # Re-resolve immediately before mutation as well as during preflight.
+                safe_args = self._validate_mutation(func_name, args)
+                result = _legacy_tool_functions[func_name](**safe_args)
+                results.append(f"  → {result}")
+                if result.startswith("Error"):
+                    continue
+                if func_name == "move_file":
+                    self._record_operation(
+                        "move", safe_args["source"], safe_args["destination"], result,
+                    )
+                elif func_name == "rename_file":
+                    self._record_operation(
+                        "rename", safe_args["old_path"], safe_args["new_name"], result,
+                    )
+                elif func_name == "delete_file":
+                    self._record_operation("delete", safe_args["path"], None, result)
+                elif func_name == "create_folder":
+                    self._record_operation(
+                        "create_folder", safe_args["path"], None, result,
+                    )
+            except Exception as e:
+                results.append(f"  → Error: {e}")
+
+        return results
+
+    def execute_pending_plan(self) -> str:
+        """Execute the exact previewed tool calls without consulting the LLM."""
+        with self._plan_lock:
+            if self._pending_plan is None:
+                raise RuntimeError("No previewed execution plan is awaiting confirmation.")
+            plan = self._pending_plan
+            self._pending_plan = None
+
+        results = self._execute_tool_plan(
+            copy.deepcopy(plan), dry_run=False, confirm_callback=None
+        )
+        return "\n".join(results)
+
+    def discard_pending_plan(self) -> None:
+        """Invalidate a preview when it is declined or superseded."""
+        with self._plan_lock:
+            self._pending_plan = None
 
     # ------------------------------------------------------------------
     # Convenience methods (direct tool access)
     # ------------------------------------------------------------------
 
     def move_file(self, source: str, destination: str) -> str:
-        result = _move_file(source, destination)
+        try:
+            safe_args = self._validate_mutation(
+                "move_file", {"source": source, "destination": destination}
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        result = _move_file(**safe_args)
         if not result.startswith("Error"):
-            self._record_operation("move", source, destination, result)
+            self._record_operation(
+                "move", safe_args["source"], safe_args["destination"], result
+            )
         return result
 
     def delete_file(self, path: str) -> str:
-        result = _delete_file(path)
+        try:
+            safe_args = self._validate_mutation("delete_file", {"path": path})
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        result = _delete_file(**safe_args)
         if not result.startswith("Error"):
-            self._record_operation("delete", path, None, result)
+            self._record_operation("delete", safe_args["path"], None, result)
         return result
 
     def rename_file(self, old_path: str, new_name: str) -> str:
-        result = _rename_file(old_path, new_name)
+        try:
+            safe_args = self._validate_mutation(
+                "rename_file", {"old_path": old_path, "new_name": new_name}
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        result = _rename_file(**safe_args)
         if not result.startswith("Error"):
-            self._record_operation("rename", old_path, new_name, result)
+            self._record_operation(
+                "rename", safe_args["old_path"], safe_args["new_name"], result
+            )
         return result
 
     def create_folder(self, path: str) -> str:
-        result = _create_folder(path)
+        try:
+            safe_args = self._validate_mutation("create_folder", {"path": path})
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        result = _create_folder(**safe_args)
         if not result.startswith("Error"):
-            self._record_operation("create_folder", path, None, result)
+            self._record_operation("create_folder", safe_args["path"], None, result)
         return result
 
     def list_directory(self, directory: str) -> str:
@@ -508,8 +677,9 @@ Never create folders outside {{root_path}}\\Sorted unless the user gives an abso
 
         try:
             response = self.api_manager.route_request(
-                messages=messages, agent_name="FileAgent"
+                messages=messages, agent_name="Foldy"
             )
+            self.last_provider = response.get("_steward")
             category = response["choices"][0]["message"]["content"].strip()
         except Exception as e:
             category = "Other"

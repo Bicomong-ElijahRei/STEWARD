@@ -43,6 +43,21 @@ class SettingsTab(ctk.CTkFrame):
         )
         self.key_entry.pack(anchor="w", padx=20, pady=5)
 
+        assignment_row = ctk.CTkFrame(self.form_frame, fg_color="transparent")
+        assignment_row.pack(anchor="w", padx=20, pady=5)
+        ctk.CTkLabel(
+            assignment_row, text="Assign to Agent", text_color=TEXT_BRIGHT
+        ).pack(side="left", padx=(0, 12))
+        self.assigned_agent_menu = ctk.CTkOptionMenu(
+            assignment_row,
+            values=["Any", "Cortex", "Foldy", "Syntax", "Scout"],
+            fg_color=NEON_PURPLE,
+            button_color=NEON_PURPLE,
+            button_hover_color="#9A6CE6",
+        )
+        self.assigned_agent_menu.set("Any")
+        self.assigned_agent_menu.pack(side="left")
+
         self.status_label = ctk.CTkLabel(
             self.form_frame, text="", font=("Nunito", 12), text_color=TEXT_MUTED
         )
@@ -159,7 +174,8 @@ class SettingsTab(ctk.CTkFrame):
                 is_active=True,
                 speed_score_ms=speed_score,
                 intelligence_tier=intelligence_tier,
-                supports_tools=supports_tools
+                supports_tools=supports_tools,
+                assigned_agent=self.assigned_agent_menu.get(),
             )
             db.update_provider_fields(
                 name, is_active=1, cooldown_until=None, failure_count=0
@@ -280,6 +296,18 @@ class SettingsTab(ctk.CTkFrame):
                     anchor="w"
                 )
                 info.pack(side="left", padx=10, fill="x", expand=True)
+
+                assignment_badge = ctk.CTkLabel(
+                    card,
+                    text=f"Agent: {p.get('assigned_agent') or 'Any'}",
+                    font=("Nunito", 10, "bold"),
+                    text_color=NEON_CYAN,
+                    fg_color="#353545",
+                    corner_radius=8,
+                    padx=8,
+                    pady=3,
+                )
+                assignment_badge.pack(side="left", padx=4)
 
                 # Delete Button
                 btn_delete = ctk.CTkButton(
@@ -467,6 +495,7 @@ class SettingsTab(ctk.CTkFrame):
                 speed_score_ms=speed_score,
                 intelligence_tier=intelligence_tier,
                 supports_tools=supports_tools,
+                assigned_agent=provider.get("assigned_agent") or "Any",
             )
             db.update_provider_fields(
                 name, is_active=1, cooldown_until=None, failure_count=0

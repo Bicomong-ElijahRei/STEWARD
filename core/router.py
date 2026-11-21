@@ -24,7 +24,7 @@ class APIManager:
         require_tools: bool = False,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> dict:
-        """Route to the fastest eligible provider and return its raw JSON."""
+        """Route to the fastest eligible provider for this agent and return JSON."""
         started = time.perf_counter()
         db = get_db()
         providers = db.get_active_providers()
@@ -33,7 +33,8 @@ class APIManager:
         eligible = [
             provider
             for provider in providers
-            if not self._is_cooling_down(provider.get("cooldown_until"), now)
+            if self._matches_agent(provider, agent_name)
+            and not self._is_cooling_down(provider.get("cooldown_until"), now)
             and (required_tier is None or provider.get("intelligence_tier") == required_tier)
             and (not require_tools or bool(provider.get("supports_tools")))
         ]
@@ -49,7 +50,8 @@ class APIManager:
             fallback_eligible = [
                 provider
                 for provider in providers
-                if not self._is_cooling_down(provider.get("cooldown_until"), now)
+                if self._matches_agent(provider, agent_name)
+                and not self._is_cooling_down(provider.get("cooldown_until"), now)
                 and (required_tier is None or provider.get("intelligence_tier") == required_tier)
             ]
             fallback_eligible.sort(key=self._speed_score)
@@ -59,8 +61,24 @@ class APIManager:
 
         provider_chain = []
         last_error = "No active providers match the requested capabilities."
+        preferred_endpoint = None
 
-        for provider in candidates:
+        for index, provider in enumerate(candidates):
+            if preferred_endpoint is not None:
+                # A 429 applies to one key, not necessarily its whole endpoint.
+                # Try another eligible key for that endpoint before other fallbacks.
+                same_endpoint = next(
+                    (
+                        candidate
+                        for candidate in candidates[index:]
+                        if self._same_endpoint(candidate, preferred_endpoint)
+                    ),
+                    None,
+                )
+                if same_endpoint is not None:
+                    provider = same_endpoint
+                preferred_endpoint = None
+
             name = provider.get("name") or provider.get("base_url") or "Unknown"
             try:
                 response = requests.post(
@@ -89,6 +107,8 @@ class APIManager:
                 db.update_provider_fields(
                     name=provider["name"], cooldown_until=cooldown_until.isoformat()
                 )
+                db.record_usage(provider["id"])
+                preferred_endpoint = provider["base_url"]
                 provider_chain.append(f"{name}: 429")
                 last_error = self._http_error(name, response)
                 continue
@@ -126,6 +146,19 @@ class APIManager:
             )
             db.record_usage(provider["id"], tokens_used=tokens_used)
             provider_chain.append(f"{name}: Success")
+            data["_steward"] = {
+                "provider": name,
+                "model": provider.get("model_name") or "default",
+                "provider_id": provider.get("id"),
+                "agent_name": agent_name,
+                "failovers": [
+                    {
+                        "failed_provider": attempt.rsplit(": ", 1)[0],
+                        "fallback_provider": name,
+                    }
+                    for attempt in provider_chain[:-1]
+                ],
+            }
             db.record_trace(
                 agent_name=agent_name,
                 latency_ms=self._elapsed_ms(started),
@@ -144,6 +177,12 @@ class APIManager:
         raise RuntimeError(f"All providers failed. Final error: {last_error}")
 
     @staticmethod
+    def _matches_agent(provider: dict, agent_name: str) -> bool:
+        """Allow shared providers and providers assigned to the requesting agent."""
+        assigned_agent = provider.get("assigned_agent") or "Any"
+        return assigned_agent in ("Any", agent_name)
+
+    @staticmethod
     def _speed_score(provider: dict) -> float:
         score = provider.get("speed_score_ms")
         return float(score) if score is not None else 9999.0
@@ -159,6 +198,10 @@ class APIManager:
             return cooldown > now
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _same_endpoint(provider: dict, base_url: str) -> bool:
+        return APIManager._endpoint(provider["base_url"]) == APIManager._endpoint(base_url)
 
     @staticmethod
     def _endpoint(base_url: str) -> str:

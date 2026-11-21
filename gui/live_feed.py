@@ -106,6 +106,38 @@ class LiveFeedWidget(ctk.CTkScrollableFrame):
 
         # Auto-scroll to bottom
         self.after_idle(self._scroll_to_bottom)
+        return card
+
+    def provider_failover(self, failed_provider: str, fallback_provider: str):
+        """Flash the failed provider red and its successful backup green."""
+        events = (
+            (
+                failed_provider,
+                "Provider failed",
+                f"Falling back to {fallback_provider}",
+                "#B91C1C",
+            ),
+            (
+                fallback_provider,
+                "Backup provider active",
+                f"Took over from {failed_provider}",
+                "#15803D",
+            ),
+        )
+        for provider, status, detail, flash_color in events:
+            card = self.add_event(provider, status, detail=detail)
+            card.configure(fg_color=flash_color)
+            self.after(1200, lambda card=card: self._restore_card_color(card))
+
+    @staticmethod
+    def _restore_card_color(card):
+        """Restore a flash card if it has not been cleared or destroyed."""
+        try:
+            if card.winfo_exists():
+                card.configure(fg_color="#2A2A35")
+        except Exception:
+            # Tkinter raises when a delayed callback references a destroyed card.
+            pass
 
     def _scroll_to_bottom(self):
         try:

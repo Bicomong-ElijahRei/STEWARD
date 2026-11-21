@@ -60,10 +60,18 @@ class DatabaseManager:
                     speed_score_ms INTEGER DEFAULT 9999,
                     intelligence_tier TEXT DEFAULT 'Unknown',
                     supports_tools BOOLEAN DEFAULT 0,
+                    assigned_agent TEXT DEFAULT 'Any',
                     cooldown_until TEXT,
                     failure_count INTEGER DEFAULT 0
                 )
             """)
+            cursor.execute("PRAGMA table_info(providers)")
+            provider_columns = {row["name"] for row in cursor.fetchall()}
+            if "assigned_agent" not in provider_columns:
+                cursor.execute(
+                    "ALTER TABLE providers "
+                    "ADD COLUMN assigned_agent TEXT DEFAULT 'Any'"
+                )
             # Usage Ledger table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -88,25 +96,33 @@ class DatabaseManager:
             """)
             self._conn.commit()
 
-    def add_provider(self, name, base_url, api_key, model_name="", 
-                     is_local=False, is_active=True, speed_score_ms=9999, 
-                     intelligence_tier="Unknown", supports_tools=False):
+    def add_provider(self, name, base_url, api_key, model_name="",
+                     is_local=False, is_active=True, speed_score_ms=9999,
+                     intelligence_tier="Unknown", supports_tools=False,
+                     assigned_agent="Any"):
         with self._lock:
             enc_key = self._encrypt(api_key)
             cursor = self._conn.cursor()
             cursor.execute("""
-                INSERT INTO providers 
-                (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms, intelligence_tier, supports_tools)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO providers
+                (name, base_url, api_key_encrypted, model_name, is_local, is_active,
+                 speed_score_ms, intelligence_tier, supports_tools, assigned_agent)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                 base_url=excluded.base_url,
                 api_key_encrypted=excluded.api_key_encrypted,
                 model_name=excluded.model_name,
+                is_local=excluded.is_local,
                 is_active=excluded.is_active,
                 speed_score_ms=excluded.speed_score_ms,
                 intelligence_tier=excluded.intelligence_tier,
-                supports_tools=excluded.supports_tools
-            """, (name, base_url, enc_key, model_name, is_local, is_active, speed_score_ms, intelligence_tier, supports_tools))
+                supports_tools=excluded.supports_tools,
+                assigned_agent=excluded.assigned_agent
+            """, (
+                name, base_url, enc_key, model_name, is_local, is_active,
+                speed_score_ms, intelligence_tier, supports_tools,
+                assigned_agent or "Any",
+            ))
             self._conn.commit()
             cursor.execute("SELECT id FROM providers WHERE name = ?", (name,))
             row = cursor.fetchone()
@@ -121,6 +137,7 @@ class DatabaseManager:
             for row in rows:
                 p = dict(row)
                 p['api_key'] = self._decrypt(p['api_key_encrypted']) # Decrypt for use
+                p["assigned_agent"] = p.get("assigned_agent") or "Any"
                 for field in ("is_local", "is_active", "supports_tools"):
                     p[field] = bool(p[field])
                 providers.append(p)
@@ -136,6 +153,7 @@ class DatabaseManager:
             for row in rows:
                 p = dict(row)
                 p['api_key'] = self._decrypt(p['api_key_encrypted'])
+                p["assigned_agent"] = p.get("assigned_agent") or "Any"
                 for field in ("is_local", "is_active", "supports_tools"):
                     p[field] = bool(p[field])
                 providers.append(p)
@@ -159,6 +177,7 @@ class DatabaseManager:
                 return None
             provider = dict(row)
             provider["api_key"] = self._decrypt(provider["api_key_encrypted"])
+            provider["assigned_agent"] = provider.get("assigned_agent") or "Any"
             for field in ("is_local", "is_active", "supports_tools"):
                 provider[field] = bool(provider[field])
             return provider
@@ -168,7 +187,7 @@ class DatabaseManager:
         allowed_fields = {
             "base_url", "model_name", "is_local", "is_active",
             "speed_score_ms", "intelligence_tier", "supports_tools",
-            "cooldown_until", "failure_count",
+            "assigned_agent", "cooldown_until", "failure_count",
         }
         invalid_fields = set(fields) - allowed_fields
         if invalid_fields:

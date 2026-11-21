@@ -33,11 +33,13 @@ AGENT_COLOR_MAP = {
 
 
 class ChatTab(ctk.CTkFrame):
-    def __init__(self, parent, supervisor, file_agent, live_feed=None):
+    def __init__(self, parent, supervisor, file_agent, live_feed=None,
+                 provider_callback=None):
         super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
         self.live_feed = live_feed
+        self.provider_callback = provider_callback
         self.build()
 
     def build(self):
@@ -130,6 +132,7 @@ class ChatTab(ctk.CTkFrame):
         def process():
             try:
                 routing = self.supervisor.route(user_msg)
+                self._report_provider("Cortex")
                 agent_type = routing.get("agent", "UNKNOWN")
                 action = routing.get("action", user_msg)
 
@@ -169,13 +172,17 @@ class ChatTab(ctk.CTkFrame):
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
+                    foldy_detail = self._report_provider("Foldy")
+                    preview_message = preview_result
+                    if foldy_detail:
+                        preview_message += f"\n\nHandled by {foldy_detail}"
                     self.after(0, lambda: self._add_bubble(
-                        "STEWARD", preview_result, NEON_CYAN, align="left",
+                        "STEWARD", preview_message, NEON_CYAN, align="left",
                     ))
 
                     if self.live_feed:
                         self.after(0, lambda: self.live_feed.agent_done(
-                            "Foldy", "Dry-run preview generated"
+                            "Foldy", foldy_detail or "Dry-run preview generated"
                         ))
 
                     exec_evt = threading.Event()
@@ -190,17 +197,16 @@ class ChatTab(ctk.CTkFrame):
                     exec_evt.wait()
 
                     if exec_choice[0]:
-                        exec_result = self.file_agent.run(
-                            user_msg, dry_run=False, confirm_callback=None
-                        )
+                        exec_result = self.file_agent.execute_pending_plan()
                         self.after(0, lambda: self._add_bubble(
                             "STEWARD", exec_result, NEON_CYAN, align="left",
                         ))
                         if self.live_feed:
                             self.after(0, lambda: self.live_feed.agent_done(
-                                "Foldy", "Operations executed"
+                                "Foldy", foldy_detail or "Operations executed"
                             ))
                     else:
+                        self.file_agent.discard_pending_plan()
                         self.after(0, lambda: self._add_bubble(
                             "STEWARD", "Execution cancelled by user.",
                             TEXT_MUTED, align="left",
@@ -246,6 +252,27 @@ class ChatTab(ctk.CTkFrame):
                 ))
 
         threading.Thread(target=process, daemon=True).start()
+
+    def _report_provider(self, agent_name):
+        """Publish router metadata and return a short UI status string."""
+        source = self.supervisor if agent_name == "Cortex" else self.file_agent
+        provider_info = getattr(source, "last_provider", None)
+        if not provider_info:
+            return ""
+        provider = provider_info.get("provider", "Unknown")
+        model = provider_info.get("model", "default")
+        if self.provider_callback:
+            self.provider_callback(agent_name, provider_info)
+        if self.live_feed:
+            for failover in provider_info.get("failovers", []):
+                failed = failover.get("failed_provider", "Unknown")
+                fallback = failover.get("fallback_provider", "Unknown")
+                self.after(
+                    0,
+                    lambda failed=failed, fallback=fallback:
+                    self.live_feed.provider_failover(failed, fallback),
+                )
+        return f"{provider} / {model}"
 
     def _add_bubble(self, sender, message, color, align="left"):
         bubble = ctk.CTkFrame(self.chat_display, fg_color="#353545", corner_radius=12)

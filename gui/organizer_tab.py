@@ -271,7 +271,7 @@ class OrganizerTab(ctk.CTkFrame):
                 ]
                 try:
                     resp = self.file_agent.api_manager.route_request(
-                        messages=messages, agent_name="FileAgent"
+                        messages=messages, agent_name="Foldy"
                     )
                     category = resp["choices"][0]["message"]["content"].strip()
                 except Exception:
