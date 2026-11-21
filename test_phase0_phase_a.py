@@ -320,5 +320,87 @@ class ProviderVisualizationTests(unittest.TestCase):
         chat.provider_callback.assert_called_once_with("Cortex", provider_info)
 
 
+
+class ReadSandboxTests(unittest.TestCase):
+    """Read operations must respect the same Incoming/Sorted sandbox as writes."""
+
+    def make_agent(self, root):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(api_manager=Mock(), root_path=root)
+        agent._record_operation = Mock()
+        return agent
+
+    def test_list_directory_rejects_path_outside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            outside = os.path.join(tmp, "outside_dir")
+            os.makedirs(outside)
+            agent = self.make_agent(tmp)
+            result = agent.list_directory(outside)
+            self.assertIn("Error: Sandbox violation", result)
+
+    def test_read_file_content_rejects_path_outside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            outside = os.path.join(tmp, "outside.txt")
+            with open(outside, "w", encoding="utf-8") as handle:
+                handle.write("sensitive data")
+            agent = self.make_agent(tmp)
+            result = agent.read_file_content(outside)
+            self.assertIn("Error: Sandbox violation", result)
+
+    def test_get_file_info_rejects_path_outside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            outside = os.path.join(tmp, "outside.txt")
+            with open(outside, "w", encoding="utf-8") as handle:
+                handle.write("data")
+            agent = self.make_agent(tmp)
+            result = agent.get_file_info(outside)
+            self.assertIn("Error: Sandbox violation", result)
+
+    def test_categorise_file_rejects_filepath_outside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            outside = os.path.join(tmp, "outside.txt")
+            with open(outside, "w", encoding="utf-8") as handle:
+                handle.write("data")
+            agent = self.make_agent(tmp)
+            agent.api_manager = Mock()
+            agent.api_manager.route_request = Mock(return_value={
+                "choices": [{"message": {"content": "Docs"}}],
+                "_steward": {"provider": "Test", "model": "test"},
+            })
+            result = agent.categorise_file(outside, os.path.join(tmp, "Sorted"))
+            self.assertIn("Error: Sandbox violation", result)
+
+    def test_list_directory_allows_path_inside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            agent = self.make_agent(tmp)
+            result = agent.list_directory(incoming)
+            self.assertNotIn("Error: Sandbox violation", result)
+
+    def test_read_file_content_allows_path_inside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            inside = os.path.join(incoming, "note.txt")
+            with open(inside, "w", encoding="utf-8") as handle:
+                handle.write("hello")
+            agent = self.make_agent(tmp)
+            result = agent.read_file_content(inside)
+            self.assertEqual(result, "hello")
+
+    def test_get_file_info_allows_path_inside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_read_sandbox_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            inside = os.path.join(incoming, "note.txt")
+            with open(inside, "w", encoding="utf-8") as handle:
+                handle.write("hello")
+            agent = self.make_agent(tmp)
+            result = agent.get_file_info(inside)
+            self.assertIn("Size:", result)
+
+
 if __name__ == "__main__":
     unittest.main()

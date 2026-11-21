@@ -269,7 +269,10 @@ Absolute paths supplied by the user or model never bypass this sandbox.
     # ------------------------------------------------------------------
 
     def read_file_content(self, file_path: str) -> str:
-        file_path = os.path.normpath(file_path)
+        try:
+            file_path = self._sandbox_path(file_path)
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
         ext = os.path.splitext(file_path)[1].lower()
         try:
             if ext == ".txt":
@@ -656,12 +659,24 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         return result
 
     def list_directory(self, directory: str) -> str:
-        return _list_directory(directory)
+        try:
+            safe_path = self._sandbox_path(directory)
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        return _list_directory(safe_path)
 
     def get_file_info(self, file_path: str) -> str:
-        return _get_file_info(file_path)
+        try:
+            safe_path = self._sandbox_path(file_path)
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        return _get_file_info(safe_path)
 
     def categorise_file(self, filepath: str, dest_base: str, root_window=None) -> str:
+        try:
+            filepath = self._sandbox_path(filepath)
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
         if not os.path.exists(filepath):
             return f"File not found: {filepath}"
 
