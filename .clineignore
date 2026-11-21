@@ -1,0 +1,14 @@
+secret.key
+steward.db
+*.db
+.env
+.env.local
+.env.*.local
+steward_operations.json
+venv/
+__pycache__/
+*.pyc
+*.mkv
+*.mp4
+*.pdf
+*.log
