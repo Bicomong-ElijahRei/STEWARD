@@ -10,10 +10,15 @@ import threading
 import os
 import uuid
 from datetime import datetime, timedelta
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 DB_PATH = os.path.join(os.getcwd(), "steward.db")
 KEY_PATH = os.path.join(os.getcwd(), "secret.key")
+
+DECRYPTION_ERROR = (
+    "Stored API key cannot be decrypted. Restore the matching secret.key "
+    "or re-enter the provider's API key."
+)
 
 class DatabaseManager:
     def __init__(self, db_path: str = DB_PATH, key_path: str = KEY_PATH):
@@ -24,6 +29,7 @@ class DatabaseManager:
         self._cipher = Fernet(self._key)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.decryption_errors = {}
         self._create_tables()
 
     def _load_or_create_key(self) -> bytes:
@@ -128,36 +134,45 @@ class DatabaseManager:
             row = cursor.fetchone()
             return row["id"] if row else cursor.lastrowid
 
+    def _provider_from_row(self, row):
+        """Build a provider without disguising credential decryption failures."""
+        provider = dict(row)
+        name = provider.get("name") or "Unknown"
+        try:
+            provider["api_key"] = self._decrypt(provider["api_key_encrypted"])
+        except InvalidToken:
+            provider["api_key"] = None
+            provider["decryption_error"] = DECRYPTION_ERROR
+            self.decryption_errors[name] = DECRYPTION_ERROR
+        else:
+            provider["decryption_error"] = None
+            self.decryption_errors.pop(name, None)
+        provider["assigned_agent"] = provider.get("assigned_agent") or "Any"
+        for field in ("is_local", "is_active", "supports_tools"):
+            provider[field] = bool(provider[field])
+        return provider
+
     def get_active_providers(self):
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM providers WHERE is_active = 1")
             rows = cursor.fetchall()
+            self.decryption_errors = {}
             providers = []
             for row in rows:
-                p = dict(row)
-                p['api_key'] = self._decrypt(p['api_key_encrypted']) # Decrypt for use
-                p["assigned_agent"] = p.get("assigned_agent") or "Any"
-                for field in ("is_local", "is_active", "supports_tools"):
-                    p[field] = bool(p[field])
-                providers.append(p)
+                provider = self._provider_from_row(row)
+                if provider["decryption_error"] is None:
+                    providers.append(provider)
             return providers
 
     def get_all_providers(self):
-        """Return all providers, active and inactive, with decrypted API keys."""
+        """Return providers, marking credentials that need recovery as unavailable."""
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM providers")
             rows = cursor.fetchall()
-            providers = []
-            for row in rows:
-                p = dict(row)
-                p['api_key'] = self._decrypt(p['api_key_encrypted'])
-                p["assigned_agent"] = p.get("assigned_agent") or "Any"
-                for field in ("is_local", "is_active", "supports_tools"):
-                    p[field] = bool(p[field])
-                providers.append(p)
-            return providers
+            self.decryption_errors = {}
+            return [self._provider_from_row(row) for row in rows]
 
     def delete_provider(self, name: str) -> bool:
         """Delete a provider by name."""
@@ -168,19 +183,14 @@ class DatabaseManager:
             return cursor.rowcount > 0
 
     def get_provider(self, name):
-        """Return one provider by name, including its decrypted API key."""
+        """Return one provider, explicitly marking an undecryptable API key."""
         with self._lock:
             cursor = self._conn.cursor()
             cursor.execute("SELECT * FROM providers WHERE name = ?", (name,))
             row = cursor.fetchone()
             if row is None:
                 return None
-            provider = dict(row)
-            provider["api_key"] = self._decrypt(provider["api_key_encrypted"])
-            provider["assigned_agent"] = provider.get("assigned_agent") or "Any"
-            for field in ("is_local", "is_active", "supports_tools"):
-                provider[field] = bool(provider[field])
-            return provider
+            return self._provider_from_row(row)
 
     def update_provider_fields(self, name, **fields):
         """Update whitelisted provider fields and commit the change."""
@@ -235,16 +245,27 @@ class DatabaseManager:
     def close(self):
         with self._lock:
             self._conn.close()
+        global _db_instance
+        if _db_instance is self:
+            _db_instance = None
 
 # ── Singleton Helpers ────────────────────────────────────────────────────
 
 _db_instance = None
 
 def init_db(db_path: str = DB_PATH, key_path: str = KEY_PATH, force_new: bool = False):
-    """Initialize the global database instance."""
+    """Initialize the global database instance for the exact DB and key paths."""
     global _db_instance
-    if _db_instance is None or force_new or (db_path != getattr(_db_instance, "db_path", None)):
-        _db_instance = DatabaseManager(db_path, key_path)
+    paths_changed = (
+        db_path != getattr(_db_instance, "db_path", None)
+        or key_path != getattr(_db_instance, "key_path", None)
+    )
+    if _db_instance is None or force_new or paths_changed:
+        previous = _db_instance
+        instance = DatabaseManager(db_path, key_path)
+        _db_instance = instance
+        if previous is not None:
+            previous.close()
     return _db_instance
 
 def get_db():

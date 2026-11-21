@@ -620,19 +620,25 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
         return results
 
+    def get_pending_plan_id(self) -> Optional[str]:
+        """Return the current preview identifier without exposing mutable state."""
+        with self._plan_lock:
+            return self._pending_plan_id
+
     def execute_pending_plan(self, plan_id: str) -> str:
         """Execute the exact previewed tool calls without consulting the LLM.
 
-        ``plan_id`` is mandatory and must match the current pending plan; a
-        missing, stale, superseded, or already-executed plan is refused.
+        ``plan_id`` is mandatory and must match the current pending plan. Every
+        refusal (missing, stale, superseded, or already executed) raises
+        ``RuntimeError``; successful execution returns the joined result string.
         """
         with self._plan_lock:
             if self._pending_plan is None:
                 raise RuntimeError("No previewed execution plan is awaiting confirmation.")
             if plan_id is None or self._pending_plan_id is None:
-                return "Error: A valid preview plan ID is required for execution."
+                raise RuntimeError("A valid preview plan ID is required for execution.")
             if plan_id != self._pending_plan_id:
-                return f"Error: Plan {plan_id} is stale or superseded."
+                raise RuntimeError(f"Plan {plan_id} is stale or superseded.")
             plan = self._pending_plan
             self._pending_plan = None
             self._pending_plan_id = None

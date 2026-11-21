@@ -10,10 +10,12 @@ from unittest.mock import Mock, patch
 
 from agents.file_agent import FileAgent
 from agents.supervisor import AGENT_FILE_OP, AGENT_PC_CONTROL
+import core.database as database_module
 from core.database import DatabaseManager
 from core.router import APIManager
 from gui.chat_tab import ChatTab
 from gui.live_feed import LiveFeedWidget
+from gui.settings_tab import SettingsTab
 
 
 class FakeResponse:
@@ -90,6 +92,161 @@ class DatabaseAssignmentTests(unittest.TestCase):
                 db.close()
 
 
+class DatabaseRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_instance = database_module._db_instance
+        database_module._db_instance = None
+
+    def tearDown(self):
+        current_instance = database_module._db_instance
+        if current_instance is not None and current_instance is not self.previous_instance:
+            current_instance.close()
+        database_module._db_instance = self.previous_instance
+
+    def make_rotated_database(self, tmp):
+        db_path = os.path.join(tmp, "providers.db")
+        first_key = os.path.join(tmp, "first.key")
+        rotated_key = os.path.join(tmp, "rotated.key")
+        original = DatabaseManager(db_path=db_path, key_path=first_key)
+        original.add_provider(
+            "Recoverable", "https://recoverable.example/v1", "original-secret",
+            model_name="recoverable-model", assigned_agent="Foldy",
+        )
+        original.close()
+        return DatabaseManager(db_path=db_path, key_path=rotated_key)
+
+    def test_rotated_key_is_recoverable_and_never_routed(self):
+        with tempfile.TemporaryDirectory(prefix="steward_key_rotation_") as tmp:
+            db = self.make_rotated_database(tmp)
+            try:
+                self.assertEqual(db.get_active_providers(), [])
+                providers = db.get_all_providers()
+                self.assertEqual(len(providers), 1)
+                self.assertIsNone(providers[0]["api_key"])
+                self.assertIn("secret.key", providers[0]["decryption_error"])
+                self.assertIsNone(db.get_provider("Recoverable")["api_key"])
+                with patch("core.router.get_db", return_value=db):
+                    with patch("core.router.requests.post") as post:
+                        with self.assertRaisesRegex(RuntimeError, "secret.key"):
+                            APIManager().route_request([], agent_name="Foldy")
+                post.assert_not_called()
+            finally:
+                db.close()
+
+    def test_provider_list_renders_rotated_key_as_recoverable(self):
+        with tempfile.TemporaryDirectory(prefix="steward_key_rotation_ui_") as tmp:
+            db = self.make_rotated_database(tmp)
+            tab = SettingsTab.__new__(SettingsTab)
+            tab._is_alive = Mock(return_value=True)
+            tab.provider_list = Mock()
+            tab.provider_list.winfo_children.return_value = []
+            tab._pending_activations = set()
+            try:
+                with patch("gui.settings_tab.get_db", return_value=db):
+                    with patch("gui.settings_tab.ctk.CTkFrame") as frame:
+                        with patch("gui.settings_tab.ctk.CTkLabel") as label:
+                            with patch("gui.settings_tab.ctk.CTkButton"):
+                                tab.refresh_provider_list()
+                frame.assert_called_once()
+                label_text = [
+                    call.kwargs.get("text", "") for call in label.call_args_list
+                ]
+                self.assertTrue(any("Key unavailable" in text for text in label_text))
+                self.assertFalse(any("Error loading DB" in text for text in label_text))
+            finally:
+                db.close()
+
+    def test_init_db_honors_changed_key_path(self):
+        with tempfile.TemporaryDirectory(prefix="steward_init_key_") as tmp:
+            db_path = os.path.join(tmp, "providers.db")
+            first = database_module.init_db(
+                db_path=db_path, key_path=os.path.join(tmp, "first.key"), force_new=True
+            )
+            second = database_module.init_db(
+                db_path=db_path, key_path=os.path.join(tmp, "second.key")
+            )
+            try:
+                self.assertIsNot(second, first)
+                self.assertEqual(second.key_path, os.path.join(tmp, "second.key"))
+            finally:
+                second.close()
+
+    def test_close_clears_singleton(self):
+        with tempfile.TemporaryDirectory(prefix="steward_close_db_") as tmp:
+            db = database_module.init_db(
+                db_path=os.path.join(tmp, "providers.db"),
+                key_path=os.path.join(tmp, "test.key"),
+                force_new=True,
+            )
+            db.close()
+            self.assertIsNone(database_module._db_instance)
+            with self.assertRaisesRegex(RuntimeError, "Database not initialized"):
+                database_module.get_db()
+
+
+class SettingsAssignmentTests(unittest.TestCase):
+    def test_agent_choices_include_click(self):
+        self.assertIn("Click", SettingsTab.AGENT_CHOICES)
+
+    def make_settings(self, db, name="BoundProvider"):
+        tab = SettingsTab.__new__(SettingsTab)
+        tab._is_alive = Mock(return_value=True)
+        tab.verify_btn = Mock()
+        tab.status_label = Mock()
+        tab.assigned_agent_menu = Mock()
+        tab.assigned_agent_menu.get.return_value = "Any"
+        tab._assignment_dirty = False
+        tab.refresh_provider_list = Mock()
+        tab.name_entry = Mock()
+        tab.name_entry.get.return_value = name
+        self.db_patcher = patch("gui.settings_tab.get_db", return_value=db)
+        self.db_patcher.start()
+        self.addCleanup(self.db_patcher.stop)
+        return tab
+
+    def test_reverification_preserves_untouched_agent_binding(self):
+        with tempfile.TemporaryDirectory(prefix="steward_reverify_") as tmp:
+            db = DatabaseManager(
+                db_path=os.path.join(tmp, "providers.db"),
+                key_path=os.path.join(tmp, "test.key"),
+            )
+            try:
+                db.add_provider(
+                    "BoundProvider", "https://bound.example/v1", "old-key",
+                    model_name="old-model", assigned_agent="Foldy",
+                )
+                tab = self.make_settings(db)
+                result = SimpleNamespace(
+                    status="healthy", success=True, error=None, speed_ms=10,
+                    intel_tier="Tier 2: Standard", supports_tools=True,
+                )
+                tab._on_validation_complete(
+                    result, "BoundProvider", "https://bound.example/v1",
+                    "new-key", "new-model",
+                )
+                self.assertEqual(db.get_provider("BoundProvider")["assigned_agent"], "Foldy")
+            finally:
+                db.close()
+
+    def test_existing_provider_name_populates_agent_binding(self):
+        with tempfile.TemporaryDirectory(prefix="steward_assignment_form_") as tmp:
+            db = DatabaseManager(
+                db_path=os.path.join(tmp, "providers.db"),
+                key_path=os.path.join(tmp, "test.key"),
+            )
+            try:
+                db.add_provider(
+                    "BoundProvider", "https://bound.example/v1", "key",
+                    assigned_agent="Foldy",
+                )
+                tab = self.make_settings(db)
+                tab._sync_assignment_to_existing_provider()
+                tab.assigned_agent_menu.set.assert_called_once_with("Foldy")
+                self.assertFalse(tab._assignment_dirty)
+            finally:
+                db.close()
+
+
 class RouterAssignmentTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="steward_router_test_")
@@ -129,6 +286,27 @@ class RouterAssignmentTests(unittest.TestCase):
             self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer shared")
             self.assertEqual(shared_result["_steward"]["provider"], "Shared")
 
+    def test_click_binding_and_short_tier_match_stored_label(self):
+        db = self.db
+        db.add_provider(
+            name="ClickBrain", base_url="https://click.example/v1", api_key="click-key",
+            model_name="click-model", assigned_agent="Click", speed_score_ms=10,
+            intelligence_tier="Tier 1: Genius",
+        )
+        db.add_provider(
+            name="WrongTier", base_url="https://wrong.example/v1", api_key="wrong-key",
+            model_name="wrong-model", assigned_agent="Click", speed_score_ms=1,
+            intelligence_tier="Tier 3: Fast",
+        )
+        with patch("core.router.requests.post", return_value=FakeResponse(
+            payload=success_payload()
+        )) as post:
+            result = self.manager.route_request(
+                [], agent_name="Click", required_tier="Tier 1"
+            )
+        post.assert_called_once()
+        self.assertEqual(result["_steward"]["provider"], "ClickBrain")
+
     def test_429_immediately_uses_another_key_on_same_endpoint(self):
         endpoint = "https://same.example/v1"
         first_id = self.add_provider("First", endpoint, "key-1", 1, "Foldy")
@@ -156,6 +334,29 @@ class RouterAssignmentTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual({row["provider_id"]: row["requests_used"] for row in usage},
                          {first_id: 1, second_id: 1})
+
+    def test_429_failover_attempts_each_provider_once(self):
+        endpoint = "https://same.example/v1"
+        self.add_provider("First", endpoint, "key-1", 1, "Foldy")
+        self.add_provider("Second", endpoint + "/", "key-2", 3, "Foldy")
+        self.add_provider("Other", "https://other.example/v1", "other", 2, "Foldy")
+        responses = [
+            FakeResponse(status_code=429, payload={"error": "limited"}),
+            FakeResponse(status_code=503, payload={"error": "unavailable"}),
+            FakeResponse(payload=success_payload()),
+        ]
+        with patch("core.router.requests.post", side_effect=responses) as post:
+            result = self.manager.route_request([], agent_name="Foldy")
+
+        attempted_keys = [
+            call.kwargs["headers"]["Authorization"]
+            for call in post.call_args_list
+        ]
+        self.assertEqual(attempted_keys, ["Bearer key-1", "Bearer key-2", "Bearer other"])
+        self.assertEqual(len(attempted_keys), len(set(attempted_keys)))
+        self.assertEqual(result["_steward"]["provider"], "Other")
+        failovers = result["_steward"]["failovers"]
+        self.assertEqual(len(failovers), len({item["failed_provider"] for item in failovers}))
 
     def test_5xx_reports_failed_and_fallback_providers(self):
         self.add_provider("Primary", "https://primary.example/v1", "primary", 1, "Cortex")
@@ -196,7 +397,7 @@ class ImmutablePlanTests(unittest.TestCase):
                 preview = agent.run("move approved.txt", dry_run=True)
                 self.assertIn("approved.txt", preview)
                 move_file.assert_not_called()
-                plan_id = agent._pending_plan_id
+                plan_id = agent.get_pending_plan_id()
                 self.assertIsNotNone(plan_id)
 
                 # Mutating the original provider response must not alter approval.
@@ -321,6 +522,7 @@ class ProviderVisualizationTests(unittest.TestCase):
             provider_callback=Mock(),
             live_feed=Mock(),
             after=Mock(side_effect=lambda delay, callback: callback()),
+            _safe_after=Mock(side_effect=lambda callback: chat.after(0, callback)),
         )
         detail = ChatTab._report_provider(chat, "Cortex")
 
@@ -659,9 +861,8 @@ class H4PlanIdTests(unittest.TestCase):
             agent._pending_plan = plan_b
             agent._pending_plan_id = "plan-b"
             # Approve the superseded plan A -> refused
-            result = agent.execute_pending_plan("plan-a")
-            self.assertIn("Error", result)
-            self.assertIn("plan-a", result)
+            with self.assertRaisesRegex(RuntimeError, "plan-a"):
+                agent.execute_pending_plan("plan-a")
             # Plan B is still pending
             self.assertEqual(agent._pending_plan_id, "plan-b")
 
@@ -701,11 +902,25 @@ class H4PlanIdTests(unittest.TestCase):
                             with self.assertRaises(TypeError):
                                 agent.execute_pending_plan()
                         else:
-                            result = agent.execute_pending_plan(supplied_id)
-                            self.assertIn("Error", result)
+                            with self.assertRaises(RuntimeError):
+                                agent.execute_pending_plan(supplied_id)
                     mock_fn.assert_not_called()
                     self.assertEqual(agent._pending_plan_id, "expected-plan")
                     self.assertIsNotNone(agent._pending_plan)
+
+    def test_plan_refusal_contract_is_uniform(self):
+        with tempfile.TemporaryDirectory(prefix="steward_n4_contract_") as tmp:
+            agent = self.make_agent(tmp)
+            agent._pending_plan = []
+            agent._pending_plan_id = "current-plan"
+            for supplied_id in (None, "stale-plan", "wrong-plan"):
+                with self.subTest(supplied_id=supplied_id):
+                    with self.assertRaises(RuntimeError):
+                        agent.execute_pending_plan(supplied_id)
+                    self.assertEqual(agent._pending_plan_id, "current-plan")
+            agent.discard_pending_plan()
+            with self.assertRaisesRegex(RuntimeError, "No previewed execution plan"):
+                agent.execute_pending_plan("current-plan")
 
 
 class H2ApprovedReadTests(unittest.TestCase):
@@ -771,6 +986,8 @@ class ChatWorkflowTests(unittest.TestCase):
 
     def make_chat(self, routing=None, route_error=None):
         chat = ChatTab.__new__(ChatTab)
+        chat._processing = False
+        chat.winfo_exists = Mock(return_value=True)
         chat.chat_entry = Mock()
         chat.chat_entry.get.return_value = "organize this"
         chat.send_btn = Mock()
@@ -798,6 +1015,51 @@ class ChatWorkflowTests(unittest.TestCase):
         ]
         self.assertTrue(bind_calls)
         self.assertTrue(callable(bind_calls[-1].args[1]))
+
+    def test_send_chat_rejects_reentry_until_deferred_restore(self):
+        chat, callbacks = self.make_chat(
+            routing={"agent": AGENT_PC_CONTROL, "action": "open editor"}
+        )
+
+        class QueuedThread:
+            instances = []
+
+            def __init__(self, target, daemon):
+                self.target = target
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+        with patch("gui.chat_tab.threading.Thread", QueuedThread):
+            chat.send_chat()
+            chat.send_chat()
+            self.assertEqual(len(QueuedThread.instances), 1)
+            chat.supervisor.route.assert_not_called()
+
+            QueuedThread.instances[0].target()
+            for callback in callbacks:
+                callback()
+            self.assertFalse(chat._processing)
+
+            chat.send_chat()
+            self.assertEqual(len(QueuedThread.instances), 2)
+
+    def test_destroyed_widget_skips_worker_callbacks_without_raising(self):
+        chat, callbacks = self.make_chat(
+            routing={"agent": AGENT_PC_CONTROL, "action": "open editor"}
+        )
+        chat.winfo_exists.return_value = False
+        chat.after = Mock(side_effect=RuntimeError("main thread is not in main loop"))
+        callback = Mock()
+
+        chat._safe_after(callback)
+        with patch("gui.chat_tab.threading.Thread", self.ImmediateThread):
+            chat.send_chat()
+
+        callback.assert_not_called()
+        chat.after.assert_not_called()
+        self.assertEqual(callbacks, [])
 
     def test_non_file_route_restores_input_in_finally(self):
         chat, callbacks = self.make_chat(
@@ -835,7 +1097,7 @@ class ChatWorkflowTests(unittest.TestCase):
         )
 
         def preview(*args, **kwargs):
-            chat.file_agent._pending_plan_id = "preview-plan-id"
+            chat.file_agent.get_pending_plan_id.return_value = "preview-plan-id"
             return "Preview ready"
 
         chat.file_agent.run.side_effect = preview
@@ -848,7 +1110,7 @@ class ChatWorkflowTests(unittest.TestCase):
 
         def approve(*args, **kwargs):
             # A later preview must not change what this approval executes.
-            chat.file_agent._pending_plan_id = "superseded-plan-id"
+            chat.file_agent.get_pending_plan_id.return_value = "superseded-plan-id"
             return True
 
         chat.after.side_effect = schedule

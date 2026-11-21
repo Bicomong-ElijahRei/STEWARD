@@ -35,7 +35,7 @@ class APIManager:
             for provider in providers
             if self._matches_agent(provider, agent_name)
             and not self._is_cooling_down(provider.get("cooldown_until"), now)
-            and (required_tier is None or provider.get("intelligence_tier") == required_tier)
+            and self._matches_tier(provider.get("intelligence_tier"), required_tier)
             and (not require_tools or bool(provider.get("supports_tools")))
         ]
         eligible.sort(key=self._speed_score)
@@ -52,7 +52,7 @@ class APIManager:
                 for provider in providers
                 if self._matches_agent(provider, agent_name)
                 and not self._is_cooling_down(provider.get("cooldown_until"), now)
-                and (required_tier is None or provider.get("intelligence_tier") == required_tier)
+                and self._matches_tier(provider.get("intelligence_tier"), required_tier)
             ]
             fallback_eligible.sort(key=self._speed_score)
             cloud_fallback = [p for p in fallback_eligible if not p.get("is_local")]
@@ -60,23 +60,35 @@ class APIManager:
             candidates = cloud_fallback + local_fallback[:1]
 
         provider_chain = []
-        last_error = "No active providers match the requested capabilities."
+        decryption_errors = getattr(db, "decryption_errors", {})
+        if decryption_errors:
+            last_error = (
+                "Credential recovery required for "
+                + ", ".join(decryption_errors)
+                + ": "
+                + next(iter(decryption_errors.values()))
+            )
+        else:
+            last_error = "No active providers match the requested capabilities."
         preferred_endpoint = None
 
         for index, provider in enumerate(candidates):
+            if self._is_cooling_down(provider.get("cooldown_until"), datetime.now()):
+                continue
             if preferred_endpoint is not None:
                 # A 429 applies to one key, not necessarily its whole endpoint.
-                # Try another eligible key for that endpoint before other fallbacks.
-                same_endpoint = next(
+                # Promote another eligible key without dropping or repeating a candidate.
+                same_endpoint_index = next(
                     (
-                        candidate
-                        for candidate in candidates[index:]
-                        if self._same_endpoint(candidate, preferred_endpoint)
+                        candidate_index
+                        for candidate_index in range(index, len(candidates))
+                        if self._same_endpoint(candidates[candidate_index], preferred_endpoint)
                     ),
                     None,
                 )
-                if same_endpoint is not None:
-                    provider = same_endpoint
+                if same_endpoint_index is not None:
+                    candidates.insert(index, candidates.pop(same_endpoint_index))
+                    provider = candidates[index]
                 preferred_endpoint = None
 
             name = provider.get("name") or provider.get("base_url") or "Unknown"
@@ -104,8 +116,9 @@ class APIManager:
             if status_code == 429:
                 retry_after = self._retry_after_seconds(response.headers.get("Retry-After"))
                 cooldown_until = datetime.now() + timedelta(seconds=retry_after)
+                provider["cooldown_until"] = cooldown_until.isoformat()
                 db.update_provider_fields(
-                    name=provider["name"], cooldown_until=cooldown_until.isoformat()
+                    name=provider["name"], cooldown_until=provider["cooldown_until"]
                 )
                 db.record_usage(provider["id"])
                 preferred_endpoint = provider["base_url"]
@@ -175,6 +188,22 @@ class APIManager:
             error_msg=last_error,
         )
         raise RuntimeError(f"All providers failed. Final error: {last_error}")
+
+    @staticmethod
+    def _matches_tier(provider_tier: Optional[str], required_tier: Optional[str]) -> bool:
+        """Match full validator labels or their short prefix/descriptive name."""
+        if required_tier is None:
+            return True
+        stored = str(provider_tier or "").strip().casefold()
+        requested = str(required_tier).strip().casefold()
+        if not requested:
+            return True
+        prefix, separator, description = stored.partition(":")
+        return requested in {
+            stored,
+            prefix.strip(),
+            description.strip() if separator else "",
+        }
 
     @staticmethod
     def _matches_agent(provider: dict, agent_name: str) -> bool:

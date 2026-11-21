@@ -10,11 +10,14 @@ from core.discovery import start_discovery
 from core.validator import validate_provider, ValidationResult
 
 class SettingsTab(ctk.CTkFrame):
+    AGENT_CHOICES = ("Any", "Cortex", "Foldy", "Click", "Syntax", "Scout")
+
     def __init__(self, parent, legacy_agent=None, main_app=None):
         # We accept legacy_agent to prevent crashes, but we don't use it anymore.
         super().__init__(parent, fg_color="transparent")
         self.main_app = main_app
         self._pending_activations = set()
+        self._assignment_dirty = False
 
         # Title
         self.title = ctk.CTkLabel(
@@ -35,6 +38,9 @@ class SettingsTab(ctk.CTkFrame):
 
         # Inputs
         self.name_entry = self._create_input("Provider Name (e.g., Gemini)")
+        self.name_entry.bind(
+            "<FocusOut>", lambda event: self._sync_assignment_to_existing_provider()
+        )
         self.url_entry = self._create_input("Base URL (e.g., https://generativelanguage.googleapis.com/v1beta/openai)")
         self.model_entry = self._create_input("Model Name (e.g., gemini-1.5-flash)")
         
@@ -50,7 +56,8 @@ class SettingsTab(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 12))
         self.assigned_agent_menu = ctk.CTkOptionMenu(
             assignment_row,
-            values=["Any", "Cortex", "Foldy", "Syntax", "Scout"],
+            values=list(self.AGENT_CHOICES),
+            command=self._on_assignment_menu_changed,
             fg_color=NEON_PURPLE,
             button_color=NEON_PURPLE,
             button_hover_color="#9A6CE6",
@@ -114,6 +121,19 @@ class SettingsTab(ctk.CTkFrame):
         entry.pack(anchor="w", padx=20, pady=5)
         return entry
 
+    def _on_assignment_menu_changed(self, _value):
+        self._assignment_dirty = True
+
+    def _sync_assignment_to_existing_provider(self, _event=None):
+        """Reflect an existing provider's binding when its name is entered."""
+        name = self.name_entry.get().strip()
+        if not name:
+            return
+        provider = get_db().get_provider(name)
+        if provider is not None:
+            self.assigned_agent_menu.set(provider.get("assigned_agent") or "Any")
+            self._assignment_dirty = False
+
     def _start_verification(self):
         name = self.name_entry.get().strip()
         url = self.url_entry.get().strip()
@@ -165,6 +185,10 @@ class SettingsTab(ctk.CTkFrame):
             speed_score = result.speed_ms if result.speed_ms is not None else 9999
             intelligence_tier = result.intel_tier or "Unknown"
             supports_tools = bool(result.supports_tools)
+            existing_provider = db.get_provider(name)
+            assigned_agent = self.assigned_agent_menu.get()
+            if existing_provider is not None and not self._assignment_dirty:
+                assigned_agent = existing_provider.get("assigned_agent") or "Any"
             db.add_provider(
                 name=name, 
                 base_url=url, 
@@ -175,7 +199,7 @@ class SettingsTab(ctk.CTkFrame):
                 speed_score_ms=speed_score,
                 intelligence_tier=intelligence_tier,
                 supports_tools=supports_tools,
-                assigned_agent=self.assigned_agent_menu.get(),
+                assigned_agent=assigned_agent,
             )
             db.update_provider_fields(
                 name, is_active=1, cooldown_until=None, failure_count=0
@@ -241,6 +265,8 @@ class SettingsTab(ctk.CTkFrame):
 
     @staticmethod
     def _provider_status_dot(provider) -> str:
+        if provider.get("decryption_error"):
+            return "🟡"
         if provider.get("is_local", False):
             return "🟣"
         if not provider.get("is_active", False):
@@ -280,7 +306,9 @@ class SettingsTab(ctk.CTkFrame):
                 )
                 dot.pack(side="left", padx=10, pady=10)
 
-                if is_local:
+                if p.get("decryption_error"):
+                    status_text = " [Key unavailable: restore secret.key or re-enter API key]"
+                elif is_local:
                     status_text = " [Local]" if is_active else " [Local, Disabled]"
                 elif not is_active:
                     status_text = " [Disabled]"

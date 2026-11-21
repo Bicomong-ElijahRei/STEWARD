@@ -40,6 +40,7 @@ class ChatTab(ctk.CTkFrame):
         self.file_agent = file_agent
         self.live_feed = live_feed
         self.provider_callback = provider_callback
+        self._processing = False
         self.build()
 
     def build(self):
@@ -122,10 +123,32 @@ class ChatTab(ctk.CTkFrame):
         )
         self.send_btn.pack(side="right")
 
+    def _is_alive(self):
+        try:
+            return bool(self.winfo_exists())
+        except Exception:
+            return False
+
+    def _safe_after(self, callback):
+        """Schedule on Tk only while this tab still exists."""
+        if not self._is_alive():
+            return
+        try:
+            self.after(0, callback)
+        except Exception:
+            pass
+
+    def _restore_return_key(self):
+        self.chat_entry.bind("<Return>", lambda e: self.send_chat())
+        self._processing = False
+
     def send_chat(self):
+        if self._processing:
+            return
         user_msg = self.chat_entry.get().strip()
         if not user_msg:
             return
+        self._processing = True
         self.chat_entry.delete(0, "end")
         self._add_bubble("You", user_msg, TEXT_BRIGHT, align="right")
         # Prevent concurrent submissions while a preview/approval is in flight.
@@ -142,18 +165,18 @@ class ChatTab(ctk.CTkFrame):
                 agent_name = AGENT_ROUTING_KEYS.get(agent_type, "Cortex")
                 color = AGENT_CONFIG.get(agent_name, {}).get("color", TEXT_MUTED)
 
-                self.after(0, lambda: self._add_bubble(
+                self._safe_after(lambda: self._add_bubble(
                     "STEWARD", f"[{agent_name}] Routing: {action}",
                     color, align="left",
                 ))
 
                 if self.live_feed:
-                    self.after(0, lambda: self.live_feed.agent_working(
+                    self._safe_after(lambda: self.live_feed.agent_working(
                         agent_name, f"Routing: {action}"
                     ))
 
                 if agent_type == AGENT_FILE_OP:
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD", "[Foldy] Generating dry-run preview…",
                         NEON_CYAN, align="left",
                     ))
@@ -168,24 +191,24 @@ class ChatTab(ctk.CTkFrame):
                                 f"The agent wants to execute:\n{preview}\n\nExecute?",
                             )
                             evt.set()
-                        self.after(0, ask)
+                        self._safe_after(ask)
                         evt.wait()
                         return user_choice[0]
 
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
-                    self._pending_plan_id = self.file_agent._pending_plan_id
+                    self._pending_plan_id = self.file_agent.get_pending_plan_id()
                     foldy_detail = self._report_provider("Foldy")
                     preview_message = preview_result
                     if foldy_detail:
                         preview_message += f"\n\nHandled by {foldy_detail}"
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD", preview_message, NEON_CYAN, align="left",
                     ))
 
                     if self.live_feed:
-                        self.after(0, lambda: self.live_feed.agent_done(
+                        self._safe_after(lambda: self.live_feed.agent_done(
                             "Foldy", foldy_detail or "Dry-run preview generated"
                         ))
 
@@ -197,72 +220,73 @@ class ChatTab(ctk.CTkFrame):
                             "The above is a dry-run preview.\nExecute these operations?",
                         )
                         exec_evt.set()
-                    self.after(0, ask_exec)
+                    self._safe_after(ask_exec)
                     exec_evt.wait()
 
                     if exec_choice[0]:
-                        exec_result = self.file_agent.execute_pending_plan(
-                            self._pending_plan_id
-                        )
-                        self.after(0, lambda: self._add_bubble(
+                        try:
+                            exec_result = self.file_agent.execute_pending_plan(
+                                self._pending_plan_id
+                            )
+                        except Exception as exc:
+                            exec_result = f"Error: {exc}"
+                        self._safe_after(lambda: self._add_bubble(
                             "STEWARD", exec_result, NEON_CYAN, align="left",
                         ))
                         if self.live_feed:
-                            self.after(0, lambda: self.live_feed.agent_done(
+                            self._safe_after(lambda: self.live_feed.agent_done(
                                 "Foldy", foldy_detail or "Operations executed"
                             ))
                     else:
                         self.file_agent.discard_pending_plan()
-                        self.after(0, lambda: self._add_bubble(
+                        self._safe_after(lambda: self._add_bubble(
                             "STEWARD", "Execution cancelled by user.",
                             TEXT_MUTED, align="left",
                         ))
 
                 elif agent_type == AGENT_PC_CONTROL:
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD",
                         f"[Click] PC control requested: {action}\n(Coming soon)",
                         NEON_LIME, align="left",
                     ))
                     if self.live_feed:
-                        self.after(0, lambda: self.live_feed.agent_done("Click"))
+                        self._safe_after(lambda: self.live_feed.agent_done("Click"))
                 elif agent_type == AGENT_RAG:
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD",
                         f"[Scout] Semantic search: {action}\n(Coming soon)",
                         NEON_BLUE, align="left",
                     ))
                     if self.live_feed:
-                        self.after(0, lambda: self.live_feed.agent_done("Scout"))
+                        self._safe_after(lambda: self.live_feed.agent_done("Scout"))
                 elif agent_type == AGENT_CODING:
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD",
                         f"[Syntax] Coding task: {action}\n(Coming soon)",
                         NEON_ORANGE, align="left",
                     ))
                     if self.live_feed:
-                        self.after(0, lambda: self.live_feed.agent_done("Syntax"))
+                        self._safe_after(lambda: self.live_feed.agent_done("Syntax"))
                 else:
-                    self.after(0, lambda: self._add_bubble(
+                    self._safe_after(lambda: self._add_bubble(
                         "STEWARD",
                         f"[Cortex] I'm not sure how to help with: {user_msg}",
                         NEON_PURPLE, align="left",
                     ))
                     if self.live_feed:
-                        self.after(0, lambda: self.live_feed.agent_done("Cortex"))
+                        self._safe_after(lambda: self.live_feed.agent_done("Cortex"))
 
             except Exception as e:
                 logger.error(f"Chat processing error: {e}")
-                self.after(0, lambda e=e: self._add_bubble(
+                self._safe_after(lambda e=e: self._add_bubble(
                     "STEWARD", f"Error: {e}", "#FF5555", align="left",
                 ))
             finally:
                 # Always re-enable input once preview/approval is complete,
                 # regardless of which agent branch ran or whether it errored.
-                self.after(0, lambda: self.send_btn.configure(state="normal"))
-                self.after(0, lambda: self.chat_entry.bind(
-                    "<Return>", lambda e: self.send_chat()
-                ))
+                self._safe_after(lambda: self.send_btn.configure(state="normal"))
+                self._safe_after(self._restore_return_key)
 
         threading.Thread(target=process, daemon=True).start()
 
@@ -280,8 +304,7 @@ class ChatTab(ctk.CTkFrame):
             for failover in provider_info.get("failovers", []):
                 failed = failover.get("failed_provider", "Unknown")
                 fallback = failover.get("fallback_provider", "Unknown")
-                self.after(
-                    0,
+                self._safe_after(
                     lambda failed=failed, fallback=fallback:
                     self.live_feed.provider_failover(failed, fallback),
                 )
