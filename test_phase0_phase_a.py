@@ -1126,6 +1126,94 @@ class ChatWorkflowTests(unittest.TestCase):
                 callback()
         self.assert_input_restored(chat)
 
+class Batch2BTests(unittest.TestCase):
+    def make_agent(self, root):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(api_manager=Mock(), root_path=root)
+        agent.OPERATION_LOG_PATH = log_path
+        return agent
 
+    def test_delete_entry_skipped_and_never_marked_undone(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            incoming = os.path.join(tmp, "Incoming"); os.makedirs(incoming)
+            sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(sorted_dir)
+            src = os.path.join(incoming, "a.txt")
+            with open(src, "w", encoding="utf-8") as fh: fh.write("x")
+            agent = self.make_agent(tmp)
+            agent.move_file(src, os.path.join(sorted_dir, "a.txt"))
+            agent._operation_log.append({
+                "id": "d", "timestamp": "d", "operation": "delete",
+                "source": src, "destination": None, "result": "",
+                "success": True, "undone": False})
+            result = agent.undo_last()
+            self.assertIn("Undid move", result)
+            self.assertFalse(agent._operation_log[-1]["undone"])
+            self.assertTrue(agent._operation_log[0]["undone"])
+
+    def test_delete_only_log_reports_limitation(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            agent = self.make_agent(tmp)
+            agent._operation_log.append({
+                "id": "d", "timestamp": "d", "operation": "delete",
+                "source": "Incoming/gone.txt", "destination": None,
+                "result": "", "success": True, "undone": False})
+            result = agent.undo_last()
+            self.assertIn("Cannot undo delete", result)
+            self.assertFalse(agent._operation_log[0]["undone"])
+
+    def test_redo_replays_in_original_order(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            incoming = os.path.join(tmp, "Incoming"); os.makedirs(incoming)
+            sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(sorted_dir)
+            a, b = os.path.join(incoming, "a.txt"), os.path.join(incoming, "b.txt")
+            for p in (a, b):
+                with open(p, "w", encoding="utf-8") as fh: fh.write("x")
+            agent = self.make_agent(tmp)
+            agent.move_file(a, os.path.join(sorted_dir, "a.txt"))
+            agent.move_file(b, os.path.join(sorted_dir, "b.txt"))
+            agent.undo_last(); agent.undo_last()
+            agent.redo_last()
+            self.assertTrue(os.path.exists(os.path.join(sorted_dir, "a.txt")))
+            self.assertFalse(os.path.exists(os.path.join(sorted_dir, "b.txt")))
+
+    def test_undo_refuses_collision(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            incoming = os.path.join(tmp, "Incoming"); os.makedirs(incoming)
+            sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(sorted_dir)
+            s, d = os.path.join(incoming, "a.txt"), os.path.join(sorted_dir, "a.txt")
+            for p in (s, d):
+                with open(p, "w", encoding="utf-8") as fh: fh.write("keep")
+            agent = self.make_agent(tmp)
+            agent._operation_log.append({
+                "id": "m", "timestamp": "m", "operation": "move",
+                "source": s, "destination": d, "result": "",
+                "success": True, "undone": False})
+            result = agent.undo_last()
+            self.assertIn("refusing to overwrite", result)
+            self.assertFalse(agent._operation_log[0]["undone"])
+            self.assertTrue(os.path.exists(s) and os.path.exists(d))
+
+    def test_corrupt_log_loads_empty(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            with open(os.path.join(tmp, "operations.json"), "w") as fh:
+                fh.write("{not a list")
+            agent = self.make_agent(tmp)
+            self.assertEqual(agent._operation_log, [])
+
+    def test_preview_flags_doomed_plan_without_executing(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            agent = self.make_agent(tmp)
+            plan = [{"function": {"name": "cleanup_temp_files",
+                                  "arguments": {"directory": os.path.join(tmp, "Incoming")}}}]
+            results = agent._execute_tool_plan(plan, dry_run=True)
+            self.assertIn("WILL BE REJECTED", "\n".join(results))
+
+    def test_undo_redo_absent_from_declared_schema(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
+            agent = self.make_agent(tmp)
+            names = {t["function"]["name"] for t in agent._get_tool_definitions()}
+            self.assertNotIn("undo_last", names)
+            self.assertNotIn("redo_last", names)
 if __name__ == "__main__":
     unittest.main()

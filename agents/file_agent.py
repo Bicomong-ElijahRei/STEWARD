@@ -91,8 +91,6 @@ AVAILABLE TOOLS:
 - list_directory(directory): List files and folders
 - read_file_content(file_path): Read file content (.txt, .pdf, .docx, .xlsx)
 - get_file_info(file_path): Get file size and modification time
-- undo_last(): Undo the most recent file operation
-- redo_last(): Redo the most recent undone operation
 
 When the user asks to organize files:
 1. Use list_directory to discover what exists
@@ -159,15 +157,22 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         if os.path.exists(self.OPERATION_LOG_PATH):
             try:
                 with open(self.OPERATION_LOG_PATH, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return [e for e in data if isinstance(e, dict)]
+                logger.warning("Operation log is not a list; starting fresh.")
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning(f"Could not load operation log: {e}")
         return []
 
     def _save_operation_log(self):
+        tmp_path = self.OPERATION_LOG_PATH + ".tmp"
         try:
-            with open(self.OPERATION_LOG_PATH, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._operation_log, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.OPERATION_LOG_PATH)
         except IOError as e:
             logger.error(f"Could not save operation log: {e}")
 
@@ -195,87 +200,112 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
     def undo_last(self) -> str:
         with self._lock:
+            saw_delete = False
             for entry in reversed(self._operation_log):
-                if not entry.get("undone", False) and entry.get("success", False):
-                    operation = entry["operation"]
-                    source = entry["source"]
-                    destination = entry.get("destination")
-                    try:
-                        if operation == "move" and destination:
-                            safe_args = self._validate_mutation(
-                                "move_file", {"source": source, "destination": destination}
-                            )
-                            shutil.move(safe_args["destination"], safe_args["source"])
-                            result = f"Undid move: '{destination}' → '{source}'"
-                        elif operation == "rename" and destination:
-                            safe_args = self._validate_mutation(
-                                "rename_file", {"old_path": source, "new_name": destination}
-                            )
-                            new_path = os.path.join(
-                                os.path.dirname(safe_args["old_path"]), safe_args["new_name"]
-                            )
-                            os.rename(new_path, safe_args["old_path"])
-                            result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
-                        elif operation == "delete":
-                            result = "Cannot undo delete (sent to recycle bin)"
-                        elif operation == "create_folder":
-                            safe_args = self._validate_mutation(
-                                "create_folder", {"path": source}
-                            )
-                            source = safe_args["path"]
-                            if os.path.exists(source) and os.path.isdir(source):
-                                try:
-                                    os.rmdir(source)
-                                    result = f"Undid create_folder: removed '{source}'"
-                                except OSError:
-                                    result = f"Could not remove '{source}' (not empty)"
-                            else:
-                                result = f"Folder '{source}' no longer exists"
+                if entry.get("undone", False) or not entry.get("success", False):
+                    continue
+                operation = entry["operation"]
+                if operation == "delete":
+                    saw_delete = True
+                    continue
+                if operation not in ("move", "rename", "create_folder"):
+                    continue
+                source = entry["source"]
+                destination = entry.get("destination")
+                try:
+                    if operation == "move":
+                        safe = self._validate_mutation(
+                            "move_file", {"source": source, "destination": destination}
+                        )
+                        src, dst = safe["source"], safe["destination"]
+                        if not os.path.exists(dst):
+                            return f"Undo failed: '{dst}' no longer exists"
+                        if os.path.exists(src):
+                            return f"Undo failed: refusing to overwrite existing '{src}'"
+                        shutil.move(dst, src)
+                        result = f"Undid move: '{destination}' → '{source}'"
+                    elif operation == "rename":
+                        if not destination:
+                            continue
+                        safe = self._validate_mutation(
+                            "rename_file", {"old_path": source, "new_name": destination}
+                        )
+                        new_path = os.path.join(
+                            os.path.dirname(safe["old_path"]), safe["new_name"]
+                        )
+                        if not os.path.exists(new_path):
+                            return f"Undo failed: '{new_path}' no longer exists"
+                        if os.path.exists(safe["old_path"]):
+                            return f"Undo failed: refusing to overwrite existing '{safe['old_path']}'"
+                        os.rename(new_path, safe["old_path"])
+                        result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
+                    else:
+                        safe = self._validate_mutation("create_folder", {"path": source})
+                        if os.path.exists(safe["path"]) and os.path.isdir(safe["path"]):
+                            try:
+                                os.rmdir(safe["path"])
+                            except OSError:
+                                return f"Could not remove '{safe['path']}' (not empty)"
+                            result = f"Undid create_folder: removed '{safe['path']}'"
                         else:
-                            result = f"Unknown operation type: {operation}"
-                        entry["undone"] = True
-                        self._save_operation_log()
-                        return result
-                    except Exception as e:
-                        return f"Undo failed: {e}"
+                            entry["undone"] = True
+                            self._save_operation_log()
+                            return f"Folder '{safe['path']}' no longer exists"
+                    entry["undone"] = True
+                    self._save_operation_log()
+                    return result
+                except Exception as e:
+                    return f"Undo failed: {e}"
+            if saw_delete:
+                return "Cannot undo delete (sent to recycle bin)"
             return "No operations to undo."
 
     def redo_last(self) -> str:
         with self._lock:
             for entry in self._operation_log:
-                if entry.get("undone", False):
-                    operation = entry["operation"]
-                    source = entry["source"]
-                    destination = entry.get("destination")
-                    try:
-                        if operation == "move" and destination:
-                            safe_args = self._validate_mutation(
-                                "move_file", {"source": source, "destination": destination}
-                            )
-                            shutil.move(safe_args["source"], safe_args["destination"])
-                            result = f"Redid move: '{source}' → '{destination}'"
-                        elif operation == "rename" and destination:
-                            safe_args = self._validate_mutation(
-                                "rename_file", {"old_path": source, "new_name": destination}
-                            )
-                            new_path = os.path.join(
-                                os.path.dirname(safe_args["old_path"]), safe_args["new_name"]
-                            )
-                            os.rename(safe_args["old_path"], new_path)
-                            result = f"Redid rename: '{source}' → '{destination}'"
-                        elif operation == "create_folder":
-                            safe_args = self._validate_mutation(
-                                "create_folder", {"path": source}
-                            )
-                            os.makedirs(safe_args["path"], exist_ok=True)
-                            result = f"Redid create_folder: '{source}'"
-                        else:
-                            result = f"Unknown operation type: {operation}"
-                        entry["undone"] = False
-                        self._save_operation_log()
-                        return result
-                    except Exception as e:
-                        return f"Redo failed: {e}"
+                if not entry.get("undone", False):
+                    continue
+                operation = entry["operation"]
+                if operation not in ("move", "rename", "create_folder"):
+                    continue
+                source = entry["source"]
+                destination = entry.get("destination")
+                try:
+                    if operation == "move":
+                        safe = self._validate_mutation(
+                            "move_file", {"source": source, "destination": destination}
+                        )
+                        src, dst = safe["source"], safe["destination"]
+                        if not os.path.exists(src):
+                            return f"Redo failed: '{src}' no longer exists"
+                        if os.path.exists(dst):
+                            return f"Redo failed: refusing to overwrite existing '{dst}'"
+                        shutil.move(src, dst)
+                        result = f"Redid move: '{source}' → '{destination}'"
+                    elif operation == "rename":
+                        if not destination:
+                            continue
+                        safe = self._validate_mutation(
+                            "rename_file", {"old_path": source, "new_name": destination}
+                        )
+                        new_path = os.path.join(
+                            os.path.dirname(safe["old_path"]), safe["new_name"]
+                        )
+                        if not os.path.exists(safe["old_path"]):
+                            return f"Redo failed: '{safe['old_path']}' no longer exists"
+                        if os.path.exists(new_path):
+                            return f"Redo failed: refusing to overwrite existing '{new_path}'"
+                        os.rename(safe["old_path"], new_path)
+                        result = f"Redid rename: '{source}' → '{destination}'"
+                    else:
+                        safe = self._validate_mutation("create_folder", {"path": source})
+                        os.makedirs(safe["path"], exist_ok=True)
+                        result = f"Redid create_folder: '{source}'"
+                    entry["undone"] = False
+                    self._save_operation_log()
+                    return result
+                except Exception as e:
+                    return f"Redo failed: {e}"
             return "No operations to redo."
 
     # ------------------------------------------------------------------
@@ -421,22 +451,6 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     },
                 },
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "undo_last",
-                    "description": "Undo the most recent file operation",
-                    "parameters": {"type": "object", "properties": {}, "required": []},
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "redo_last",
-                    "description": "Redo the most recent undone operation",
-                    "parameters": {"type": "object", "properties": {}, "required": []},
-                },
-            },
         ]
 
     def run(
@@ -532,7 +546,16 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             function["arguments"] = copy.deepcopy(args)
             parsed_plan.append(parsed_call)
         return parsed_plan
-
+    def _preview_rejection(self, func_name: str, args: Dict[str, Any]) -> Optional[str]:
+        """Report why a previewed tool call would be refused, without executing it."""
+        approved = {t["function"]["name"] for t in self._get_tool_definitions()}
+        if func_name not in approved:
+            return f"Unapproved tool: {func_name}"
+        try:
+            self._validate_mutation(func_name, args)
+        except (OSError, TypeError, ValueError) as exc:
+            return str(exc)
+        return None
     def _execute_tool_plan(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -574,7 +597,11 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             logger.info(preview)
 
             if dry_run:
-                results.append("  → (preview only, not executed)")
+                rejection = self._preview_rejection(func_name, args)
+                if rejection:
+                    results.append(f"  → (preview only) WILL BE REJECTED: {rejection}")
+                else:
+                    results.append("  → (preview only, not executed)")
                 continue
 
             if confirm_callback and not confirm_callback(func_name, args):
