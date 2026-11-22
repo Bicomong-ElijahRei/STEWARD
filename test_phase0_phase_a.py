@@ -14,7 +14,14 @@ from agent.daemon import FileCreationHandler
 from agents.file_agent import FileAgent
 from agents.supervisor import AGENT_FILE_OP, AGENT_PC_CONTROL
 import core.database as database_module
-from core.database import DatabaseManager
+from core.database import (
+    DatabaseManager,
+    normalize_base_url,
+    migrate_to_shared_credentials,
+    rollback_from_shared_credentials,
+    DECRYPTION_ERROR,
+)
+from core.discovery import DiscoveredModel, upsert_discovered_models
 from core.router import APIManager
 from gui.chat_tab import ChatTab
 from gui.live_feed import LiveFeedWidget
@@ -118,6 +125,9 @@ class DatabaseRecoveryTests(unittest.TestCase):
             model_name="recoverable-model", assigned_agent="Foldy",
         )
         original.close()
+        # Write a DIFFERENT key to the rotated path (simulating real rotation)
+        with open(rotated_key, "wb") as f:
+            f.write(Fernet.generate_key())
         return DatabaseManager(db_path=db_path, key_path=rotated_key)
 
     def test_rotated_key_is_recoverable_and_never_routed(self):
@@ -1157,8 +1167,9 @@ class ChatWorkflowTests(unittest.TestCase):
                 self.assertTrue(any("approval dialog timed out; input restored" in m for m in logs.output))
 
         chat.file_agent.discard_pending_plan.assert_called_once()
-        for callback in callbacks:
-            callback()
+        with patch("gui.chat_tab.messagebox.askyesno", return_value=False):
+            for callback in callbacks:
+                callback()
         self.assert_input_restored(chat)
 
 class Batch2BTests(unittest.TestCase):
@@ -1463,6 +1474,340 @@ class Batch3Tests(unittest.TestCase):
     # L3 dead path: on_closing must not exist.
     def test_on_closing_removed(self):
         self.assertFalse(hasattr(StewardGUI, "on_closing"))
+
+
+class CredentialStoreTests(unittest.TestCase):
+    """Tests for shared credential store per docs/credential_store_review.md."""
+
+    def test_url_normalization(self):
+        cases = [
+            ("https://OpenRouter.AI/api/v1/", "https://openrouter.ai/api/v1"),
+            ("http://LOCALHOST:11434/v1/", "http://localhost:11434/v1"),
+            ("  https://api.openai.com/v1  ", "https://api.openai.com/v1"),
+            ("https://generativelanguage.googleapis.com/v1beta/openai/", "https://generativelanguage.googleapis.com/v1beta/openai"),
+            ("https://api.groq.com/openai/v1///", "https://api.groq.com/openai/v1"),
+            ("", ""),
+            (None, ""),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_base_url(raw), expected)
+
+    def test_credential_crud_round_trip(self):
+        with tempfile.TemporaryDirectory(prefix="steward_crud_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            # Create
+            cred_id = db.set_credential("https://api.test.com/v1/", "sk-secret-123", "Test Endpoint")
+            self.assertIsNotNone(cred_id)
+
+            # Read by URL
+            by_url = db.get_credential_by_url("https://api.test.com/v1")
+            self.assertIsNotNone(by_url)
+            self.assertEqual(by_url["api_key"], "sk-secret-123")
+            self.assertEqual(by_url["base_url_normalized"], "https://api.test.com/v1")
+
+            # Read by ID
+            by_id = db.get_credential_by_id(cred_id)
+            self.assertIsNotNone(by_id)
+            self.assertEqual(by_id["api_key"], "sk-secret-123")
+
+            # List all
+            all_creds = db.get_all_credentials()
+            self.assertEqual(len(all_creds), 1)
+            self.assertEqual(all_creds[0]["id"], cred_id)
+
+            # Update
+            db.set_credential("https://api.test.com/v1", "sk-secret-updated")
+            updated = db.get_credential_by_id(cred_id)
+            self.assertEqual(updated["api_key"], "sk-secret-updated")
+
+            # Delete
+            deleted = db.delete_credential(cred_id)
+            self.assertTrue(deleted)
+            self.assertIsNone(db.get_credential_by_id(cred_id))
+            self.assertIsNone(db.get_credential_by_url("https://api.test.com/v1"))
+            db.close()
+
+    def test_dual_read(self):
+        with tempfile.TemporaryDirectory(prefix="steward_dual_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            # 1. Provider with credential_id reads from credentials
+            cred_id = db.set_credential("https://api.endpoint1.com/v1", "key-from-cred", "Endpoint 1")
+            db.add_provider(
+                name="ProviderWithCred",
+                base_url="https://api.endpoint1.com/v1",
+                api_key="key-from-cred",
+                credential_id=cred_id,
+            )
+            p1 = db.get_provider("ProviderWithCred")
+            self.assertEqual(p1["api_key"], "key-from-cred")
+            self.assertEqual(p1["credential_id"], cred_id)
+
+            # 2. Provider with credential_id = NULL reads from legacy api_key_encrypted
+            enc_legacy = db._encrypt("legacy-key-value")
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, credential_id)
+                    VALUES (?, ?, ?, ?, ?, ?, NULL)
+                """, ("LegacyProvider", "https://api.legacy.com/v1", enc_legacy, "m1", 0, 1))
+                db._conn.commit()
+
+            p2 = db.get_provider("LegacyProvider")
+            self.assertIsNone(p2["credential_id"])
+            self.assertEqual(p2["api_key"], "legacy-key-value")
+
+            # 3. Prefer joined credential if credential_id is set
+            db.set_credential("https://api.endpoint1.com/v1", "rotated-key")
+            p1_refreshed = db.get_provider("ProviderWithCred")
+            self.assertEqual(p1_refreshed["api_key"], "rotated-key")
+            db.close()
+
+    def test_migration_idempotency(self):
+        with tempfile.TemporaryDirectory(prefix="steward_mig_idem_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            # Seed synthetic legacy providers with shared endpoints
+            enc1 = db._encrypt("shared-openrouter-key")
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms)
+                    VALUES ('OR-Model-1', 'https://openrouter.ai/api/v1/', ?, 'model-1', 0, 1, 250)
+                """, (enc1,))
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms)
+                    VALUES ('OR-Model-2', 'https://openrouter.ai/api/v1', ?, 'model-2', 0, 1, 300)
+                """, (enc1,))
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active)
+                    VALUES ('Local-Ollama', 'http://localhost:11434/v1', NULL, 'llama3', 1, 1)
+                """)
+                db._conn.commit()
+
+            # First migration run
+            res1 = migrate_to_shared_credentials(db)
+            self.assertGreaterEqual(res1["credentials_created"], 1)
+
+            prov1_first = db.get_provider("OR-Model-1")
+            prov2_first = db.get_provider("OR-Model-2")
+            local_first = db.get_provider("Local-Ollama")
+            self.assertIsNotNone(prov1_first["credential_id"])
+            self.assertEqual(prov1_first["credential_id"], prov2_first["credential_id"])
+            self.assertIsNone(local_first["credential_id"])
+            creds_count_1 = len(db.get_all_credentials())
+
+            # Second migration run (idempotency check)
+            res2 = migrate_to_shared_credentials(db)
+            self.assertEqual(res2["credentials_created"], 0)
+
+            prov1_second = db.get_provider("OR-Model-1")
+            prov2_second = db.get_provider("OR-Model-2")
+            creds_count_2 = len(db.get_all_credentials())
+
+            self.assertEqual(prov1_first["credential_id"], prov1_second["credential_id"])
+            self.assertEqual(prov2_first["credential_id"], prov2_second["credential_id"])
+            self.assertEqual(creds_count_1, creds_count_2)
+            self.assertEqual(prov1_second["api_key"], "shared-openrouter-key")
+            db.close()
+
+    def test_migration_rollback(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rollback_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            enc = db._encrypt("pre-migration-key")
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active)
+                    VALUES ('Provider1', 'https://api.service.com/v1', ?, 'm1', 0, 1)
+                """, (enc,))
+                db._conn.commit()
+
+            # Migrate
+            migrate_to_shared_credentials(db)
+            p_migrated = db.get_provider("Provider1")
+            self.assertIsNotNone(p_migrated["credential_id"])
+            self.assertEqual(p_migrated["api_key"], "pre-migration-key")
+
+            # Rollback
+            res = rollback_from_shared_credentials(db)
+            self.assertEqual(res["providers_restored"], 1)
+
+            p_rolled_back = db.get_provider("Provider1")
+            self.assertIsNone(p_rolled_back["credential_id"])
+            self.assertEqual(p_rolled_back["api_key"], "pre-migration-key")
+
+            # Verify credentials table was NOT dropped
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM credentials")
+                count = cursor.fetchone()[0]
+                self.assertGreaterEqual(count, 1)
+            db.close()
+
+    def test_hostile_corrupt_credential_payload(self):
+        with tempfile.TemporaryDirectory(prefix="steward_corrupt_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            cred_id = db.set_credential("https://api.corrupt.com/v1", "valid-key")
+            db.add_provider(
+                name="CorruptibleProv",
+                base_url="https://api.corrupt.com/v1",
+                api_key="valid-key",
+                credential_id=cred_id,
+                is_active=True,
+            )
+
+            # Corrupt the credential blob
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute(
+                    "UPDATE credentials SET api_key_encrypted = ? WHERE id = ?",
+                    (b"GARBAGE_NOT_FERNET_TOKEN", cred_id),
+                )
+                db._conn.commit()
+
+            # Provider should enter recoverable state, not crash
+            all_provs = db.get_all_providers()
+            prov = next(p for p in all_provs if p["name"] == "CorruptibleProv")
+            self.assertIsNone(prov["api_key"])
+            self.assertEqual(prov["decryption_error"], DECRYPTION_ERROR)
+
+            # Active providers should exclude the corrupted provider
+            active_provs = db.get_active_providers()
+            self.assertNotIn("CorruptibleProv", [p["name"] for p in active_provs])
+            db.close()
+
+    def test_hostile_missing_secret_key_during_migration(self):
+        with tempfile.TemporaryDirectory(prefix="steward_missing_key_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "missing.key")
+
+            # Create an existing database first
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE providers (id INTEGER PRIMARY KEY, name TEXT)")
+            conn.commit()
+            conn.close()
+
+            # Key file is missing while DB exists -> must fail fast
+            with self.assertRaises(RuntimeError) as ctx:
+                DatabaseManager(db_path, key_path)
+            self.assertIn("Refusing to generate a new key", str(ctx.exception))
+            self.assertFalse(os.path.exists(key_path), "secret.key must not be generated!")
+
+    def test_hostile_dangling_credential_id(self):
+        with tempfile.TemporaryDirectory(prefix="steward_dangling_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            # Insert provider pointing to non-existent credential_id
+            # Temporarily disable foreign keys for this hostile setup
+            with db._lock:
+                cursor = db._conn.cursor()
+                cursor.execute("PRAGMA foreign_keys = OFF")
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, credential_id)
+                    VALUES ('DanglingProv', 'https://api.lost.com/v1', NULL, 'm1', 0, 1, 99999)
+                """)
+                db._conn.commit()
+                cursor.execute("PRAGMA foreign_keys = ON")
+
+            prov = db.get_provider("DanglingProv")
+            self.assertIsNotNone(prov)
+            self.assertIsNone(prov["api_key"])
+            self.assertEqual(prov["decryption_error"], "Credential reference missing or unassigned")
+
+            active = db.get_active_providers()
+            self.assertNotIn("DanglingProv", [p["name"] for p in active])
+            db.close()
+
+    def test_hostile_conflicting_duplicate_endpoints(self):
+        with tempfile.TemporaryDirectory(prefix="steward_conflict_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            enc_inactive = db._encrypt("key-inactive-fast")
+            enc_active_slow = db._encrypt("key-active-slow")
+            enc_active_fast = db._encrypt("key-active-fast")
+
+            with db._lock:
+                cursor = db._conn.cursor()
+                # Provider 1: inactive, speed=100
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms)
+                    VALUES ('P1_Inactive', 'https://openrouter.ai/api/v1', ?, 'm1', 0, 0, 100)
+                """, (enc_inactive,))
+                # Provider 2: active, speed=500
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms)
+                    VALUES ('P2_ActiveSlow', 'https://openrouter.ai/api/v1', ?, 'm2', 0, 1, 500)
+                """, (enc_active_slow,))
+                # Provider 3: active, speed=200 -> should WIN
+                cursor.execute("""
+                    INSERT INTO providers (name, base_url, api_key_encrypted, model_name, is_local, is_active, speed_score_ms)
+                    VALUES ('P3_ActiveFast', 'https://openrouter.ai/api/v1', ?, 'm3', 0, 1, 200)
+                """, (enc_active_fast,))
+                db._conn.commit()
+
+            # Run migration
+            migrate_to_shared_credentials(db)
+
+            # Canonical credential must have won by P3 (active + lower speed)
+            canonical = db.get_credential_by_url("https://openrouter.ai/api/v1")
+            self.assertIsNotNone(canonical)
+            self.assertEqual(canonical["api_key"], "key-active-fast")
+
+            # All providers retain their own keys via deterministic resolution
+            p1 = db.get_provider("P1_Inactive")
+            p2 = db.get_provider("P2_ActiveSlow")
+            p3 = db.get_provider("P3_ActiveFast")
+
+            self.assertEqual(p3["api_key"], "key-active-fast")
+            self.assertEqual(p3["credential_id"], canonical["id"])
+            self.assertEqual(p2["api_key"], "key-active-slow")
+            self.assertEqual(p1["api_key"], "key-inactive-fast")
+            self.assertNotEqual(p2["credential_id"], canonical["id"])
+            db.close()
+
+    def test_discovery_activation_works_with_shared_credentials(self):
+        with tempfile.TemporaryDirectory(prefix="steward_disc_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            # 1. Existing shared credential for OpenRouter
+            cred_id = db.set_credential("https://openrouter.ai/api/v1", "shared-or-key", "OpenRouter Main")
+
+            with patch("core.discovery.get_db", return_value=db):
+                models = [DiscoveredModel(model_id="org/free-1", display_name="Free Model 1")]
+                added, skipped = upsert_discovered_models(models)
+                self.assertEqual(added, 1)
+
+            prov = db.get_provider("Free Model 1")
+            self.assertIsNotNone(prov)
+            self.assertEqual(prov["credential_id"], cred_id)
+            self.assertEqual(prov["api_key"], "shared-or-key")
+
+            # 2. Re-activation / toggle
+            db.update_provider_fields("Free Model 1", is_active=1)
+            active = db.get_active_providers()
+            self.assertIn("Free Model 1", [p["name"] for p in active])
+            db.close()
 
 
 if __name__ == "__main__":

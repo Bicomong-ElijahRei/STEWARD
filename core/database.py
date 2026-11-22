@@ -75,16 +75,12 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS credentials (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    base_url_normalized TEXT UNIQUE NOT NULL,
+                    base_url_normalized TEXT NOT NULL,
                     api_key_encrypted BLOB NOT NULL,
                     label TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-            """)
-            cursor.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_base_url_normalized 
-                ON credentials(base_url_normalized)
             """)
 
             # Providers table
@@ -257,17 +253,29 @@ class DatabaseManager:
             # Resolve or associate credential_id if not given explicitly
             if credential_id is None and not is_local and norm_url:
                 if api_key:
-                    now = datetime.now(timezone.utc).isoformat()
-                    cursor.execute("""
-                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(base_url_normalized) DO UPDATE SET
-                            api_key_encrypted = excluded.api_key_encrypted,
-                            updated_at = excluded.updated_at
-                    """, (norm_url, enc_key, name, now, now))
-                    cursor.execute("SELECT id FROM credentials WHERE base_url_normalized = ?", (norm_url,))
-                    cred_row = cursor.fetchone()
-                    credential_id = cred_row["id"] if cred_row else cursor.lastrowid
+                    # Try to find an existing credential with the SAME key (not just same endpoint)
+                    cursor.execute(
+                        "SELECT id, api_key_encrypted FROM credentials WHERE base_url_normalized = ?",
+                        (norm_url,)
+                    )
+                    for cred_row in cursor.fetchall():
+                        try:
+                            existing_key = self._decrypt(cred_row["api_key_encrypted"])
+                            if existing_key == api_key:
+                                credential_id = cred_row["id"]
+                                enc_key = cred_row["api_key_encrypted"]
+                                break
+                        except InvalidToken:
+                            continue
+                    
+                    if credential_id is None:
+                        # No matching credential found; create a new one
+                        now = datetime.now(timezone.utc).isoformat()
+                        cursor.execute("""
+                            INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (norm_url, enc_key, name, now, now))
+                        credential_id = cursor.lastrowid
                 else:
                     cursor.execute("SELECT id, api_key_encrypted FROM credentials WHERE base_url_normalized = ?", (norm_url,))
                     existing_cred = cursor.fetchone()
@@ -486,16 +494,12 @@ def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS credentials (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    base_url_normalized TEXT UNIQUE NOT NULL,
+                    base_url_normalized TEXT NOT NULL,
                     api_key_encrypted BLOB NOT NULL,
                     label TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
-            """)
-            cursor.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_base_url_normalized 
-                ON credentials(base_url_normalized)
             """)
             cursor.execute("PRAGMA table_info(providers)")
             columns = {row["name"] for row in cursor.fetchall()}
@@ -531,13 +535,34 @@ def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
             # 4. Process each endpoint
             for norm_url, prov_list in endpoints.items():
                 endpoints_migrated += 1
-                valid_keyed: dict[str, list[dict]] = {}
+                key_groups: dict[bytes, list[dict]] = {}
                 keyless_or_undecryptable: list[dict] = []
 
                 for p in prov_list:
                     raw_blob = p.get("api_key_encrypted")
-                    if p.get("credential_id"):
-                        cursor.execute("SELECT api_key_encrypted FROM credentials WHERE id = ?", (p["credential_id"],))
+                    if not raw_blob:
+                        keyless_or_undecryptable.append(p)
+                        continue
+                    key_groups.setdefault(raw_blob, []).append(p)
+
+                # Create one credential per distinct key
+                for enc_blob, providers_with_this_key in key_groups.items():
+                    winner = min(providers_with_this_key, key=_precedence_key)
+                    label = winner["name"]
+                    
+                    cursor.execute("""
+                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (norm_url, enc_blob, label, now, now))
+                    cred_id = cursor.lastrowid
+                    credentials_created += 1
+                    
+                    for p in providers_with_this_key:
+                        cursor.execute("UPDATE providers SET credential_id = ? WHERE id = ?", (cred_id, p["id"]))
+                        providers_linked += 1
+
+                for p in keyless_or_undecryptable:
+                    cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
                         c_row = cursor.fetchone()
                         if c_row:
                             raw_blob = c_row["api_key_encrypted"]
