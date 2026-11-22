@@ -335,6 +335,11 @@ class DatabaseManager:
                 encrypted_blob = cred_row["api_key_encrypted"]
                 provider["credential_label"] = cred_row["label"]
                 provider["credential_base_url"] = cred_row["base_url_normalized"]
+                # A referenced keyless credential must not hide a valid legacy
+                # provider key. Invalid encrypted data is intentionally *not*
+                # bypassed: it indicates a key mismatch and must be recoverable.
+                if not encrypted_blob:
+                    encrypted_blob = provider.get("api_key_encrypted")
             else:
                 dangling_cred = True
         else:
@@ -455,11 +460,12 @@ class DatabaseManager:
             self._conn.commit()
 
     def close(self):
-        with self._lock:
-            self._conn.close()
         global _db_instance
-        if _db_instance is self:
-            _db_instance = None
+        with _db_lock:
+            with self._lock:
+                self._conn.close()
+            if _db_instance is self:
+                _db_instance = None
 
     def migrate_to_shared_credentials(self):
         return migrate_to_shared_credentials(self)
@@ -653,25 +659,28 @@ def rollback_from_shared_credentials(db: DatabaseManager | None = None) -> dict:
 # ── Singleton Helpers ────────────────────────────────────────────────────
 
 _db_instance = None
+_db_lock = threading.RLock()
 
 def init_db(db_path: str = DB_PATH, key_path: str = KEY_PATH, force_new: bool = False):
     """Initialize the global database instance for the exact DB and key paths."""
     global _db_instance
-    paths_changed = (
-        db_path != getattr(_db_instance, "db_path", None)
-        or key_path != getattr(_db_instance, "key_path", None)
-    )
-    if _db_instance is None or force_new or paths_changed:
-        previous = _db_instance
-        instance = DatabaseManager(db_path, key_path)
-        _db_instance = instance
-        if previous is not None:
-            previous.close()
-    return _db_instance
+    with _db_lock:
+        paths_changed = (
+            db_path != getattr(_db_instance, "db_path", None)
+            or key_path != getattr(_db_instance, "key_path", None)
+        )
+        if _db_instance is None or force_new or paths_changed:
+            previous = _db_instance
+            instance = DatabaseManager(db_path, key_path)
+            _db_instance = instance
+            if previous is not None:
+                previous.close()
+        return _db_instance
 
 def get_db():
     """Retrieve the global database instance."""
     global _db_instance
-    if _db_instance is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    return _db_instance
+    with _db_lock:
+        if _db_instance is None:
+            raise RuntimeError("Database not initialized. Call init_db() first.")
+        return _db_instance

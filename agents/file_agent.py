@@ -131,10 +131,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             safe_args["destination"] = self._sandbox_path(args.get("destination"))
         elif func_name == "rename_file":
             old_path = self._sandbox_path(args.get("old_path"))
-            self._sandbox_path(os.path.join(os.path.dirname(old_path), args.get("new_name")))
+            new_name = args.get("new_name")
+            if not isinstance(new_name, str) or not new_name.strip():
+                raise ValueError("A non-empty new file name is required.")
+            if new_name in (".", "..") or os.path.isabs(new_name) or os.path.basename(new_name) != new_name:
+                raise ValueError("A rename must use a file name without path components.")
+            self._sandbox_path(os.path.join(os.path.dirname(old_path), new_name))
             safe_args["old_path"] = old_path
         elif func_name in ("delete_file", "create_folder"):
             safe_args["path"] = self._sandbox_path(args.get("path"))
+            if func_name == "delete_file" and any(
+                os.path.normcase(safe_args["path"]) == os.path.normcase(root)
+                for root in self.allowed_roots
+            ):
+                raise PermissionError("Refusing to delete a configured sandbox root.")
         elif func_name in ("cleanup_empty_folders", "cleanup_temp_files"):
             safe_args["directory"] = self._sandbox_path(args.get("directory"))
         elif func_name == "batch_move":
@@ -782,8 +792,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             category = sanitize_category(
                 response["choices"][0]["message"]["content"], filepath
             )
-        except Exception:
-            category = "Other"
+        except Exception as exc:
+            logger.exception("Could not categorise '%s': %s", filepath, exc)
+            return f"Error categorising file: {exc}"
         dest_folder = os.path.join(dest_base, category)
         dest_path = os.path.join(dest_folder, os.path.basename(filepath))
         effective_dry_run = self.dry_run if dry_run is None else dry_run

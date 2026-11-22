@@ -21,6 +21,12 @@ _EXT_FALLBACK = {
     ".zip": "Archives", ".rar": "Archives", ".7z": "Archives",
 }
 
+_WINDOWS_RESERVED_NAMES = frozenset({
+    "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+})
+
 def sanitize_category(text, filepath="", max_len=40):
     """Reduce a model response to a valid Windows folder name.
 
@@ -50,6 +56,11 @@ def sanitize_category(text, filepath="", max_len=40):
     # Normalize whitespace
     first = re.sub(r"\s+", " ", first).strip().rstrip(". ")
     if not first or first.endswith((".", "!", "?", ":", ",")):
+        return fallback
+    # Windows reserves device names even when an extension is present
+    # (for example, CON.txt). Never create such a directory.
+    device_stem = first.split(".", 1)[0].rstrip(" .").upper()
+    if device_stem in _WINDOWS_RESERVED_NAMES:
         return fallback
     return first[:max_len]
 

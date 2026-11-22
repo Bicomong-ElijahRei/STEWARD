@@ -18,7 +18,12 @@ from unittest.mock import Mock, patch
 
 from agent.daemon import FileCreationHandler
 from agents.file_agent import FileAgent
-from agents.supervisor import AGENT_FILE_OP, AGENT_PC_CONTROL
+from agents.supervisor import (
+    AGENT_FILE_OP,
+    AGENT_PC_CONTROL,
+    AGENT_UNKNOWN,
+    SupervisorAgent,
+)
 import core.database as database_module
 from core.database import (
     DatabaseManager,
@@ -1978,6 +1983,162 @@ class CategorySanitizerTests(unittest.TestCase):
         from utils.helpers import sanitize_category
         self.assertEqual(sanitize_category("", "photo.PNG"), "Images")
         self.assertEqual(sanitize_category("x" * 200, "a.pdf"), "Documents")
+
+    def test_rejects_windows_reserved_device_names(self):
+        from utils.helpers import sanitize_category
+        self.assertEqual(sanitize_category("CON", "a.pdf"), "Documents")
+        self.assertEqual(sanitize_category("com1.txt", "a.pdf"), "Documents")
+        self.assertEqual(sanitize_category("LPT1", "a.pdf"), "Documents")
+
+
+class SupervisorValidationTests(unittest.TestCase):
+    def make_supervisor(self, content):
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{"message": {"content": content}}]
+        }
+        return SupervisorAgent(manager)
+
+    def test_rejects_unknown_agent_category(self):
+        supervisor = self.make_supervisor(
+            '{"agent": "ARBITRARY", "action": "delete files"}'
+        )
+        result = supervisor.route("delete files")
+        self.assertEqual(result, {"agent": AGENT_UNKNOWN, "action": "delete files"})
+
+    def test_rejects_non_text_action(self):
+        supervisor = self.make_supervisor(
+            '{"agent": "FILE_OP", "action": ["delete", "everything"]}'
+        )
+        result = supervisor.route("delete everything")
+        self.assertEqual(result, {
+            "agent": AGENT_UNKNOWN,
+            "action": "delete everything",
+        })
+
+    def test_accepts_known_category_and_trims_action(self):
+        supervisor = self.make_supervisor(
+            '{"agent": "FILE_OP", "action": "  organize Incoming  "}'
+        )
+        result = supervisor.route("organize Incoming")
+        self.assertEqual(result, {
+            "agent": AGENT_FILE_OP,
+            "action": "organize Incoming",
+        })
+
+
+class FileAgentPathSafetyTests(unittest.TestCase):
+    def make_agent(self, root):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(api_manager=Mock(), root_path=root)
+        agent.OPERATION_LOG_PATH = log_path
+        return agent
+
+    def test_rename_rejects_path_components(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rename_name_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            source = os.path.join(incoming, "note.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("data")
+            agent = self.make_agent(tmp)
+            result = agent.rename_file(source, os.path.join("..", "Sorted", "note.txt"))
+            self.assertIn("without path components", result)
+            self.assertTrue(os.path.exists(source))
+
+    def test_delete_refuses_configured_sandbox_root(self):
+        with tempfile.TemporaryDirectory(prefix="steward_delete_root_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            agent = self.make_agent(tmp)
+            result = agent.delete_file(incoming)
+            self.assertIn("Refusing to delete a configured sandbox root", result)
+            self.assertTrue(os.path.isdir(incoming))
+
+    def test_categorise_provider_failure_does_not_move_file(self):
+        with tempfile.TemporaryDirectory(prefix="steward_categorise_error_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            source = os.path.join(incoming, "note.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("data")
+            agent = self.make_agent(tmp)
+            agent.api_manager.route_request.side_effect = RuntimeError("provider down")
+            agent.move_file = Mock(return_value="Moved")
+            result = agent.categorise_file(source, sorted_dir, dry_run=False)
+            self.assertIn("Error categorising file: provider down", result)
+            agent.move_file.assert_not_called()
+            self.assertTrue(os.path.exists(source))
+
+
+class DatabaseDualReadTests(unittest.TestCase):
+    def test_keyless_reference_falls_back_to_valid_legacy_provider_key(self):
+        with tempfile.TemporaryDirectory(prefix="steward_dual_read_") as tmp:
+            db = DatabaseManager(
+                db_path=os.path.join(tmp, "providers.db"),
+                key_path=os.path.join(tmp, "providers.key"),
+            )
+            try:
+                credential_id = db.set_credential("https://legacy.example/v1", "")
+                db.add_provider(
+                    "LegacyProvider",
+                    "https://legacy.example/v1",
+                    "legacy-key",
+                    credential_id=credential_id,
+                )
+                provider = db.get_provider("LegacyProvider")
+                self.assertEqual(provider["api_key"], "legacy-key")
+                self.assertIsNone(provider["decryption_error"])
+            finally:
+                db.close()
+
+    def test_singleton_initialization_is_serialized(self):
+        previous_instance = database_module._db_instance
+        database_module._db_instance = None
+        constructor_entered = threading.Event()
+        release_constructor = threading.Event()
+        constructor_calls = []
+        fake_instance = Mock(db_path="providers.db", key_path="providers.key")
+
+        def fake_constructor(db_path, key_path):
+            constructor_calls.append((db_path, key_path))
+            constructor_entered.set()
+            if not release_constructor.wait(timeout=2):
+                raise AssertionError("constructor was not released")
+            return fake_instance
+
+        try:
+            with patch.object(database_module, "DatabaseManager", side_effect=fake_constructor):
+                first = threading.Thread(
+                    target=database_module.init_db,
+                    args=("providers.db", "providers.key"),
+                )
+                first.start()
+                self.assertTrue(constructor_entered.wait(timeout=2))
+                second = threading.Thread(
+                    target=database_module.init_db,
+                    args=("providers.db", "providers.key"),
+                )
+                second.start()
+                # The global lock must prevent a second constructor from
+                # entering while the first one is still in progress.
+                self.assertEqual(len(constructor_calls), 1)
+                release_constructor.set()
+                first.join(timeout=2)
+                second.join(timeout=2)
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+                self.assertEqual(len(constructor_calls), 1)
+                self.assertIs(database_module.get_db(), fake_instance)
+        finally:
+            release_constructor.set()
+            database_module._db_instance = previous_instance
+
 
 class ChatNoPlanTests(unittest.TestCase):
     def test_clarifying_question_does_not_offer_execution(self):

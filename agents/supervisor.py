@@ -19,6 +19,14 @@ AGENT_RAG = "RAG"
 AGENT_CODING = "CODING"
 AGENT_UNKNOWN = "UNKNOWN"
 
+VALID_AGENT_TYPES = frozenset({
+    AGENT_FILE_OP,
+    AGENT_PC_CONTROL,
+    AGENT_RAG,
+    AGENT_CODING,
+    AGENT_UNKNOWN,
+})
+
 SUPERVISOR_SYSTEM_PROMPT = """You are the STEWARD Supervisor. Your job is to classify user requests and route them to the appropriate specialist agent.
 
 Available agents:
@@ -109,12 +117,23 @@ class SupervisorAgent:
 
             parsed = json.loads(json_str)
 
-            # Validate required fields
-            if "agent" not in parsed or "action" not in parsed:
-                logger.warning(f"Invalid supervisor response: {parsed}")
+            # Validate both the routing key and task text before either reaches
+            # a specialist agent. An unknown category must never be allowed to
+            # fall through as an actionable FILE_OP request.
+            if not isinstance(parsed, dict):
+                logger.warning(f"Invalid supervisor response: {parsed!r}")
+                return {"agent": AGENT_UNKNOWN, "action": user_input}
+            agent_type = parsed.get("agent")
+            action = parsed.get("action")
+            if (
+                agent_type not in VALID_AGENT_TYPES
+                or not isinstance(action, str)
+                or not action.strip()
+            ):
+                logger.warning(f"Invalid supervisor response: {parsed!r}")
                 return {"agent": AGENT_UNKNOWN, "action": user_input}
 
-            return parsed
+            return {"agent": agent_type, "action": action.strip()}
 
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             logger.error(f"Failed to parse supervisor response: {e}")
