@@ -193,6 +193,7 @@ class ChatTab(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
+        self.rag_agent = None
         self.live_feed = live_feed
         self.provider_callback = provider_callback
         self._processing = False
@@ -486,10 +487,14 @@ class ChatTab(ctk.CTkFrame):
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done("Click"))
                 elif agent_type == AGENT_RAG:
+                    try:
+                        results = self._get_rag_agent().search(user_msg)
+                        rag_message = self._format_rag_results(user_msg, results)
+                    except Exception as exc:
+                        logger.error("[Chat] Scout search failed: %s", exc)
+                        rag_message = f"Scout could not search the knowledge base: {exc}"
                     self._safe_after(lambda: self._add_bubble(
-                        "STEWARD",
-                        f"[Scout] Semantic search: {action}\n(Coming soon)",
-                        NEON_BLUE, align="left",
+                        "STEWARD", rag_message, NEON_BLUE, align="left",
                     ))
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done("Scout"))
@@ -526,6 +531,28 @@ class ChatTab(ctk.CTkFrame):
                 self._safe_after(self._restore_return_key)
 
         threading.Thread(target=process, daemon=True).start()
+
+    def _get_rag_agent(self):
+        """Create the persistent RAG index lazily on the first Scout query."""
+        if getattr(self, "rag_agent", None) is None:
+            from agents.rag_agent import RAGAgent
+            self.rag_agent = RAGAgent()
+        return self.rag_agent
+
+    @staticmethod
+    def _format_rag_results(query, results):
+        """Format flat RAG records for a readable chat bubble."""
+        if not results:
+            return "No relevant documents found in the knowledge base."
+        lines = [f"🔍 **Search Results for [{query}]:**", ""]
+        for index, result in enumerate(results, start=1):
+            source = str(result.get("source") or "Unknown source")
+            content = " ".join(str(result.get("content") or "").split())
+            snippet = content[:500] + ("…" if len(content) > 500 else "")
+            lines.append(f"{index}. [{source}]")
+            lines.append(f"   {snippet}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     def _report_provider(self, agent_name):
         """Publish router metadata and return a short UI status string."""
