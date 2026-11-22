@@ -1,5 +1,6 @@
 """Isolated regression tests for immutable plans and agent-aware routing."""
 
+import ast
 import hashlib
 import json
 import os
@@ -1991,6 +1992,25 @@ class ChatNoPlanTests(unittest.TestCase):
             cb()
         chat.file_agent.execute_pending_plan.assert_not_called()
         ChatWorkflowTests().assert_input_restored(chat)
+
+class SourceIntegrityTests(unittest.TestCase):
+    """Guard against accidental duplicate definitions during hand edits."""
+
+    def test_regression_test_classes_are_defined_once(self):
+        source = Path(__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        class_names = [
+            node.name for node in tree.body if isinstance(node, ast.ClassDef)
+        ]
+        self.assertEqual(class_names.count("CategorySanitizerTests"), 1)
+        self.assertEqual(class_names.count("ChatNoPlanTests"), 1)
+
+    def test_categorise_file_method_is_defined_once(self):
+        source = (Path(__file__).resolve().parent / "agents" / "file_agent.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(source.count("def categorise_file("), 1)
+
 
 class MigrationCLITests(unittest.TestCase):
     """Exercise the live CLI only against isolated temporary runtime files."""
