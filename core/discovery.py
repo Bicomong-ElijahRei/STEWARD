@@ -140,6 +140,9 @@ def upsert_discovered_models(models: Iterable[DiscoveredModel]) -> tuple[int, in
         and str(provider.get("base_url") or "").rstrip("/") == OPENROUTER_BASE_URL
     }
 
+    openrouter_cred = db.get_credential_by_url(OPENROUTER_BASE_URL)
+    openrouter_cred_id = openrouter_cred["id"] if openrouter_cred else None
+
     added = 0
     skipped = 0
     for model in models:
@@ -157,6 +160,7 @@ def upsert_discovered_models(models: Iterable[DiscoveredModel]) -> tuple[int, in
             model_name=model.model_id,
             is_local=False,
             is_active=False,
+            credential_id=openrouter_cred_id,
         )
         existing_names.add(model.display_name)
         existing_openrouter_ids.add(model.model_id)

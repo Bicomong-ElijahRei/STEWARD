@@ -42,12 +42,23 @@ class SettingsTab(ctk.CTkFrame):
             "<FocusOut>", lambda event: self._sync_assignment_to_existing_provider()
         )
         self.url_entry = self._create_input("Base URL (e.g., https://generativelanguage.googleapis.com/v1beta/openai)")
+        self.url_entry.bind(
+            "<KeyRelease>", lambda event: self._check_existing_credential()
+        )
+        self.url_entry.bind(
+            "<FocusOut>", lambda event: self._check_existing_credential()
+        )
         self.model_entry = self._create_input("Model Name (e.g., gemini-1.5-flash)")
         
         self.key_entry = ctk.CTkEntry(
             self.form_frame, placeholder_text="API Key", show="*", width=400
         )
         self.key_entry.pack(anchor="w", padx=20, pady=5)
+
+        self.cred_hint_label = ctk.CTkLabel(
+            self.form_frame, text="", font=("Nunito", 11), text_color=NEON_CYAN
+        )
+        self.cred_hint_label.pack(anchor="w", padx=20, pady=(0, 2))
 
         assignment_row = ctk.CTkFrame(self.form_frame, fg_color="transparent")
         assignment_row.pack(anchor="w", padx=20, pady=5)
@@ -134,11 +145,38 @@ class SettingsTab(ctk.CTkFrame):
             self.assigned_agent_menu.set(provider.get("assigned_agent") or "Any")
             self._assignment_dirty = False
 
+    def _check_existing_credential(self):
+        url = self.url_entry.get().strip()
+        if not url:
+            self.cred_hint_label.configure(text="")
+            return
+        try:
+            db = get_db()
+            cred = db.get_credential_by_url(url)
+            if cred and cred.get("api_key"):
+                self.cred_hint_label.configure(
+                    text=f"ℹ️ Reusing credential saved for {cred.get('base_url_normalized')}",
+                    text_color="#00FFCC",
+                )
+            else:
+                self.cred_hint_label.configure(text="")
+        except Exception:
+            self.cred_hint_label.configure(text="")
+
     def _start_verification(self):
         name = self.name_entry.get().strip()
         url = self.url_entry.get().strip()
         model = self.model_entry.get().strip()
         key = self.key_entry.get().strip()
+
+        if not key and url:
+            try:
+                db = get_db()
+                cred = db.get_credential_by_url(url)
+                if cred and cred.get("api_key"):
+                    key = cred["api_key"]
+            except Exception:
+                pass
 
         if not all([name, url, model, key]):
             self.status_label.configure(text="❌ Please fill all fields.", text_color="red")
@@ -290,6 +328,12 @@ class SettingsTab(ctk.CTkFrame):
                 ctk.CTkLabel(self.provider_list, text="No providers configured yet.", text_color=TEXT_MUTED).pack(pady=20)
                 return
 
+            cred_counts = {}
+            for p in providers:
+                cid = p.get("credential_id")
+                if cid:
+                    cred_counts[cid] = cred_counts.get(cid, 0) + 1
+
             for p in providers:
                 card = ctk.CTkFrame(self.provider_list, fg_color="#2A2A35", corner_radius=10)
                 card.pack(fill="x", pady=5, padx=5)
@@ -325,6 +369,33 @@ class SettingsTab(ctk.CTkFrame):
                 )
                 info.pack(side="left", padx=10, fill="x", expand=True)
 
+                cred_id = p.get("credential_id")
+                shared_count = cred_counts.get(cred_id, 0) if cred_id else 0
+                if shared_count > 1:
+                    shared_badge = ctk.CTkLabel(
+                        card,
+                        text=f"🔗 Shared ({shared_count})",
+                        font=("Nunito", 10, "bold"),
+                        text_color="#00FFCC",
+                        fg_color="#1E3A3A",
+                        corner_radius=8,
+                        padx=8,
+                        pady=3,
+                    )
+                    shared_badge.pack(side="left", padx=4)
+                elif cred_id:
+                    cred_badge = ctk.CTkLabel(
+                        card,
+                        text="🔑 Credential",
+                        font=("Nunito", 10, "bold"),
+                        text_color=TEXT_MUTED,
+                        fg_color="#353545",
+                        corner_radius=8,
+                        padx=8,
+                        pady=3,
+                    )
+                    cred_badge.pack(side="left", padx=4)
+
                 assignment_badge = ctk.CTkLabel(
                     card,
                     text=f"Agent: {p.get('assigned_agent') or 'Any'}",
@@ -352,6 +423,22 @@ class SettingsTab(ctk.CTkFrame):
                 )
                 btn_delete.pack(side="right", padx=(4, 10), pady=6)
 
+                # Edit Key Button for credential holders
+                if cred_id and not is_local:
+                    btn_edit_key = ctk.CTkButton(
+                        card,
+                        text="Edit Key",
+                        width=65,
+                        height=28,
+                        corner_radius=8,
+                        font=("Nunito", 11, "bold"),
+                        fg_color="#4F46E5",
+                        hover_color="#4338CA",
+                        state="disabled" if is_pending else "normal",
+                        command=lambda prov=p: self._edit_shared_credential(prov),
+                    )
+                    btn_edit_key.pack(side="right", padx=(4, 4), pady=6)
+
                 # Toggle Active / Disable Button
                 toggle_text = (
                     "Checking..." if is_pending
@@ -376,12 +463,67 @@ class SettingsTab(ctk.CTkFrame):
         except Exception as e:
             ctk.CTkLabel(self.provider_list, text=f"Error loading DB: {e}", text_color="red").pack()
 
+    def _edit_shared_credential(self, provider):
+        dialog_parent = self.winfo_toplevel() if self._is_alive() else self
+        base_url = provider.get("base_url", "")
+        cred_id = provider.get("credential_id")
+        try:
+            db = get_db()
+            all_provs = db.get_all_providers()
+            sharing_providers = [
+                p for p in all_provs if p.get("credential_id") == cred_id
+            ]
+            count = len(sharing_providers)
+            new_key = simpledialog.askstring(
+                "Edit Shared Credential",
+                f"Enter new API key for:\n{base_url}",
+                parent=dialog_parent,
+                show="*",
+            )
+            if new_key is None:
+                return
+            new_key = new_key.strip()
+            if not new_key:
+                messagebox.showerror("Error", "API key cannot be empty.", parent=dialog_parent)
+                return
+
+            if count > 1:
+                confirm = messagebox.askyesno(
+                    "Confirm Shared Key Rotation",
+                    f"This API key is shared by {count} providers on {base_url}.\n"
+                    f"Updating it will rotate credentials for all {count} providers.\n\n"
+                    "Do you want to proceed?",
+                    parent=dialog_parent,
+                )
+                if not confirm:
+                    return
+
+            db.set_credential(base_url, new_key)
+            self.status_label.configure(
+                text=f"✅ Updated credential for {count} provider(s).",
+                text_color="#00FFCC",
+            )
+            self.refresh_provider_list()
+        except Exception as exc:
+            self.status_label.configure(
+                text=f"❌ Error updating credential: {exc}",
+                text_color="red",
+            )
+
     @staticmethod
     def _find_reusable_key(provider, providers):
-        """Find a saved key for the same endpoint, preferring active providers."""
+        """Find a saved key for the same endpoint, checking shared credentials first."""
         base_url = str(provider.get("base_url") or "").rstrip("/")
         if not base_url:
             return None
+
+        try:
+            db = get_db()
+            cred = db.get_credential_by_url(base_url)
+            if cred and cred.get("api_key"):
+                return cred["api_key"], "Shared Credential Store"
+        except Exception:
+            pass
 
         for candidate in sorted(
             providers, key=lambda item: not item.get("is_active", False)
