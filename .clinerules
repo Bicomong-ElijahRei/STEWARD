@@ -6,3 +6,7 @@ To prevent 429 Rate Limit errors, you MUST minimize the number of tool calls and
 2. BATCH EDITS: Do not make 5 small edits to a file. Read the whole file, and make one large, comprehensive edit using `apply_diff` or `write_to_file`.
 3. NO REDUNDANT CHECKS: Do not read a file immediately after you just wrote to it unless you are debugging a specific syntax error. Trust your own output.
 4. COMPOUND COMMANDS: When using the terminal, chain commands. Instead of running `ls`, then `cd`, then `ls` again, just run `ls -R` once.
+
+# DATABASE AND KEY PRESERVATION
+The agent must never write to, delete, or recreate steward.db or secret.key.
+Their hashes MAY change during normal application use; a changed hash is NOT a defect.

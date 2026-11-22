@@ -17,13 +17,14 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-22 | 77c9a3b2 | Emergency DB recovery: steward.db restored from C:\temp\db_data.json (16 providers, 4 traces) with 16/16 keys decrypted; invariant updated to allow normal hash changes | Previous agent deleted steward.db trying to force hash match
 2026-11-21 | a4408e7f | Document created. Batch 1 (H1,H2,H3,H4,H7) closed and verified.
 (future entries above this line, newest first)
 
 ## Ground state
 HEAD: a4408e7f
 Suite: test_phase0_phase_a.py 34 green; test_validator.py 5/5
-Invariants: steward.db / secret.key hashes never change; helper scripts never in repo.
+Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies;
 Cline/Kimi for feature volume. Never two writers on one file.
 
