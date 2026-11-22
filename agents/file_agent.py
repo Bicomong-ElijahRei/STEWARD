@@ -7,6 +7,7 @@ Includes full undo/redo support via JSON operation log.
 """
 
 import os
+from utils.helpers import sanitize_category
 import shutil
 import json
 import logging
@@ -771,7 +772,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             {"role": "system", "content": self.system_prompt},
             {
                 "role": "user",
-                "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name.",
+                "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nReply with ONLY a single short folder name, no explanation.",
             },
         ]
 
@@ -780,11 +781,11 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 messages=messages, agent_name="Foldy"
             )
             self.last_provider = response.get("_steward")
-            category = response["choices"][0]["message"]["content"].strip()
-        except Exception as e:
+            category = sanitize_category(
+                response["choices"][0]["message"]["content"], filepath
+            )
+        except Exception:
             category = "Other"
-
-        category = category.strip().replace("/", "_").replace("\\", "_")
         dest_folder = os.path.join(dest_base, category)
         dest_path = os.path.join(dest_folder, os.path.basename(filepath))
 
