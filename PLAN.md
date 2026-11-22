@@ -17,75 +17,82 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
-2026-11-22 | 77c9a3b2 | Emergency DB recovery: steward.db restored from C:\temp\db_data.json (16 providers, 4 traces) with 16/16 keys decrypted; invariant updated to allow normal hash changes | Previous agent deleted steward.db trying to force hash match
+2026-11-22 | 8d22ea78 | Batch 3b closed. All remediation batches (1, 2A, 2B, 3a, 3b) complete. 61 tests green.
+2026-11-22 | 8d22ea78 | L2 split: scroll guard shipped in 77c9a3b2; unbounded evt.wait()/exec_evt.wait() deferred to v2.1. Owner decision: a blocked daemon worker is not data loss.
+2026-11-22 | b80d2933 | Emergency DB recovery: steward.db restored from C:\temp\db_data.json (16 providers, 4 traces), 16/16 keys decrypted. Invariant corrected: hashes MAY change. Cause: an agent deleted the DB trying to force a hash match.
 2026-11-21 | a4408e7f | Document created. Batch 1 (H1,H2,H3,H4,H7) closed and verified.
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: a4408e7f
-Suite: test_phase0_phase_a.py 34 green; test_validator.py 5/5
+HEAD: 1f4ace3d
+Suite: test_phase0_phase_a.py 61 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies;
 Cline/Kimi for feature volume. Never two writers on one file.
 
 ## Freeze line
-v2.0 = Batches 2A + 2B + 3 + housekeeping closed. Then freeze; new findings go to backlog.
+v2.0 = all remediation batches closed + housekeeping. Remediation is COMPLETE as of 8d22ea78.
+Remaining for v2.0: README.md only. L2 remainder deferred to v2.1 by owner decision.
+Once README lands, v2.0 is frozen and new findings go to the backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
-- H5  OPEN | Router same-endpoint 429 preference reassigns the loop variable: skips a
+- H5  DONE | fb6f876e | Router same-endpoint 429 preference reassigns the loop variable: skips a
       candidate, double-hits the promoted one; a HEALTHY provider can go unused and the
       whole request fails. Accept: each provider attempted <=1x per request, none skipped,
       in-request cooldown respected, failovers deduplicated. Proof: 3-provider test where
       the promoted candidate ALSO fails; assert third attempted, no double calls, no dup
       failovers.
-- M4  OPEN | _decrypt has no InvalidToken handling; rotated key bricks routing + API Hub.
+- M4  DONE | fb6f876e | _decrypt has no InvalidToken handling; rotated key bricks routing + API Hub.
       Plus init_db ignores changed key_path; close() leaves stale singleton.
       Accept: recoverable error state, provider list still renders, never wrong plaintext.
-- M5  OPEN | Re-verify upserts assigned_agent from form default "Any", unbinding the role.
+- M5  DONE | fb6f876e | Re-verify upserts assigned_agent from form default "Any", unbinding the role.
       Accept: binding preserved unless explicitly changed; form pre-fills stored value.
-- L1  OPEN | "Click" missing from dropdown; tier filter uses exact equality vs stored
+- L1  DONE | fb6f876e | "Click" missing from dropdown; tier filter uses exact equality vs stored
       validator labels. Accept: Click bindable; tier matching matches stored labels.
-- N1  OPEN | ChatTab finally calls self.after from worker with no lifecycle guard.
+- N1  DONE | fb6f876e | ChatTab finally calls self.after from worker with no lifecycle guard.
       Accept: destroyed-widget path raises nothing.
-- N2  OPEN | send_chat has no in-flight flag; programmatic caller can double-run.
+- N2  DONE | fb6f876e | send_chat has no in-flight flag; programmatic caller can double-run.
       Accept: two rapid sends produce one worker.
-- N4  OPEN | execute_pending_plan raises for no-plan but returns str for stale/None.
+- N4  DONE | fb6f876e | execute_pending_plan raises for no-plan but returns str for stale/None.
       Accept: one uniform, documented refusal contract.
-- N5  OPEN | ChatTab reads private file_agent._pending_plan_id. Accept: public accessor.
+- N5  DONE | fb6f876e | ChatTab reads private file_agent._pending_plan_id. Accept: public accessor.
 
 ## BATCH 2B — recovery: undo/redo, operation log, schema
 Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
-- H6  OPEN | Undo marks delete / non-empty folder / unknown op as undone (false success);
-      redo iterates FIFO not LIFO. Accept: state changes only on verified success; redo is
-      most-recent-first; unknown ops never mutate state. Check organizer slider semantics.
-- M6  OPEN | Log non-atomic write; ids are timestamps (not unique); no collision check
+- H6  DONE | dfab67e9 | Undo marked delete / non-empty folder / unknown op as undone (false
+      success). Fixed: state changes only on verified success; delete and unknown ops are
+      skipped without mutation. NOTE: forward iteration in redo is CORRECT and was kept —
+      the original "FIFO not LIFO" diagnosis was wrong. Do not "fix" this.
+- M6  DONE | dfab67e9 | Log non-atomic write; ids are timestamps (not unique); no collision check
       before undo/redo move (silent overwrite on POSIX); no list validation on load.
       Accept: atomic writes, stable unique ids, explicit collision refusal, tolerant load.
       Backward-compat REQUIRED: legacy timestamp-id entries must still load.
-- M1  OPEN | undo_last/redo_last declared AND in allowlist but absent from tool_functions
+- M1  DONE | dfab67e9 | undo_last/redo_last declared AND in allowlist but absent from tool_functions
       -> "Unknown tool". Accept: declared schema and dispatch set agree. CAUTION: _lock is
       NOT reentrant; include lock-ownership analysis and a timeout-guarded test if wired.
-- N3  OPEN | Preview asks approval for a plan that will be rejected. Accept: preview flags
+- N3  DONE | dfab67e9 | Preview asks approval for a plan that will be rejected. Accept: preview flags
       doomed operations, executes nothing during dry_run, execution preflight unchanged.
 
 ## BATCH 3 — daemon, threading, hygiene
-- M2  OPEN | Daemon never moves files (dry_run); 0.5s sleep is not a stability check; dedup
+- M2  DONE | 8d22ea78 | Daemon never moves files (dry_run); 0.5s sleep is not a stability check; dedup
       set cleared wholesale at 1000; observer not stopped on quit.
-- M3  OPEN | Shared file_agent.dry_run mutated across surfaces. Accept: per-call mode.
-- M7  OPEN | find_duplicates reads whole files. Accept: chunked streaming hash.
-- M8  OPEN | Organizer builds FilePreviewRow + BooleanVar on worker thread; pending_
+- M3  DONE | 8d22ea78 | Shared file_agent.dry_run mutated across surfaces. Accept: per-call mode.
+- M7  DONE | 77c9a3b2 | find_duplicates reads whole files. Accept: chunked streaming hash.
+- M8  DONE | 8d22ea78 | Organizer builds FilePreviewRow + BooleanVar on worker thread; pending_
       operations mutated from worker. Accept: construction and mutation on main thread.
-- N6  OPEN | Daemon dest_base vs hardcoded sandbox roots. Accept: reconciled, documented.
-- L2  OPEN | _scroll_chat unguarded; evt.wait()/exec_evt.wait() unbounded.
-- L3  OPEN | quit_app calls root.quit() from pystray thread; WM_DELETE overwritten;
+- N6  DONE | 8d22ea78 | Daemon dest_base vs hardcoded sandbox roots. Accept: reconciled, documented.
+- L2  PARTIAL | 77c9a3b2 | _scroll_chat is now guarded (shipped). REMAINING: evt.wait() and
+      exec_evt.wait() in gui/chat_tab.py are still unbounded. Deferred to v2.1 by owner
+      decision; see backlog. Do not mark DONE.
+- L3  DONE | 8d22ea78 | quit_app calls root.quit() from pystray thread; WM_DELETE overwritten;
       observer not stopped. Accept: one coherent marshaled shutdown path.
-- L4  OPEN | Untrack __pycache__/, .vscode/, Sorted media (keep on disk). The large .mkv is
+- L4  DONE | 77c9a3b2 | Untrack __pycache__/, .vscode/, Sorted media (keep on disk). The large .mkv is
       an OWNER decision (copyright/bloat). NO history rewrite without explicit approval.
 
 ## Housekeeping (v2.0)
-- .clineignore  PENDING | create + commit; blocks secret.key/.env/*.db/media, NOT Sorted/ wholesale
-- .clinerules   PENDING | commit (already authored)
+- .clineignore  DONE | 036b6403 | create + commit; blocks secret.key/.env/*.db/media, NOT Sorted/ wholesale
+- .clinerules   DONE | 036b6403 | commit (already authored)
 - README.md     PENDING | repo has no description; write for v2.0
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
@@ -143,6 +150,12 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - rules.yaml override learner (learn from user corrections)
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
+- Move steward.db, secret.key, steward_operations.json out of the repo working directory
+  (e.g. %APPDATA%\STEWARD\). Paths are currently os.getcwd()-based. Rationale: an agent with
+  shell access deleted the production DB; .clineignore governs file tools only. Keep
+  irreplaceable data outside the blast radius.
+- L2 remainder: bound evt.wait()/exec_evt.wait() in gui/chat_tab.py with timeouts and handle
+  the cancelled path so a worker cannot block forever.
 
 ## Rules of engagement
 1. Work ONLY the batch or phase named in your prompt.
@@ -152,7 +165,7 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 5. Update statuses here in the closing commit; update HEAD on push; log structural changes.
 6. Context death: commit proven work, write the handoff ledger INTO THIS FILE.
 7. Environment: PowerShell (no &&, no rg, no tail), unittest not pytest, BOM files need
-   utf-8-sig, protected files never modified, helper scripts outside the repo.
+    utf-8-sig, protected files never modified, helper scripts outside the repo.
 
 ## Session start (the whole preamble)
 Read ARCHITECTURE.md and PLAN.md. Work ONLY <BATCH-or-PHASE>. Follow Rules of engagement.
