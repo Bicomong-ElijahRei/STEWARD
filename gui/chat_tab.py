@@ -10,6 +10,7 @@ from tkinter import messagebox
 import json
 import threading
 import logging
+import math
 
 from agents.supervisor import (
     AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
@@ -30,6 +31,36 @@ AGENT_COLOR_MAP = {
     "Scout": NEON_BLUE,
     "Syntax": NEON_ORANGE,
 }
+
+class HandoffCanvas(ctk.CTkCanvas):
+    """Animated glowing arc that triggers on agent handoffs."""
+    def __init__(self, parent):
+        super().__init__(parent, bg="#2A2A35", highlightthickness=0, height=40)
+        self.arc_id = None
+        self._tick = None
+
+    def trigger_handoff(self, from_agent, to_agent):
+        if self._tick:
+            self._tick.cancel()
+        self.delete("all")
+        # Draw initial straight line
+        self.arc_id = self.create_line(40, 20, 260, 20, width=3, fill=NEON_PURPLE, smooth=True)
+        
+        step = [0]
+        def on_tick():
+            step[0] += 1
+            t = step[0] / 20.0
+            if t >= 1.0:
+                self.delete("all")
+                return False  # Stop the tick
+            
+            # Sine wave arc animation
+            offset = math.sin(t * math.pi) * 25
+            self.coords(self.arc_id, 40, 20, 150, 20 - offset, 260, 20)
+            self.itemconfig(self.arc_id, fill=lerp_color(NEON_PURPLE, NEON_CYAN, t))
+            return True
+            
+        self._tick = SafeTick(self, 30, on_tick).start()
 
 class ChatBubble(ctk.CTkFrame):
     """Animated chat bubble supporting THINKING, TOOL_USE, STREAMING, DONE, ERROR states."""
@@ -137,6 +168,9 @@ class ChatTab(ctk.CTkFrame):
         )
         self.chat_panel.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
+        self.handoff_canvas = HandoffCanvas(self.chat_panel)
+        self.handoff_canvas.pack(fill="x", padx=10, pady=(10, 0))
+
         self.chat_display = ctk.CTkScrollableFrame(
             self.chat_panel, fg_color="transparent", corner_radius=CORNER_RADIUS
         )
@@ -235,6 +269,10 @@ class ChatTab(ctk.CTkFrame):
 
                 agent_name = AGENT_ROUTING_KEYS.get(agent_type, "Cortex")
                 color = AGENT_CONFIG.get(agent_name, {}).get("color", TEXT_MUTED)
+
+                # Trigger visual handoff animation
+                if agent_type != AGENT_UNKNOWN:
+                    self._safe_after(lambda: self.handoff_canvas.trigger_handoff("Cortex", agent_name))
 
                 self._safe_after(lambda: self._add_bubble(
                     "STEWARD", f"[{agent_name}] Routing: {action}",
