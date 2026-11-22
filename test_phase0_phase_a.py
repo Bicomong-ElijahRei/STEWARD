@@ -22,6 +22,7 @@ from agents.supervisor import (
     AGENT_FILE_OP,
     AGENT_PC_CONTROL,
     AGENT_RAG,
+    AGENT_GENERAL_CHAT,
     AGENT_UNKNOWN,
     SupervisorAgent,
 )
@@ -3023,6 +3024,47 @@ class MigrationCLITests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Confirmation timed out"):
                 migration_cli.confirm("execute", logger)
 
+
+
+class GeneralConversationTests(unittest.TestCase):
+    def test_general_chat_routes_to_cortex(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "hello how are you"},
+        )
+        chat.supervisor.api_manager = Mock()
+        chat.supervisor.api_manager.route_request.return_value = {
+            "choices": [{"message": {"content": "I'm doing great! How can I help you organize your files today?"}}],
+            "_steward": {"provider": "TestProvider", "model": "test-model"}
+        }
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+
+        for cb in callbacks:
+            cb()
+
+        chat.supervisor.api_manager.route_request.assert_called_once()
+        request = chat.supervisor.api_manager.route_request.call_args.kwargs
+        self.assertEqual(request["agent_name"], "Cortex")
+        self.assertFalse(request["require_tools"])
+        self.assertEqual(request["messages"][-1], {"role": "user", "content": "organize this"})
+        ChatWorkflowTests().assert_input_restored(chat)
+
+    def test_general_chat_handles_errors_gracefully(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "test message"},
+        )
+        chat.supervisor.api_manager = Mock()
+        chat.supervisor.api_manager.route_request.side_effect = RuntimeError("API error")
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            with self.assertLogs("gui.chat_tab", level="ERROR"):
+                chat.send_chat()
+
+        for cb in callbacks:
+            cb()
+
+        ChatWorkflowTests().assert_input_restored(chat)
 
 
 if __name__ == "__main__":

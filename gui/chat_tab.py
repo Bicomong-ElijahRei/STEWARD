@@ -15,6 +15,7 @@ import re
 
 from agents.supervisor import (
     AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
+    AGENT_GENERAL_CHAT,
 )
 from core.theme import (
     BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, NEON_PURPLE, NEON_CYAN,
@@ -506,6 +507,73 @@ class ChatTab(ctk.CTkFrame):
                     ))
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done("Syntax"))
+                elif agent_type == AGENT_GENERAL_CHAT:
+                    # Send to Cortex for natural conversation.
+                    cortex_bubble = [None]
+                    self._safe_after(lambda: cortex_bubble.__setitem__(0, self._add_bubble(
+                        "STEWARD", "Thinking...",
+                        NEON_PURPLE, align="left", state="THINKING",
+                    )))
+
+                    try:
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are Cortex, the supervisor AI of STEWARD. "
+                                    "You are helpful, friendly, and knowledgeable "
+                                    "about the STEWARD system. Answer questions "
+                                    "naturally and conversationally. If asked about "
+                                    "system capabilities, explain what STEWARD can "
+                                    "do (file organization, document search, provider "
+                                    "management). Keep responses concise and helpful."
+                                ),
+                            },
+                            {"role": "user", "content": user_msg},
+                        ]
+
+                        response = self.supervisor.api_manager.route_request(
+                            messages=messages,
+                            agent_name="Cortex",
+                            require_tools=False,
+                        )
+
+                        cortex_response = response["choices"][0]["message"].get("content", "")
+
+                        def finish_conversation():
+                            bubble = cortex_bubble[0]
+                            if bubble:
+                                bubble.set_message(cortex_response)
+                                bubble.update_state("DONE")
+                            else:
+                                self._add_bubble(
+                                    "STEWARD", cortex_response,
+                                    NEON_PURPLE, align="left", state="DONE",
+                                )
+
+                        self._safe_after(finish_conversation)
+                        if self.live_feed:
+                            self._safe_after(
+                                lambda: self.live_feed.agent_done(
+                                    "Cortex", "Response generated"
+                                )
+                            )
+                    except Exception as e:
+                        logger.error(f"Cortex conversation error: {e}")
+                        error_message = f"Sorry, I encountered an error: {e}"
+
+                        def finish_with_error():
+                            bubble = cortex_bubble[0]
+                            if bubble:
+                                bubble.set_message(error_message)
+                                bubble.update_state("ERROR")
+                            else:
+                                self._add_bubble(
+                                    "STEWARD", error_message,
+                                    NEON_PURPLE, align="left", state="ERROR",
+                                )
+
+                        self._safe_after(finish_with_error)
                 else:
                     self._safe_after(lambda: self._add_bubble(
                         "STEWARD",

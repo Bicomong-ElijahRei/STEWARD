@@ -60,5 +60,6 @@ AGENT_ROUTING_KEYS = {
     "PC_CONTROL": "Click",
     "RAG": "Scout",
     "CODING": "Syntax",
+    "GENERAL_CHAT": "Cortex",
     "UNKNOWN": "Cortex",
 }

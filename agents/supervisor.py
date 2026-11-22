@@ -18,6 +18,7 @@ AGENT_FILE_OP = "FILE_OP"
 AGENT_PC_CONTROL = "PC_CONTROL"
 AGENT_RAG = "RAG"
 AGENT_CODING = "CODING"
+AGENT_GENERAL_CHAT = "GENERAL_CHAT"
 AGENT_UNKNOWN = "UNKNOWN"
 
 VALID_AGENT_TYPES = frozenset({
@@ -25,6 +26,7 @@ VALID_AGENT_TYPES = frozenset({
     AGENT_PC_CONTROL,
     AGENT_RAG,
     AGENT_CODING,
+    AGENT_GENERAL_CHAT,
     AGENT_UNKNOWN,
 })
 
@@ -37,7 +39,10 @@ Available agents:
   containing search, find, recall, or "what does my file say" here unless the
   user explicitly requests a filesystem mutation or file listing.
 - CODING: Code generation, debugging, refactoring
-- UNKNOWN: Cannot classify / general conversation
+- GENERAL_CHAT: General conversation, greetings, casual chat, and questions that
+  do not require a specialist agent. This includes questions about STEWARD's
+  capabilities and requests such as "hello", "how are you?", or "what can you do?"
+- UNKNOWN: Cannot classify the request / malformed or invalid routing response
 
 Classify the user's input into exactly one of these categories.
 Output STRICT JSON only, no markdown, no explanation:
@@ -45,7 +50,8 @@ Output STRICT JSON only, no markdown, no explanation:
 {"agent": "PC_CONTROL", "action": "brief description"}
 {"agent": "RAG", "action": "brief description"}
 {"agent": "CODING", "action": "brief description"}
-{"agent": "UNKNOWN", "action": "general conversation or unrecognized request"}
+{"agent": "GENERAL_CHAT", "action": "brief description of the conversation or question"}
+{"agent": "UNKNOWN", "action": "unrecognized request"}
 
 Examples:
 User: "move file report.pdf to Sorted/Finance"
@@ -64,7 +70,16 @@ User: "open Chrome and navigate to google.com"
 Output: {"agent": "PC_CONTROL", "action": "open Chrome and navigate to google.com"}
 
 User: "hello"
-Output: {"agent": "UNKNOWN", "action": "greeting"}
+Output: {"agent": "GENERAL_CHAT", "action": "greeting"}
+
+User: "what can you do?"
+Output: {"agent": "GENERAL_CHAT", "action": "question about STEWARD capabilities"}
+
+User: "how are you?"
+Output: {"agent": "GENERAL_CHAT", "action": "casual conversation"}
+
+User: "check if ai responds"
+Output: {"agent": "GENERAL_CHAT", "action": "check whether Cortex responds naturally"}
 """
 
 
