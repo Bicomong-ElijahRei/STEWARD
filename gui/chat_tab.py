@@ -337,7 +337,11 @@ class ChatTab(ctk.CTkFrame):
         self.after_idle(self._scroll_chat)
 
     def _scroll_chat(self):
-        self.chat_display._parent_canvas.yview_moveto(1.0)
+        try:
+            if hasattr(self.chat_display, '_parent_canvas'):
+                self.chat_display._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass  # Widget may have been destroyed
 
     def append_chat(self, sender, message):
         self._add_bubble(sender, message, TEXT_BRIGHT, align="left")

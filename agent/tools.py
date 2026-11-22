@@ -134,7 +134,10 @@ def find_duplicates(directory, progress_callback=None):
                 progress_callback(i + 1, total, filepath)
             try:
                 with open(filepath, 'rb') as f:
-                    file_hash = hashlib.sha256(f.read()).hexdigest()
+                    file_hash = hashlib.sha256()
+                    for chunk in iter(lambda: f.read(8192), b''):
+                        file_hash.update(chunk)
+                    file_hash = file_hash.hexdigest()
             except (OSError, PermissionError, IOError) as e:
                 print(f"[WARN] Skipping {filepath}: {e}")
                 skipped += 1

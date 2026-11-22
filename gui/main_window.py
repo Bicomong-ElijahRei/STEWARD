@@ -171,12 +171,23 @@ class StewardGUI:
 
     def hide_window(self):
         self.root.withdraw()
-        self.tray_icon.notify("STEWARD is still running in the background", "STEWARD")
+        if hasattr(self, 'tray_icon') and self.tray_icon:
+            self.tray_icon.notify("STEWARD is running in the background", "STEWARD")
+
+    def _perform_shutdown(self):
+        """Centralized shutdown: stop observer, tray, then quit."""
+        if hasattr(self, 'observer') and self.observer and self.daemon_running:
+            self.observer.stop()
+            self.observer.join(timeout=2.0)
+        if hasattr(self, 'tray_icon') and self.tray_icon:
+            self.tray_icon.stop()
+        self.root.quit()
+        self.root.destroy()
 
     def quit_app(self):
-        self.tray_icon.stop()
-        self.root.quit()
+        # Marshaled to main thread if called from tray
+        self.root.after(0, self._perform_shutdown)
 
     def on_closing(self):
         if messagebox.askokcancel("Quit", "Do you want to quit STEWARD?"):
-            self.root.destroy()
+            self._perform_shutdown()
