@@ -3,6 +3,7 @@ import time
 import re
 import shutil
 import threading
+from collections import OrderedDict
 from threading import Event
 from watchdog.events import FileSystemEventHandler
 from utils.helpers import read_file_content_simple
@@ -14,23 +15,43 @@ class FileCreationHandler(FileSystemEventHandler):
         self.agent = agent
         self.dest_base = dest_base
         self.root = root
-        self.last_processed = set()
+        self.last_processed = OrderedDict()
 
     def on_created(self, event):
         if event.is_directory:
             return
-        time.sleep(0.5)
         filepath = event.src_path
         if filepath in self.last_processed:
+            self.last_processed.move_to_end(filepath)
             return
-        self.last_processed.add(filepath)
-        if len(self.last_processed) > 1000:
-            self.last_processed.clear()
+        self.last_processed[filepath] = True
+        while len(self.last_processed) > 1000:
+            self.last_processed.popitem(last=False)
         threading.Thread(target=self._process_file, args=(filepath,), daemon=True).start()
+
+    @staticmethod
+    def _wait_until_stable(filepath, timeout=10.0, interval=0.5):
+        deadline = time.time() + timeout
+        last_size = -1
+        while time.time() < deadline:
+            try:
+                size = os.path.getsize(filepath)
+            except OSError:
+                return False
+            if size == last_size:
+                return True
+            last_size = size
+            time.sleep(interval)
+        return False
 
     def _process_file(self, filepath):
         try:
-            result = self.agent.categorise_file(filepath, self.dest_base, self.root)
+            if not self._wait_until_stable(filepath):
+                print(f"[Daemon] Skipped (still growing or missing): {filepath}")
+                return
+            result = self.agent.categorise_file(
+                filepath, self.dest_base, self.root, dry_run=False
+            )
             print(f"[Daemon] {result}")
         except Exception as e:
             print(f"[Daemon] Error: {e}")

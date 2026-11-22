@@ -4,10 +4,13 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
+from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from agent.daemon import FileCreationHandler
 from agents.file_agent import FileAgent
 from agents.supervisor import AGENT_FILE_OP, AGENT_PC_CONTROL
 import core.database as database_module
@@ -15,6 +18,8 @@ from core.database import DatabaseManager
 from core.router import APIManager
 from gui.chat_tab import ChatTab
 from gui.live_feed import LiveFeedWidget
+from gui.main_window import StewardGUI
+from gui.organizer_tab import FilePreviewRow, OrganizerTab
 from gui.settings_tab import SettingsTab
 
 
@@ -1215,5 +1220,226 @@ class Batch2BTests(unittest.TestCase):
             names = {t["function"]["name"] for t in agent._get_tool_definitions()}
             self.assertNotIn("undo_last", names)
             self.assertNotIn("redo_last", names)
+
+
+class Batch3Tests(unittest.TestCase):
+    """Batch 3b regressions: daemon stability/dedup, per-call dry_run,
+    main-thread preview, categorise dest_base sandbox, shutdown lifecycle."""
+
+    def make_agent(self, root):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(api_manager=Mock(), root_path=root)
+        agent.OPERATION_LOG_PATH = log_path
+        agent._record_operation = Mock()
+        return agent
+
+    # M2 stability: _wait_until_stable must exist and report changing vs stable.
+    def test_wait_until_stable_exists_and_detects_stability(self):
+        handler = FileCreationHandler.__new__(FileCreationHandler)
+        handler.root = tempfile.mkdtemp()
+        handler.dest_base = os.path.join(handler.root, "Sorted")
+        os.makedirs(handler.dest_base)
+        filepath = os.path.join(handler.root, "Incoming", "growing.txt")
+        os.makedirs(os.path.dirname(filepath))
+        with open(filepath, "w", encoding="utf-8") as fh:
+            fh.write("a")
+
+        index = [0]
+
+        def fake_getsize(path):
+            if path == filepath:
+                index[0] += 1
+                return index[0]
+            return os.path.getsize(path)
+
+        with patch("agent.daemon.os.path.getsize", side_effect=fake_getsize), \
+             patch("agent.daemon.time.sleep", return_value=None):
+            self.assertFalse(handler._wait_until_stable(filepath, timeout=2.0, interval=0.01))
+
+        with patch("agent.daemon.os.path.getsize", return_value=5), \
+             patch("agent.daemon.time.sleep", return_value=None):
+            self.assertTrue(handler._wait_until_stable(filepath, timeout=2.0, interval=0.01))
+
+    # M2 dedup: after 1001 on_created calls, the most recent path is still tracked.
+    def test_dedup_keeps_most_recent_after_1001(self):
+        handler = FileCreationHandler.__new__(FileCreationHandler)
+        handler.root = tempfile.mkdtemp()
+        handler.dest_base = os.path.join(handler.root, "Sorted")
+        os.makedirs(handler.dest_base)
+
+        handler.last_processed = OrderedDict()
+
+        with patch("agent.daemon.threading.Thread"), \
+             patch("agent.daemon.time.sleep", return_value=None), \
+             patch.object(handler, "_process_file"):
+            for i in range(1001):
+                path = os.path.join(handler.root, f"file_{i}.txt")
+                handler.on_created(SimpleNamespace(is_directory=False, src_path=path))
+
+        most_recent = os.path.join(handler.root, "file_1000.txt")
+        self.assertIn(most_recent, handler.last_processed)
+
+    # M3 per-call: categorise_file(..., dry_run=False) moves even when agent.dry_run is True.
+    def test_categorise_file_per_call_dry_run_overrides_agent_flag(self):
+        with tempfile.TemporaryDirectory(prefix="steward_m3_percall_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            src = os.path.join(incoming, "note.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("hello world")
+
+            agent = self.make_agent(tmp)
+            agent.dry_run = True
+            agent.api_manager = Mock()
+            agent.api_manager.route_request.return_value = {
+                "choices": [{"message": {"content": "Docs"}}]
+            }
+            agent.read_file_content = Mock(return_value="hello world")
+            agent.create_folder = Mock(return_value="Created Docs")
+            agent.move_file = Mock(return_value="Moved note.txt -> Sorted/Docs/note.txt")
+
+            result = agent.categorise_file(src, sorted_dir, dry_run=False)
+            agent.move_file.assert_called_once()
+            self.assertIn("Moved", result)
+
+    # M3 shared flag: execute_selected must not flip agent.dry_run mid-flight.
+    def test_execute_selected_keeps_agent_dry_run_true(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        captured = {}
+
+        def fake_move_file(source, destination):
+            captured["dry_run"] = organizer.file_agent.dry_run
+            return "Moved"
+
+        organizer.file_agent = Mock()
+        organizer.file_agent.dry_run = True
+        organizer.file_agent.move_file = fake_move_file
+        organizer.gui = None
+        organizer.pending_operations = [
+            {
+                "filename": "a.txt",
+                "source": "Incoming/a.txt",
+                "destination": "Sorted/a.txt",
+                "selected": True,
+            }
+        ]
+        organizer.btn_execute = Mock()
+        organizer._log = Mock()
+        organizer.after = Mock(side_effect=lambda delay, callback: None)
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with patch("gui.organizer_tab.messagebox.askyesno", return_value=True), \
+             patch("gui.organizer_tab.messagebox.showinfo"), \
+             patch("gui.organizer_tab.threading.Thread", ImmediateThread):
+            organizer.execute_selected()
+
+        self.assertEqual(captured.get("dry_run"), True, captured)
+
+    # N6: categorise_file rejects dest_base outside the sandbox and moves nothing.
+    def test_categorise_file_rejects_dest_base_outside_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="steward_n6_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            outside = os.path.join(tmp, "Outside")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            os.makedirs(outside)
+            src = os.path.join(incoming, "note.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("hello")
+
+            agent = self.make_agent(tmp)
+            agent.dry_run = False
+            agent.read_file_content = Mock(return_value="hello")
+            agent.api_manager = Mock()
+            agent.api_manager.route_request.return_value = {
+                "choices": [{"message": {"content": "Docs"}}]
+            }
+            agent.create_folder = Mock()
+            agent.move_file = Mock(return_value="Moved")
+
+            result = agent.categorise_file(src, outside)
+            self.assertIn("Sandbox violation", result)
+            agent.create_folder.assert_not_called()
+            agent.move_file.assert_not_called()
+
+    # M8: preview rows must be built on the Tk main thread, never on the worker.
+    def test_preview_rows_built_on_main_thread(self):
+        recorded = []
+
+        class RecordingRow:
+            def __init__(self, parent, filename, source, destination, on_toggle,
+                         *args, **kwargs):
+                recorded.append(threading.current_thread().name)
+
+            def pack(self, *args, **kwargs):
+                pass
+
+            def destroy(self):
+                pass
+
+        tmp_in = tempfile.mkdtemp(prefix="m8_in_")
+        tmp_dest = tempfile.mkdtemp(prefix="m8_dest_")
+        with open(os.path.join(tmp_in, "a.txt"), "w", encoding="utf-8") as fh:
+            fh.write("a")
+
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.preview_container = Mock()
+        organizer.preview_rows = []
+        organizer.pending_operations = []
+        organizer.btn_execute = Mock()
+        organizer._log = Mock()
+        organizer.watched_var = Mock()
+        organizer.watched_var.get.return_value = tmp_in
+        organizer.dest_var = Mock()
+        organizer.dest_var.get.return_value = tmp_dest
+        organizer.file_agent = Mock()
+        organizer.file_agent.read_file_content = Mock(return_value="content")
+        organizer.file_agent.system_prompt = "prompt"
+        organizer.file_agent.api_manager = Mock()
+        organizer.file_agent.api_manager.route_request.return_value = {
+            "choices": [{"message": {"content": "Docs"}}]
+        }
+
+        callbacks = []
+        organizer.after = Mock(side_effect=lambda delay, callback: callbacks.append(callback))
+
+        with patch("gui.organizer_tab.FilePreviewRow", RecordingRow), \
+             patch("gui.organizer_tab.os.listdir", return_value=["a.txt"]):
+            thread = threading.Thread(target=organizer.preview_incoming, daemon=True)
+            thread.start()
+            thread.join()
+
+            for cb in callbacks:
+                cb()
+
+        self.assertTrue(recorded, "No FilePreviewRow was constructed")
+        self.assertTrue(all(name == "MainThread" for name in recorded), recorded)
+
+    # L3 observer: _perform_shutdown must stop the organizer's daemon.
+    def test_perform_shutdown_stops_organizer_daemon(self):
+        gui = StewardGUI.__new__(StewardGUI)
+        organizer = Mock()
+        organizer.daemon_running = True
+        gui.tabs = {"organizer": organizer}
+        gui.root = Mock()
+        gui.tray_icon = Mock()
+        gui._perform_shutdown()
+        organizer.stop_daemon.assert_called_once()
+
+    # L3 dead path: on_closing must not exist.
+    def test_on_closing_removed(self):
+        self.assertFalse(hasattr(StewardGUI, "on_closing"))
+
+
 if __name__ == "__main__":
     unittest.main()

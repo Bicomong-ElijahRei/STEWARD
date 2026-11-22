@@ -258,13 +258,11 @@ class OrganizerTab(ctk.CTkFrame):
         self.preview_rows.clear()
         self.pending_operations.clear()
 
-        self.file_agent.dry_run = True
-
         def process():
+            planned = []
             for f in files:
                 filepath = os.path.join(incoming, f)
                 content = self.file_agent.read_file_content(filepath)
-
                 messages = [
                     {"role": "system", "content": self.file_agent.system_prompt},
                     {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
@@ -276,32 +274,35 @@ class OrganizerTab(ctk.CTkFrame):
                     category = resp["choices"][0]["message"]["content"].strip()
                 except Exception:
                     category = "Other"
-
                 category = category.strip().replace("/", "_").replace("\\", "_")
-                dest_folder = os.path.join(dest, category)
-                dest_path = os.path.join(dest_folder, f)
-
-                row = FilePreviewRow(
-                    self.preview_container,
-                    filename=f,
-                    source=filepath,
-                    destination=dest_path,
-                    on_toggle=self._on_row_toggle,
-                )
-                self.after(0, lambda r=row: r.pack(fill="x", padx=10, pady=3))
-                self.after(0, lambda r=row: self.preview_rows.append(r))
-
-                self.pending_operations.append({
-                    "filename": f,
-                    "source": filepath,
-                    "destination": dest_path,
-                    "selected": True,
-                })
-
-            self.after(0, lambda: self._log(f"Dry-run preview: {len(files)} files ready to organize."))
-            self.after(0, lambda: self.btn_execute.configure(state="normal"))
+                planned.append((f, filepath, os.path.join(dest, category, f)))
+            self.after(0, lambda: self._render_preview(planned))
 
         threading.Thread(target=process, daemon=True).start()
+
+    def _render_preview(self, planned):
+        for row in self.preview_rows:
+            row.destroy()
+        self.preview_rows.clear()
+        self.pending_operations.clear()
+        for filename, source, dest_path in planned:
+            row = FilePreviewRow(
+                self.preview_container,
+                filename=filename,
+                source=source,
+                destination=dest_path,
+                on_toggle=self._on_row_toggle,
+            )
+            row.pack(fill="x", padx=10, pady=3)
+            self.preview_rows.append(row)
+            self.pending_operations.append({
+                "filename": filename,
+                "source": source,
+                "destination": dest_path,
+                "selected": True,
+            })
+        self._log(f"Dry-run preview: {len(planned)} files ready to organize.")
+        self.btn_execute.configure(state="normal")
 
     def _on_row_toggle(self, filename, selected):
         for op in self.pending_operations:
@@ -325,7 +326,6 @@ class OrganizerTab(ctk.CTkFrame):
             self._log("Execution cancelled by user.")
             return
 
-        self.file_agent.dry_run = False
         self.btn_execute.configure(state="disabled")
 
         def process():
@@ -339,7 +339,6 @@ class OrganizerTab(ctk.CTkFrame):
                     self.after(0, lambda e=e: self._log(f"[Execute] Error: {e}"))
             self.after(0, lambda: self._log("Execution complete."))
             self.after(0, lambda: self.btn_execute.configure(state="normal"))
-            self.file_agent.dry_run = True
 
         threading.Thread(target=process, daemon=True).start()
 

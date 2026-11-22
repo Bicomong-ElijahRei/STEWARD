@@ -26,7 +26,7 @@ class StewardGUI:
         root.title("STEWARD – Cyber-Kawaii Mission Control")
         root.geometry("1400x850")
         root.configure(fg_color=BG_DEEP_SPACE)
-        root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
         apply_theme()
 
@@ -176,9 +176,9 @@ class StewardGUI:
 
     def _perform_shutdown(self):
         """Centralized shutdown: stop observer, tray, then quit."""
-        if hasattr(self, 'observer') and self.observer and self.daemon_running:
-            self.observer.stop()
-            self.observer.join(timeout=2.0)
+        organizer = self.tabs.get("organizer")
+        if organizer is not None and getattr(organizer, "daemon_running", False):
+            organizer.stop_daemon()
         if hasattr(self, 'tray_icon') and self.tray_icon:
             self.tray_icon.stop()
         self.root.quit()
@@ -187,7 +187,3 @@ class StewardGUI:
     def quit_app(self):
         # Marshaled to main thread if called from tray
         self.root.after(0, self._perform_shutdown)
-
-    def on_closing(self):
-        if messagebox.askokcancel("Quit", "Do you want to quit STEWARD?"):
-            self._perform_shutdown()

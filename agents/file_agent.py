@@ -753,9 +753,13 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             return f"Error: {exc}"
         return _get_file_info(safe_path)
 
-    def categorise_file(self, filepath: str, dest_base: str, root_window=None) -> str:
+    def categorise_file(self, filepath: str, dest_base: str, root_window=None, dry_run=None) -> str:
         try:
             filepath = self._sandbox_path(filepath)
+        except (OSError, TypeError, ValueError) as exc:
+            return f"Error: {exc}"
+        try:
+            dest_base = self._sandbox_path(dest_base)
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
         if not os.path.exists(filepath):
@@ -784,7 +788,8 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         dest_folder = os.path.join(dest_base, category)
         dest_path = os.path.join(dest_folder, os.path.basename(filepath))
 
-        if self.dry_run:
+        effective_dry_run = self.dry_run if dry_run is None else dry_run
+        if effective_dry_run:
             return f"[Dry Run] Would categorise '{filepath}' as '{category}' → move to '{dest_path}'"
 
         self.create_folder(dest_folder)
