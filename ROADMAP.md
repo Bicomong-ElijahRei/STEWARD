@@ -12,12 +12,15 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 - **v2.2 — Visuals & RAG (Done):** Cyber-Kawaii animations, responsive live agent
   constellation, formatted chat states, and persistent grounded RAG ingestion and
   retrieval.
-- **v2.3 — Learning & Rules (Current):** deterministic `rules.yaml` categorization,
+- **v2.3 — Learning & Rules (Done):** deterministic `rules.yaml` categorization,
   priority-ordered matching, LLM bypass for known patterns, manual override
   learning, and visible rule/chat indicators.
-- **v3.0 — Hierarchical Swarm & Phase D (Future):** bounded manager/worker
-  delegation, meta-prompting, surgical code workflows, self-healing loops, and
-  research-backed integrations such as MCP, scheduling, voice, and remote control.
+- **v2.4 — Hierarchical Swarm & Scheduling (Current):** readable plain-text Markdown
+  chat rendering, Cortex-to-specialist delegation with bounded workers, failure
+  isolation, and Live Feed observability, plus restart-persistent recurring file scans.
+- **v3.0 — Advanced Code Intelligence & Phase D (Future):** meta-prompting,
+  surgical code workflows, self-healing loops, and research-backed integrations such
+  as MCP, voice, and remote control.
 
 ---
 
@@ -77,8 +80,10 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 ## 🧠 Phase C: The Swarm & Code Intelligence
 *Goal: Make STEWARD an autonomous coding beast that rivals Cline.*
 
-- [ ] **Hierarchical Agent Swarm (Brain → Managers → Workers):**
-  - **Architecture:** Upgrade `agents/supervisor.py`. `Cortex` (Supervisor) talks to a `CodingManager`. The Manager breaks tasks down and assigns them to `SyntaxWorker` agents.
+- [x] **Hierarchical Agent Swarm (Brain → Managers → Workers):**
+  - **Architecture:** `Cortex` (Supervisor) parses a validated, eight-task-max breakdown and delegates it to registered specialist workers.
+  - **Specialists:** Foldy handles dry-run file previews, Scout performs RAG search, and Click/Syntax have provider-backed fallbacks.
+  - **Reliability:** Results are synthesized by Cortex, specialist failures are isolated, and delegation start/completion is visible in the Live Feed.
 - [ ] **Meta-Prompting (Architect + Builder):**
   - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint. `Syntax` uses a fast model to execute the blueprint.
 - [ ] **AST Parsing & JSON Patches:**
@@ -96,7 +101,7 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 
 - [ ] **MCP (Model Context Protocol) Support:** Connect STEWARD to databases, web browsers, and third-party SaaS apps using Anthropic's open standard.
 - [ ] **Screen-Aware Automation:** `Click` (PC Agent) uses `llama3.2-vision` to take a screenshot, analyze the UI, and decide where to click.
-- [ ] **Scheduled Agents:** A background scheduler (using the `schedule` library) to run tasks like "Organize Downloads every Friday".
+- [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, and shutdown cancels the worker cleanly.
 - [ ] **Voice Activation:** `pyaudio` + `whisper` integration for hands-free wake-word control.
 - [ ] **Phone Remote Control:** A lightweight `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi.
 

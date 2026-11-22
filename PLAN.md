@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 37f03ba2 | v2.4 Hierarchical Swarm & Scheduling: added readable plain-text Markdown chat rendering, bounded Cortex-to-specialist delegation with failure isolation and Live Feed observability, and restart-persistent recurring file scans with Organizer controls; 175/175 unit tests green.
 2026-11-23 | f1d98141 | P2 Learning Module: added deterministic priority-ordered rules.yaml categorization, pre-LLM Foldy bypass, manual override learning, Organizer rule display, and `[Rule]` chat labeling; 153/153 unit tests green.
 2026-11-23 | e3ae8871 | Phase C5 RAG integration: persistent ChromaDB ingestion/chunking/embedding/retrieval, source-change replacement, recursive document ingestion, deterministic Scout routing, and Chat search results; 138/138 unit tests green.
 2026-11-23 | 2b9e5031 | Snoop & Fix pass 5: closed credential/provider lifecycle gaps, marked bounded file previews, hardened category sanitization, added bounded supervisor FILE_OP follow-up context, invalidated stale organizer previews, exposed live-feed clearing, and widened responsive constellation bounds; 127/127 unit tests green.
@@ -40,12 +41,16 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: f1d98141 (P2 Learning Module)
-Suite: test_phase0_phase_a.py 153 green; test_validator.py 5/5
+Implementation baseline: 37f03ba2 (v2.4 Hierarchical Swarm & Scheduling)
+Suite: 175/175 unit tests green
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2 | Markdown chat rendering,
+  bounded observable Cortex delegation, and persistent recurring file scans. Proof:
+  MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests; 175/175
+  unit tests green.
 - P2 Learning Module (rules.yaml) — DONE | f1d98141 | deterministic
   priority-ordered filename rules load from and persist to YAML; known patterns bypass
   the Foldy LLM categorization request; rule targets are sanitized before folder
@@ -56,7 +61,7 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
-v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules current at f1d98141. New findings go to the backlog.
+v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling current at 37f03ba2. New findings go to the backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -170,9 +175,13 @@ nothing when the window closes mid-animation (depends N1/N2 closed).
 ## PHASE C — Swarm & Code Intelligence (WHAT only)
 Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safety batch
 (new threat surface) before merge; feature tests alone are not sufficient to merge.
-- C1  BACKLOG | Hierarchical swarm: Cortex delegates to a CodingManager which spawns
-      bounded SyntaxWorkers. Accept: observable delegation in live feed; worker count
-      bounded; failure of one worker does not kill the run. Est 10-20h.
+- C1  DONE | 37f03ba2 | Hierarchical swarm: Cortex parses a validated task breakdown,
+      delegates to registered specialist workers, isolates worker failures, and synthesizes
+      the surviving results. Foldy is a dry-run file preview, Scout is RAG search, and
+      Click/Syntax use provider-backed fallbacks. Accept: delegation start and each
+      specialist completion are visible in Live Feed; worker count is bounded to eight;
+      failure of one worker does not kill the run. Proof: HierarchicalSwarmTests and
+      GUI delegation-routing tests; 175/175 unit tests green.
 - C2  BACKLOG | Meta-prompting: architect produces a plan, builder implements it, as
       separate routed steps. Accept: plan artifact exists and is reviewable before any
       edit. Est 5-10h.
@@ -193,8 +202,12 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - D2  BACKLOG | Screen-aware automation: screenshot -> vision analysis -> action.
       Accept: correct action on a controlled target; refuses ambiguous targets.
       Est 15-30h + safety batch.
-- D3  BACKLOG | Scheduled agents: timed/recurring tasks. Accept: task runs on schedule,
-      survives restart, cancellable. Est 3-6h.
+- D3  DONE | 37f03ba2 | Scheduled agents: an instance-local background scanner runs the
+      real file categorization/move path at configurable 15-minute, 30-minute, 1-hour,
+      or 6-hour intervals. Accept: task runs on schedule, preference and last-run state
+      survive restart in AppData, cancellation is clean, and shutdown stops the worker.
+      Proof: ScheduledScannerTests cover execution, interval validation, persistence, and
+      cancellation; 175/175 unit tests green.
 - D4  BACKLOG | Voice activation: wake word + speech-to-text command. Accept: hands-free
       command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
 - D5  BACKLOG | Phone remote control: authenticated API server. Accept: remote command
