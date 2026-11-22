@@ -4,6 +4,21 @@
 
 This document serves as the official technical roadmap for STEWARD v2. It outlines the architectural upgrades, UI/UX overhauls, and safety mechanisms required to make STEWARD a state-of-the-art desktop AI assistant.
 
+## Release Roadmap
+
+- **v2.1 — Core Safety & Credentials (Done):** canonical sandboxing, immutable
+  approval plans, bounded daemon processing, shared encrypted credential storage,
+  provider failover, and guarded migration tooling.
+- **v2.2 — Visuals & RAG (Done):** Cyber-Kawaii animations, responsive live agent
+  constellation, formatted chat states, and persistent grounded RAG ingestion and
+  retrieval.
+- **v2.3 — Learning & Rules (Current):** deterministic `rules.yaml` categorization,
+  priority-ordered matching, LLM bypass for known patterns, manual override
+  learning, and visible rule/chat indicators.
+- **v3.0 — Hierarchical Swarm & Phase D (Future):** bounded manager/worker
+  delegation, meta-prompting, surgical code workflows, self-healing loops, and
+  research-backed integrations such as MCP, scheduling, voice, and remote control.
+
 ---
 
 ## 📑 Table of Contents
@@ -86,4 +101,4 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 - [ ] **Phone Remote Control:** A lightweight `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi.
 
 ---
-*Created with ❤️ by Elijah Rei Z. Bicomong & The STEWARD Swarm*
+*Created with ❤️ by Elijah Rei Z. Bicomong*

@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | f1d98141 | P2 Learning Module: added deterministic priority-ordered rules.yaml categorization, pre-LLM Foldy bypass, manual override learning, Organizer rule display, and `[Rule]` chat labeling; 153/153 unit tests green.
 2026-11-23 | e3ae8871 | Phase C5 RAG integration: persistent ChromaDB ingestion/chunking/embedding/retrieval, source-change replacement, recursive document ingestion, deterministic Scout routing, and Chat search results; 138/138 unit tests green.
 2026-11-23 | 2b9e5031 | Snoop & Fix pass 5: closed credential/provider lifecycle gaps, marked bounded file previews, hardened category sanitization, added bounded supervisor FILE_OP follow-up context, invalidated stale organizer previews, exposed live-feed clearing, and widened responsive constellation bounds; 127/127 unit tests green.
 2026-11-23 | 58ac00f4 | Snoop & Fix pass 4: daemon now has identity-aware dedup, 4 workers/32 outstanding files, stop-responsive backpressure, and daemon-thread lifecycle; migration preserves valid shared links and bounds confirmation; 115/115 unit tests green.
@@ -39,14 +40,23 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: e3ae8871 (Phase C5 RAG integration)
-Suite: test_phase0_phase_a.py 138 green; test_validator.py 5/5
+Implementation baseline: f1d98141 (P2 Learning Module)
+Suite: test_phase0_phase_a.py 153 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
+## Implemented
+- P2 Learning Module (rules.yaml) — DONE | f1d98141 | deterministic
+  priority-ordered filename rules load from and persist to YAML; known patterns bypass
+  the Foldy LLM categorization request; rule targets are sanitized before folder
+  creation; manual overrides can learn a regex rule; the Organizer tab exposes the
+  current rules; and rule-based chat results are marked `[Rule]`. Proof:
+  RulesEngineTests cover bypass, fallback, priority, persistence, learning, sanitization,
+  UI display, and chat labeling; 153/153 unit tests green.
+
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
-v2.1 in progress: 4a, 4b, and 4c closed. New findings go to the backlog.
+v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules current at f1d98141. New findings go to the backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -195,7 +205,6 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - Conversation memory DONE | 2b9e5031 | Supervisor retains bounded instance-local context and the
   latest FILE_OP intent, merging only short noun-like follow-ups ("incoming", "by type").
 - pytest migration of the suite
-- rules.yaml override learner (learn from user corrections)
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
 - Move steward.db, secret.key, steward_operations.json out of the repo working directory
