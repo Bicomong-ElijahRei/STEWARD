@@ -2807,7 +2807,7 @@ class RAGTests(unittest.TestCase):
             "No relevant documents found in the knowledge base.",
         )
 
-    def test_chat_scout_searches_and_renders_known_result(self):
+    def test_chat_scout_searches_and_renders_synthesized_answer(self):
         chat, callbacks = ChatWorkflowTests().make_chat(
             routing={"agent": AGENT_RAG, "action": "semantic search"}
         )
@@ -2818,11 +2818,25 @@ class RAGTests(unittest.TestCase):
             "content": "STEWARD_RAG_TEST_TOKEN_123",
             "distance": 0.1,
         }]
+        chat.supervisor.api_manager.route_request.return_value = {
+            "choices": [{
+                "message": {
+                    "content": "The marker is STEWARD_RAG_TEST_TOKEN_123 (known.txt)."
+                }
+            }]
+        }
 
         with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
             chat.send_chat()
 
         chat.rag_agent.search.assert_called_once_with("semantic search", n_results=5)
+        synthesis_request = chat.supervisor.api_manager.route_request.call_args.kwargs
+        self.assertEqual(synthesis_request["agent_name"], "Scout")
+        self.assertFalse(synthesis_request["require_tools"])
+        self.assertIn(
+            "STEWARD_RAG_TEST_TOKEN_123",
+            synthesis_request["messages"][-1]["content"],
+        )
         for callback in callbacks:
             callback()
         rendered = [
@@ -2832,9 +2846,37 @@ class RAGTests(unittest.TestCase):
         self.assertIn("Scout is searching the archives...", rendered)
         scout_bubble = chat._add_bubble.return_value
         scout_bubble.set_message.assert_called_once()
+        message = scout_bubble.set_message.call_args.args[0]
+        self.assertIn("📚 **Answer:**", message)
+        self.assertIn("STEWARD_RAG_TEST_TOKEN_123", message)
+        self.assertIn("**Sources:**\n- known.txt", message)
+
+    def test_chat_scout_falls_back_to_formatted_results_when_synthesis_fails(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_RAG, "action": "semantic search"}
+        )
+        chat.rag_agent = Mock()
+        chat.rag_agent.search.return_value = [{
+            "source": "C:\\docs\\known.txt",
+            "content": "STEWARD_RAG_TEST_TOKEN_123\nis a searchable marker.",
+            "distance": 0.1,
+        }]
+        chat.supervisor.api_manager.route_request.side_effect = RuntimeError(
+            "synthesis unavailable"
+        )
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            with self.assertLogs("gui.chat_tab", level="WARNING"):
+                chat.send_chat()
+
+        for callback in callbacks:
+            callback()
+        message = chat._add_bubble.return_value.set_message.call_args.args[0]
+        self.assertIn("🔍 **Search Results:**", message)
+        self.assertIn("**known.txt**", message)
         self.assertIn(
-            "STEWARD_RAG_TEST_TOKEN_123",
-            scout_bubble.set_message.call_args.args[0],
+            "STEWARD_RAG_TEST_TOKEN_123 is a searchable marker.",
+            message,
         )
 
     def test_chat_scout_ingests_sorted_folder(self):
@@ -3127,6 +3169,33 @@ class GeneralConversationTests(unittest.TestCase):
             cb()
 
         ChatWorkflowTests().assert_input_restored(chat)
+
+
+class RAGSearchDisplayTests(unittest.TestCase):
+    def test_search_returns_formatted_results(self):
+        """Verify RAG search returns structured results with source and content."""
+        with tempfile.TemporaryDirectory(prefix="steward_rag_display_") as tmp:
+            test_file = os.path.join(tmp, "test.txt")
+            with open(test_file, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "STEWARD_RAG_TEST_TOKEN_123 is the unique searchable marker."
+                )
+
+            rag = RAGAgent(
+                persist_directory=os.path.join(tmp, "rag_index"),
+                collection_name="rag_search_display_test",
+                embedding_function=RAGTests.LexicalEmbeddingFunction(),
+            )
+            try:
+                rag.ingest_directory(tmp)
+                results = rag.search("STEWARD RAG TEST", n_results=1)
+
+                self.assertGreater(len(results), 0)
+                self.assertIn("source", results[0])
+                self.assertIn("content", results[0])
+                self.assertIn("STEWARD_RAG_TEST_TOKEN_123", results[0]["content"])
+            finally:
+                rag.close()
 
 
 if __name__ == "__main__":

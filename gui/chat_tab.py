@@ -531,15 +531,67 @@ class ChatTab(ctk.CTkFrame):
                         else:
                             results = rag_agent.search(action, n_results=5)
                             if results:
-                                formatted = "🔍 **Search Results:**\n\n"
-                                for index, result in enumerate(results, 1):
-                                    source = str(result.get("source", "Unknown"))
-                                    source = source.replace("\\", "/").rsplit("/", 1)[-1]
-                                    content = str(result.get("content", ""))[:200]
-                                    formatted += (
-                                        f"{index}. **{source}**\n{content}...\n\n"
+                                chunks_text = "\n\n".join([
+                                    f"Source: {result.get('source', 'Unknown')}\n"
+                                    f"Content: {result.get('content', '')}"
+                                    for result in results
+                                ])
+                                synthesis_messages = [
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "You are Scout, a document research assistant. "
+                                            "Based on the provided document excerpts, answer "
+                                            "the user's question clearly and concisely. Cite "
+                                            "the source file for each claim. If the excerpts "
+                                            "don't contain relevant information, say so."
+                                        ),
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            f"Question: {action}\n\n"
+                                            f"Document Excerpts:\n{chunks_text}"
+                                        ),
+                                    },
+                                ]
+
+                                try:
+                                    synthesis_response = self.supervisor.api_manager.route_request(
+                                        messages=synthesis_messages,
+                                        agent_name="Scout",
+                                        require_tools=False,
                                     )
-                                self._safe_after(lambda: finish_scout(formatted))
+                                    answer = synthesis_response["choices"][0]["message"].get(
+                                        "content", ""
+                                    ).strip()
+                                    if not answer:
+                                        raise ValueError("Scout returned an empty synthesis")
+
+                                    source_list = "\n".join([
+                                        f"- {self._rag_source_name(result.get('source'))}"
+                                        for result in results
+                                    ])
+                                    formatted_answer = (
+                                        f"📚 **Answer:**\n\n{answer}\n\n"
+                                        f"**Sources:**\n{source_list}"
+                                    )
+                                    self._safe_after(lambda: finish_scout(formatted_answer))
+                                except Exception as synth_error:
+                                    logger.warning(
+                                        "Synthesis failed, falling back to raw results: %s",
+                                        synth_error,
+                                    )
+                                    formatted = "🔍 **Search Results:**\n\n"
+                                    for index, result in enumerate(results, 1):
+                                        source = self._rag_source_name(result.get("source"))
+                                        content = " ".join(
+                                            str(result.get("content", "")).split()
+                                        )[:300]
+                                        formatted += (
+                                            f"{index}. **{source}**\n{content}...\n\n"
+                                        )
+                                    self._safe_after(lambda: finish_scout(formatted))
                             else:
                                 self._safe_after(lambda: finish_scout(
                                     "No relevant documents found in the knowledge base."
@@ -659,6 +711,12 @@ class ChatTab(ctk.CTkFrame):
             from agents.rag_agent import RAGAgent
             self.rag_agent = RAGAgent()
         return self.rag_agent
+
+    @staticmethod
+    def _rag_source_name(source):
+        """Return a source filename from either POSIX or Windows paths."""
+        value = str(source or "Unknown").replace("\\", "/").rstrip("/")
+        return value.rsplit("/", 1)[-1] or "Unknown"
 
     @staticmethod
     def _format_rag_results(query, results):
