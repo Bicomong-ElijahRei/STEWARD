@@ -16,6 +16,7 @@ stores providers/usage/traces. A watchdog daemon (`agent/daemon.py`) watches a f
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
+- `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler; identity-aware dedup + bounded daemon workers; calls FileAgent.categorise_file
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent, passes FileAgent to BOTH Chat and Organizer
@@ -24,11 +25,13 @@ stores providers/usage/traces. A watchdog daemon (`agent/daemon.py`) watches a f
 - `gui/settings_tab.py`  API Hub: provider CRUD, validation, discovery, assigned_agent dropdown
 - `gui/live_feed.py`     activity cards + provider failover flash
 
-## The two critical paths
-Chat request: send_chat -> supervisor.route -> AGENT_ROUTING_KEYS -> FileAgent.run(dry_run=True)
+## The critical paths
+Chat request: send_chat -> supervisor.route -> AGENT_ROUTING_KEYS -> specialist agent
 File op approval: run() stores deep-copied parsed plan + uuid4 plan id under _plan_lock
   -> ChatTab captures id AT PREVIEW TIME -> user approves -> execute_pending_plan(plan_id)
   -> _execute_tool_plan(dry_run=False) -> allowlist + path preflight -> _legacy_tool_functions[name]
+Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy ./rag_index)
+  -> RAGAgent.search -> ChromaDB query -> source/content/distance results -> formatted Chat bubble
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -80,7 +83,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_validator.py is standalone: `python test_validator.py`
 
 ## Tests
-- test_phase0_phase_a.py — 115 tests. Run: `python -m unittest discover -v`
+- test_phase0_phase_a.py — 138 tests. Run: `python -m unittest discover -v`
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

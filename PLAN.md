@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | e3ae8871 | Phase C5 RAG integration: persistent ChromaDB ingestion/chunking/embedding/retrieval, source-change replacement, recursive document ingestion, deterministic Scout routing, and Chat search results; 138/138 unit tests green.
 2026-11-23 | 2b9e5031 | Snoop & Fix pass 5: closed credential/provider lifecycle gaps, marked bounded file previews, hardened category sanitization, added bounded supervisor FILE_OP follow-up context, invalidated stale organizer previews, exposed live-feed clearing, and widened responsive constellation bounds; 127/127 unit tests green.
 2026-11-23 | 58ac00f4 | Snoop & Fix pass 4: daemon now has identity-aware dedup, 4 workers/32 outstanding files, stop-responsive backpressure, and daemon-thread lifecycle; migration preserves valid shared links and bounds confirmation; 115/115 unit tests green.
 2026-11-23 | 049891af | Snoop & Fix pass 3: bounded daemon concurrency, hardened migration wrapper/workflow, and regression coverage; 113/113 unit tests green.
@@ -38,8 +39,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 2b9e5031 (Snoop & Fix pass 5)
-Suite: test_phase0_phase_a.py 127 green; test_validator.py 5/5
+Implementation baseline: e3ae8871 (Phase C5 RAG integration)
+Suite: test_phase0_phase_a.py 138 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
@@ -171,9 +172,10 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.
-- C5  BACKLOG | RAG infinite context: ChromaDB ingestion, chunking, embeddings, retrieval,
-      file sync. Accept: retrieval returns relevant chunks for a known document; index
-      updates when the file changes. Est 15-25h.
+- C5  DONE | 8665d86d | RAG infinite context: ChromaDB ingestion, 500-character chunks with
+      50-character overlap, default MiniLM embeddings, bounded retrieval, source-change
+      replacement, recursive TXT/PDF/DOCX ingestion, and Scout Chat results. Proof:
+      known-token retrieval and changed-file replacement covered by RAGTests; 138/138 green.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server

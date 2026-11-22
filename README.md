@@ -4,7 +4,10 @@ language requests across multiple LLM providers and executes sandboxed file oper
 preview, explicit approval, and undo/redo.
 
 ## What it actually does today
-- Chat: a supervisor (Cortex) classifies intent and routes to the file agent (Foldy).
+- Chat: a supervisor (Cortex) classifies intent and routes to the file agent (Foldy)
+  or semantic search agent (Scout).
+- Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
+  overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - File operations: preview a plan, approve it by ID, execute exactly the approved plan.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
@@ -41,20 +44,22 @@ run. Both are gitignored — back them up, they are not recoverable from the rep
 python -m unittest discover -v
 python test_validator.py
 ```
-115 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo
-semantics, credential recovery, migration safety, daemon concurrency, and GUI threading/lifecycle.
+138 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo
+semantics, credential recovery, migration safety, daemon concurrency, RAG ingestion/retrieval,
+and GUI threading/lifecycle.
 
 ## Architecture
-See ARCHITECTURE.md for the module map and the two critical request paths.
+See ARCHITECTURE.md for the module map and critical request paths.
 See PLAN.md for scope, status, and the roadmap.
 See docs/MIGRATION_GUIDE.md for the guarded shared-credential migration workflow.
 Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires explicit
 confirmation and a verified database/key/operation-log backup set.
 
 ## Known limitations
-- Chat handles file-operation intents. Click (PC control), Scout (RAG), and Syntax (coding)
-  are registered personas but not implemented; general conversation falls through to a
-  canned response.
+- Click (PC control) and Syntax (coding) are registered personas but not implemented;
+  general conversation falls through to a canned response.
+- Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
+  the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
@@ -62,5 +67,5 @@ confirmation and a verified database/key/operation-log backup set.
 - No packaging/installer yet.
 
 ## Roadmap
-Phase B (UI motion), Phase C (agent swarm, AST patching, RAG), Phase D (MCP, vision, voice,
-remote) are specified in PLAN.md as backlog, not implemented.
+Phase C5 (RAG) is implemented; Phase C swarm/AST work and Phase D (MCP, vision, voice,
+remote) remain backlog in PLAN.md.
