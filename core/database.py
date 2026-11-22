@@ -9,7 +9,8 @@ import json
 import threading
 import os
 import uuid
-from datetime import datetime, timedelta
+import urllib.parse
+from datetime import datetime, timezone, timedelta
 from cryptography.fernet import Fernet, InvalidToken
 
 DB_PATH = os.path.join(os.getcwd(), "steward.db")
@@ -20,6 +21,17 @@ DECRYPTION_ERROR = (
     "or re-enter the provider's API key."
 )
 
+def normalize_base_url(url: str) -> str:
+    """Normalize base URL: strip whitespace, trailing slashes, and lowercase scheme + host."""
+    if not url:
+        return ""
+    url = url.strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    return urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
+
 class DatabaseManager:
     def __init__(self, db_path: str = DB_PATH, key_path: str = KEY_PATH):
         self.db_path = db_path
@@ -29,6 +41,7 @@ class DatabaseManager:
         self._cipher = Fernet(self._key)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
         self.decryption_errors = {}
         self._create_tables()
 
@@ -36,6 +49,11 @@ class DatabaseManager:
         if os.path.exists(self.key_path):
             with open(self.key_path, "rb") as f:
                 return f.read()
+        elif os.path.exists(self.db_path):
+            raise RuntimeError(
+                f"Database exists at '{self.db_path}' but secret.key is missing at '{self.key_path}'. "
+                "Refusing to generate a new key to avoid permanent loss of encrypted data."
+            )
         else:
             key = Fernet.generate_key()
             with open(self.key_path, "wb") as f:
@@ -53,6 +71,22 @@ class DatabaseManager:
     def _create_tables(self):
         with self._lock:
             cursor = self._conn.cursor()
+            # Credentials table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS credentials (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_url_normalized TEXT UNIQUE NOT NULL,
+                    api_key_encrypted BLOB NOT NULL,
+                    label TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_base_url_normalized 
+                ON credentials(base_url_normalized)
+            """)
+
             # Providers table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS providers (
@@ -68,7 +102,8 @@ class DatabaseManager:
                     supports_tools BOOLEAN DEFAULT 0,
                     assigned_agent TEXT DEFAULT 'Any',
                     cooldown_until TEXT,
-                    failure_count INTEGER DEFAULT 0
+                    failure_count INTEGER DEFAULT 0,
+                    credential_id INTEGER REFERENCES credentials(id) ON DELETE SET NULL
                 )
             """)
             cursor.execute("PRAGMA table_info(providers)")
@@ -78,6 +113,15 @@ class DatabaseManager:
                     "ALTER TABLE providers "
                     "ADD COLUMN assigned_agent TEXT DEFAULT 'Any'"
                 )
+            if "credential_id" not in provider_columns:
+                cursor.execute(
+                    "ALTER TABLE providers "
+                    "ADD COLUMN credential_id INTEGER REFERENCES credentials(id) ON DELETE SET NULL"
+                )
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_providers_credential_id 
+                ON providers(credential_id)
+            """)
             # Usage Ledger table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS usage_ledger (
@@ -102,18 +146,140 @@ class DatabaseManager:
             """)
             self._conn.commit()
 
+    def get_credential_by_url(self, base_url: str):
+        """Retrieve credential by base URL (normalized)."""
+        norm_url = normalize_base_url(base_url)
+        if not norm_url:
+            return None
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                "SELECT * FROM credentials WHERE base_url_normalized = ?",
+                (norm_url,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cred = dict(row)
+            try:
+                cred["api_key"] = self._decrypt(cred["api_key_encrypted"])
+            except InvalidToken:
+                cred["api_key"] = None
+                cred["decryption_error"] = DECRYPTION_ERROR
+            else:
+                cred["decryption_error"] = None
+            return cred
+
+    def get_credential_by_id(self, cred_id: int):
+        """Retrieve credential by ID."""
+        if cred_id is None:
+            return None
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM credentials WHERE id = ?", (cred_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cred = dict(row)
+            try:
+                cred["api_key"] = self._decrypt(cred["api_key_encrypted"])
+            except InvalidToken:
+                cred["api_key"] = None
+                cred["decryption_error"] = DECRYPTION_ERROR
+            else:
+                cred["decryption_error"] = None
+            return cred
+
+    def get_all_credentials(self):
+        """Retrieve all credentials."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM credentials")
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                cred = dict(row)
+                try:
+                    cred["api_key"] = self._decrypt(cred["api_key_encrypted"])
+                except InvalidToken:
+                    cred["api_key"] = None
+                    cred["decryption_error"] = DECRYPTION_ERROR
+                else:
+                    cred["decryption_error"] = None
+                results.append(cred)
+            return results
+
+    def set_credential(self, base_url: str, api_key: str, label: str = "") -> int:
+        """Create or update a shared credential. Returns credential ID."""
+        norm_url = normalize_base_url(base_url)
+        if not norm_url:
+            raise ValueError("base_url is required for set_credential")
+        enc_key = self._encrypt(api_key) if api_key else b""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("""
+                INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(base_url_normalized) DO UPDATE SET
+                    api_key_encrypted = excluded.api_key_encrypted,
+                    label = CASE WHEN excluded.label != '' THEN excluded.label ELSE credentials.label END,
+                    updated_at = excluded.updated_at
+            """, (norm_url, enc_key, label, now, now))
+            cursor.execute("SELECT id FROM credentials WHERE base_url_normalized = ?", (norm_url,))
+            row = cursor.fetchone()
+            cred_id = row["id"] if row else cursor.lastrowid
+            # Dual-write: update legacy column for all providers referencing this credential
+            cursor.execute(
+                "UPDATE providers SET api_key_encrypted = ? WHERE credential_id = ?",
+                (enc_key, cred_id)
+            )
+            self._conn.commit()
+            return cred_id
+
+    def delete_credential(self, cred_id: int) -> bool:
+        """Delete a credential by ID. Referencing providers have credential_id set to NULL via ON DELETE SET NULL."""
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
+            self._conn.commit()
+            return cursor.rowcount > 0
+
     def add_provider(self, name, base_url, api_key, model_name="",
                      is_local=False, is_active=True, speed_score_ms=9999,
                      intelligence_tier="Unknown", supports_tools=False,
-                     assigned_agent="Any"):
+                     assigned_agent="Any", credential_id=None):
         with self._lock:
-            enc_key = self._encrypt(api_key)
+            norm_url = normalize_base_url(base_url)
+            enc_key = self._encrypt(api_key) if api_key else b""
             cursor = self._conn.cursor()
+
+            # Resolve or associate credential_id if not given explicitly
+            if credential_id is None and not is_local and norm_url:
+                if api_key:
+                    now = datetime.now(timezone.utc).isoformat()
+                    cursor.execute("""
+                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(base_url_normalized) DO UPDATE SET
+                            api_key_encrypted = excluded.api_key_encrypted,
+                            updated_at = excluded.updated_at
+                    """, (norm_url, enc_key, name, now, now))
+                    cursor.execute("SELECT id FROM credentials WHERE base_url_normalized = ?", (norm_url,))
+                    cred_row = cursor.fetchone()
+                    credential_id = cred_row["id"] if cred_row else cursor.lastrowid
+                else:
+                    cursor.execute("SELECT id, api_key_encrypted FROM credentials WHERE base_url_normalized = ?", (norm_url,))
+                    existing_cred = cursor.fetchone()
+                    if existing_cred:
+                        credential_id = existing_cred["id"]
+                        enc_key = existing_cred["api_key_encrypted"]
+
             cursor.execute("""
                 INSERT INTO providers
                 (name, base_url, api_key_encrypted, model_name, is_local, is_active,
-                 speed_score_ms, intelligence_tier, supports_tools, assigned_agent)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 speed_score_ms, intelligence_tier, supports_tools, assigned_agent, credential_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                 base_url=excluded.base_url,
                 api_key_encrypted=excluded.api_key_encrypted,
@@ -123,11 +289,12 @@ class DatabaseManager:
                 speed_score_ms=excluded.speed_score_ms,
                 intelligence_tier=excluded.intelligence_tier,
                 supports_tools=excluded.supports_tools,
-                assigned_agent=excluded.assigned_agent
+                assigned_agent=excluded.assigned_agent,
+                credential_id=excluded.credential_id
             """, (
                 name, base_url, enc_key, model_name, is_local, is_active,
                 speed_score_ms, intelligence_tier, supports_tools,
-                assigned_agent or "Any",
+                assigned_agent or "Any", credential_id
             ))
             self._conn.commit()
             cursor.execute("SELECT id FROM providers WHERE name = ?", (name,))
@@ -135,18 +302,47 @@ class DatabaseManager:
             return row["id"] if row else cursor.lastrowid
 
     def _provider_from_row(self, row):
-        """Build a provider without disguising credential decryption failures."""
+        """Build a provider without disguising credential decryption failures.
+        Dual-read: prefer joined/referenced credential; fall back to legacy column.
+        """
         provider = dict(row)
         name = provider.get("name") or "Unknown"
-        try:
-            provider["api_key"] = self._decrypt(provider["api_key_encrypted"])
-        except InvalidToken:
-            provider["api_key"] = None
-            provider["decryption_error"] = DECRYPTION_ERROR
-            self.decryption_errors[name] = DECRYPTION_ERROR
+        cred_id = provider.get("credential_id")
+        encrypted_blob = None
+        dangling_cred = False
+
+        if cred_id is not None:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT * FROM credentials WHERE id = ?", (cred_id,))
+            cred_row = cursor.fetchone()
+            if cred_row is not None:
+                encrypted_blob = cred_row["api_key_encrypted"]
+                provider["credential_label"] = cred_row["label"]
+                provider["credential_base_url"] = cred_row["base_url_normalized"]
+            else:
+                dangling_cred = True
         else:
+            encrypted_blob = provider.get("api_key_encrypted")
+
+        if dangling_cred:
+            provider["api_key"] = None
+            provider["decryption_error"] = "Credential reference missing or unassigned"
+            self.decryption_errors[name] = provider["decryption_error"]
+        elif not encrypted_blob:
+            provider["api_key"] = ""
             provider["decryption_error"] = None
             self.decryption_errors.pop(name, None)
+        else:
+            try:
+                provider["api_key"] = self._decrypt(encrypted_blob)
+            except InvalidToken:
+                provider["api_key"] = None
+                provider["decryption_error"] = DECRYPTION_ERROR
+                self.decryption_errors[name] = DECRYPTION_ERROR
+            else:
+                provider["decryption_error"] = None
+                self.decryption_errors.pop(name, None)
+
         provider["assigned_agent"] = provider.get("assigned_agent") or "Any"
         for field in ("is_local", "is_active", "supports_tools"):
             provider[field] = bool(provider[field])
