@@ -1136,13 +1136,20 @@ class ChatWorkflowTests(unittest.TestCase):
         chat.chat_entry.insert.assert_called_once_with(0, "organize this")
         self.assert_input_restored(chat)
 
-    def test_unknown_request_uses_actionable_fallback_copy(self):
+    def test_unknown_request_uses_hierarchical_delegation(self):
         chat, callbacks = self.make_chat(
             routing={"agent": AGENT_UNKNOWN, "action": "organize this"}
         )
+        chat.supervisor.delegate_task.return_value = {
+            "response": "Delegated result",
+            "error": None,
+        }
         with patch("gui.chat_tab.threading.Thread", self.ImmediateThread):
             chat.send_chat()
 
+        chat.supervisor.delegate_task.assert_called_once_with(
+            "organize this", ["Foldy", "Scout", "Click", "Syntax"]
+        )
         for callback in callbacks:
             callback()
         rendered = [
@@ -1150,8 +1157,7 @@ class ChatWorkflowTests(unittest.TestCase):
             if call.args and call.args[0] == "STEWARD"
         ]
         self.assertTrue(rendered)
-        self.assertIn("organize files", rendered[-1])
-        self.assertNotIn("not sure how to help", rendered[-1].lower())
+        self.assertEqual(rendered[-1], "Delegated result")
 
     def test_file_approval_uses_plan_id_captured_at_preview(self):
         chat, callbacks = self.make_chat(
@@ -1230,9 +1236,10 @@ class GUIPresentationTests(unittest.TestCase):
         )
         self.assertIn("Result", rendered)
         self.assertIn("Moved the file", rendered)
-        self.assertIn('{"ok": true}', rendered)
+        self.assertIn("[Code block]", rendered)
         self.assertNotIn("**", rendered)
         self.assertNotIn("```", rendered)
+        self.assertNotIn('{"ok": true}', rendered)
 
     def test_chat_bubble_wrap_follows_available_width(self):
         bubble = ChatBubble.__new__(ChatBubble)
@@ -3389,6 +3396,251 @@ class RulesEngineTests(unittest.TestCase):
             chat._add_bubble.call_args.args[1],
             "[Rule] Moved invoice_123.txt",
         )
+
+
+class MarkdownRenderingTests(unittest.TestCase):
+    """Markdown syntax is converted to readable plain text for chat bubbles."""
+
+    def test_strip_markdown_removes_headers(self):
+        from gui.chat_tab import strip_markdown
+
+        self.assertEqual(strip_markdown("# Header"), "Header")
+
+    def test_strip_markdown_removes_bold(self):
+        from gui.chat_tab import strip_markdown
+
+        self.assertEqual(strip_markdown("**bold**"), "bold")
+
+    def test_strip_markdown_removes_code_blocks(self):
+        from gui.chat_tab import strip_markdown
+
+        result = strip_markdown("```python\nprint('hi')\n```")
+        self.assertEqual(result, "[Code block]")
+
+    def test_strip_markdown_removes_italic_and_inline_code(self):
+        from gui.chat_tab import strip_markdown
+
+        self.assertEqual(strip_markdown("*italic* and `code`"), "italic and code")
+
+    def test_strip_markdown_flattens_links_and_images(self):
+        from gui.chat_tab import strip_markdown
+
+        self.assertEqual(strip_markdown("[docs](https://example.com)"), "docs")
+        self.assertEqual(
+            strip_markdown("![diagram](diagram.png)"),
+            "[Image: diagram]",
+        )
+
+    def test_strip_markdown_removes_blockquotes_and_horizontal_rules(self):
+        from gui.chat_tab import strip_markdown
+
+        self.assertEqual(strip_markdown("> quoted"), "quoted")
+        self.assertEqual(strip_markdown("---"), "---")
+
+    def test_add_bubble_cleans_message_before_rendering(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat.chat_display = Mock()
+        chat.after_idle = Mock()
+        chat._scroll_chat = Mock()
+
+        with patch("gui.chat_tab.ChatBubble") as bubble_class:
+            chat._add_bubble("STEWARD", "**Done**", "#FFFFFF")
+
+        bubble_class.assert_called_once_with(
+            chat.chat_display, "STEWARD", "Done", "#FFFFFF", "left", "NORMAL"
+        )
+
+
+
+class HierarchicalSwarmTests(unittest.TestCase):
+    """Cortex can break down and delegate work to specialist handlers."""
+
+    @staticmethod
+    def provider_response(content):
+        return {"choices": [{"message": {"content": content}}]}
+
+    def test_delegate_task_returns_results(self):
+        manager = Mock()
+        manager.route_request.side_effect = [
+            self.provider_response(json.dumps([
+                {"agent": "Foldy", "task": "Preview incoming files"},
+                {"agent": "Scout", "task": "Search project documents"},
+            ])),
+            self.provider_response("Combined specialist result"),
+        ]
+        supervisor = SupervisorAgent(manager)
+        foldy = Mock(return_value="Dry-run preview ready")
+        scout = Mock(return_value="Three relevant documents found")
+        supervisor.register_sub_agent("Foldy", foldy)
+        supervisor.register_sub_agent("Scout", scout)
+
+        result = supervisor.delegate_task(
+            "Organize the files and search for project documents",
+            ["Foldy", "Scout", "Click", "Syntax"],
+        )
+
+        self.assertEqual(result["response"], "Combined specialist result")
+        self.assertEqual(len(result["tasks"]), 2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertFalse(any(item["error"] for item in result["results"]))
+        foldy.assert_called_once_with("Preview incoming files")
+        scout.assert_called_once_with("Search project documents")
+        self.assertEqual(manager.route_request.call_count, 2)
+        self.assertEqual(
+            manager.route_request.call_args_list[0].kwargs["agent_name"],
+            "Cortex",
+        )
+
+    def test_delegate_task_isolates_specialist_failure(self):
+        manager = Mock()
+        manager.route_request.side_effect = [
+            self.provider_response(json.dumps([
+                {"agent": "Foldy", "task": "Preview files"},
+                {"agent": "Scout", "task": "Search documents"},
+            ])),
+            self.provider_response("Partial result"),
+        ]
+        supervisor = SupervisorAgent(manager)
+        supervisor.register_sub_agent(
+            "Foldy", Mock(side_effect=RuntimeError("worker failed"))
+        )
+        scout = Mock(return_value="Search completed")
+        supervisor.register_sub_agent("Scout", scout)
+
+        result = supervisor.delegate_task("Complex request", ["Foldy", "Scout"])
+
+        self.assertTrue(result["results"][0]["error"])
+        self.assertFalse(result["results"][1]["error"])
+        scout.assert_called_once_with("Search documents")
+
+    def test_multi_specialist_request_routes_to_delegation(self):
+        manager = Mock()
+        supervisor = SupervisorAgent(manager)
+
+        result = supervisor.route(
+            "Organize the files and search for documents about project X"
+        )
+
+        self.assertEqual(result["agent"], AGENT_UNKNOWN)
+        manager.route_request.assert_not_called()
+
+
+
+    def test_delegate_task_bounds_number_of_workers(self):
+        manager = Mock()
+        breakdown = [
+            {"agent": "Syntax", "task": f"Task {index}"}
+            for index in range(12)
+        ]
+        manager.route_request.side_effect = [
+            self.provider_response(json.dumps(breakdown)),
+            self.provider_response("Bounded result"),
+        ]
+        supervisor = SupervisorAgent(manager)
+        syntax = Mock(return_value="Code task complete")
+        supervisor.register_sub_agent("Syntax", syntax)
+
+        result = supervisor.delegate_task("Complex request", ["Syntax"])
+
+        self.assertEqual(len(result["tasks"]), 8)
+        self.assertEqual(syntax.call_count, 8)
+
+
+
+class ScheduledScannerTests(unittest.TestCase):
+    """Scheduled scans process Incoming files in an isolated sandbox."""
+
+    def test_scanner_processes_files(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scheduled_scan_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            source = os.path.join(incoming, "report.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("scheduled scan test")
+
+            file_agent = Mock()
+            file_agent.root_path = tmp
+
+            def categorise(filepath, destination, dry_run=None):
+                self.assertFalse(dry_run)
+                category_dir = os.path.join(destination, "Documents")
+                os.makedirs(category_dir, exist_ok=True)
+                target = os.path.join(category_dir, os.path.basename(filepath))
+                os.replace(filepath, target)
+                return f"Moved '{filepath}' to '{target}'"
+
+            file_agent.categorise_file.side_effect = categorise
+            scanner = ScheduledScanner(file_agent, interval_minutes=1)
+
+            self.assertTrue(scanner.start())
+            summary = scanner._scan()
+            scanner.stop()
+
+            self.assertEqual(summary["processed"], 1)
+            self.assertEqual(summary["failed"], 0)
+            self.assertFalse(os.path.exists(source))
+            self.assertTrue(os.path.exists(
+                os.path.join(sorted_dir, "Documents", "report.txt")
+            ))
+            file_agent.categorise_file.assert_called_once_with(
+                source, sorted_dir, dry_run=False
+            )
+            self.assertFalse(scanner.running)
+            self.assertIsNotNone(scanner.last_scan_time)
+
+    def test_scanner_rejects_invalid_interval(self):
+        from agent.daemon import ScheduledScanner
+
+        with self.assertRaises(ValueError):
+            ScheduledScanner(Mock(), interval_minutes=0)
+
+    def test_schedule_state_survives_restart(self):
+        class Value:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        with tempfile.TemporaryDirectory(prefix="steward_schedule_state_") as tmp:
+            state_path = os.path.join(tmp, "scheduled_scan.json")
+            organizer = OrganizerTab.__new__(OrganizerTab)
+            organizer._schedule_state_path = state_path
+            organizer.schedule_enabled_var = Value(True)
+            organizer.schedule_interval_var = Value("30 min")
+            organizer._last_scheduled_scan_time = "2026-11-23T12:00:00"
+
+            self.assertTrue(organizer._save_schedule_state())
+
+            restored = OrganizerTab.__new__(OrganizerTab)
+            restored._schedule_state_path = state_path
+            restored.schedule_enabled_var = Value(False)
+            restored.schedule_interval_var = Value("1 hr")
+            restored._last_scheduled_scan_time = None
+            restored._load_schedule_state()
+
+            self.assertTrue(restored.schedule_enabled_var.get())
+            self.assertEqual(restored.schedule_interval_var.get(), "30 min")
+            self.assertEqual(
+                restored._last_scheduled_scan_time,
+                "2026-11-23T12:00:00",
+            )
+
+    def test_organizer_exposes_scheduled_scan_controls(self):
+        source = (
+            Path(__file__).resolve().parent / "gui" / "organizer_tab.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Enable Scheduled Scan", source)
+        self.assertIn("schedule_interval_dropdown", source)
+        self.assertIn("schedule_status_label", source)
+
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ import json
 import threading
 import logging
 
-from agent.daemon import FileCreationHandler
+from agent.daemon import FileCreationHandler, ScheduledScanner
 from watchdog.observers import Observer
 from gui.anim import SafeTick, lerp_color
-from utils.helpers import sanitize_category
+from utils.helpers import sanitize_category, get_app_data_dir
 
 from core.theme import (
     BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
@@ -83,6 +83,13 @@ class FilePreviewRow(ctk.CTkFrame):
 
 
 class OrganizerTab(ctk.CTkFrame):
+    SCHEDULE_INTERVALS = {
+        "15 min": 15,
+        "30 min": 30,
+        "1 hr": 60,
+        "6 hr": 360,
+    }
+
     def __init__(self, parent, file_agent, gui):
         super().__init__(parent, fg_color="transparent")
         self.file_agent = file_agent
@@ -90,14 +97,24 @@ class OrganizerTab(ctk.CTkFrame):
         self.observer = None
         self.daemon_handler = None
         self.daemon_running = False
+        self.scheduled_scanner = None
+        self._last_scheduled_scan_time = None
+        self._schedule_state_path = os.path.join(
+            get_app_data_dir(), "scheduled_scan.json"
+        )
         self.watched_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Incoming"))
         self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
+        self.schedule_enabled_var = ctk.BooleanVar(value=False)
+        self.schedule_interval_var = ctk.StringVar(value="1 hr")
         self.preview_rows = []
         self.pending_operations = []
         self._preview_generation = 0
+        self._load_schedule_state()
         self.build()
         self.watched_var.trace_add("write", self._on_preview_paths_changed)
         self.dest_var.trace_add("write", self._on_preview_paths_changed)
+        if self.schedule_enabled_var.get():
+            self._start_scheduled_scan()
 
     def build(self):
         header = ctk.CTkFrame(self, fg_color="transparent", height=50)
@@ -214,6 +231,48 @@ class OrganizerTab(ctk.CTkFrame):
             text_color="#9CA3AF",
         )
         self.daemon_status_label.pack(side="left")
+
+        schedule_row = ctk.CTkFrame(self, fg_color="transparent")
+        schedule_row.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.schedule_checkbox = ctk.CTkCheckBox(
+            schedule_row,
+            text="Enable Scheduled Scan",
+            variable=self.schedule_enabled_var,
+            command=self._toggle_scheduled_scan,
+            font=FONT_ROUNDED,
+            fg_color=NEON_CYAN,
+            hover_color=NEON_CYAN,
+        )
+        self.schedule_checkbox.pack(side="left", padx=(0, 12))
+
+        ctk.CTkLabel(
+            schedule_row,
+            text="Interval:",
+            font=FONT_ROUNDED,
+            text_color=TEXT_MUTED,
+        ).pack(side="left", padx=(0, 6))
+
+        self.schedule_interval_dropdown = ctk.CTkOptionMenu(
+            schedule_row,
+            values=list(self.SCHEDULE_INTERVALS),
+            variable=self.schedule_interval_var,
+            command=self._on_schedule_interval_changed,
+            font=FONT_ROUNDED,
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            width=90,
+        )
+        self.schedule_interval_dropdown.pack(side="left", padx=(0, 16))
+
+        last_scan = self._last_scheduled_scan_time or "Never"
+        self.schedule_status_label = ctk.CTkLabel(
+            schedule_row,
+            text=f"Scheduled scan: DISABLED | Last scan: {last_scan}",
+            font=("Nunito", 10),
+            text_color=TEXT_MUTED,
+        )
+        self.schedule_status_label.pack(side="left")
 
         self.preview_container = ctk.CTkScrollableFrame(
             self, fg_color="#2A2A35", corner_radius=CORNER_RADIUS
@@ -714,6 +773,132 @@ class OrganizerTab(ctk.CTkFrame):
     def _log(self, message):
         self.output.insert("end", message + "\n")
         self.output.see("end")
+
+    def _load_schedule_state(self):
+        """Restore the scheduled scan preference from AppData."""
+        try:
+            with open(self._schedule_state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not load scheduled scan state: %s", exc)
+            return
+        if not isinstance(state, dict):
+            return
+        interval = state.get("interval_minutes")
+        if interval in self.SCHEDULE_INTERVALS.values():
+            label = next(
+                key for key, value in self.SCHEDULE_INTERVALS.items()
+                if value == interval
+            )
+            self.schedule_interval_var.set(label)
+        self.schedule_enabled_var.set(bool(state.get("enabled", False)))
+        last_scan = state.get("last_scan_time")
+        if isinstance(last_scan, str) and last_scan:
+            self._last_scheduled_scan_time = last_scan
+
+    def _save_schedule_state(self):
+        """Persist scheduled scan preferences without touching protected data."""
+        state = {
+            "enabled": bool(self.schedule_enabled_var.get()),
+            "interval_minutes": self.SCHEDULE_INTERVALS.get(
+                self.schedule_interval_var.get(), 60
+            ),
+            "last_scan_time": self._last_scheduled_scan_time,
+        }
+        temp_path = f"{self._schedule_state_path}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self._schedule_state_path), exist_ok=True)
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self._schedule_state_path)
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Could not save scheduled scan state: %s", exc)
+            return False
+
+    def _toggle_scheduled_scan(self):
+        """Enable or disable recurring scans from the Organizer checkbox."""
+        if self.schedule_enabled_var.get():
+            self._start_scheduled_scan()
+        else:
+            self._stop_scheduled_scan()
+        self._save_schedule_state()
+        self._update_schedule_status()
+
+    def _start_scheduled_scan(self):
+        """Start a scanner using the current watched/destination folders."""
+        self._stop_scheduled_scan()
+        interval = self.SCHEDULE_INTERVALS.get(
+            self.schedule_interval_var.get(), 60
+        )
+        scanner = ScheduledScanner(
+            self.file_agent,
+            interval_minutes=interval,
+            incoming_path=self.watched_var.get(),
+            destination_path=self.dest_var.get(),
+            on_scan=self._on_scheduled_scan_complete,
+        )
+        self.scheduled_scanner = scanner
+        scanner.start()
+        self._update_schedule_status()
+        self._log(
+            f"Scheduled scan enabled. Incoming: {self.watched_var.get()} "
+            f"(every {interval} minutes)."
+        )
+        return scanner
+
+    def stop_scheduled_scan(self):
+        """Stop the recurring scanner without changing its saved preference."""
+        scanner = getattr(self, "scheduled_scanner", None)
+        self.scheduled_scanner = None
+        if scanner is not None:
+            scanner.stop()
+        self._update_schedule_status()
+
+    def _on_schedule_interval_changed(self, _value=None):
+        """Apply a new interval immediately and persist it."""
+        if self.schedule_enabled_var.get():
+            self._start_scheduled_scan()
+        self._save_schedule_state()
+
+    def _on_scheduled_scan_complete(self, summary):
+        """Marshal scanner status updates from the worker onto the UI thread."""
+        def update_status():
+            scanner = getattr(self, "scheduled_scanner", None)
+            if scanner is not None:
+                self._last_scheduled_scan_time = scanner.last_scan_time
+            self._save_schedule_state()
+            self._update_schedule_status()
+            processed = summary.get("processed", 0)
+            failed = summary.get("failed", 0)
+            self._log(
+                f"Scheduled scan complete: {processed} processed, {failed} failed."
+            )
+
+        try:
+            self.after(0, update_status)
+        except Exception:
+            logger.warning("Could not update scheduled scan status")
+
+    def _update_schedule_status(self):
+        """Refresh the scheduled scan status label."""
+        label = getattr(self, "schedule_status_label", None)
+        if label is None:
+            return
+        scanner = getattr(self, "scheduled_scanner", None)
+        running = bool(scanner and scanner.running)
+        last_scan = self._last_scheduled_scan_time or "Never"
+        status = "RUNNING" if running else "DISABLED"
+        color = "#10B981" if running else "#9CA3AF"
+        label.configure(
+            text=f"Scheduled scan: {status} | Last scan: {last_scan}",
+            text_color=color,
+        )
+
 
     def start_daemon(self):
         if self.daemon_running:

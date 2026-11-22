@@ -37,22 +37,32 @@ AGENT_COLOR_MAP = {
 }
 
 
+def strip_markdown(text: str) -> str:
+    """Convert basic Markdown syntax to readable plain text for chat display."""
+    text = str(text or "")
+
+    # Fenced blocks must be handled before inline-code backticks, otherwise
+    # the inline pattern consumes the fence markers and leaves raw code.
+    text = re.sub(r"```[\s\S]*?```", "[Code block]", text)
+
+    # Images precede links because an image also contains link-like syntax.
+    text = re.sub(r"!\[(.+?)\]\(.+?\)", r"[Image: \1]", text)
+    text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
+
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[-*_]{3,}\s*$", "---", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"_(.+?)_", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    return text.strip()
+
+
 def render_markdown_text(message):
-    """Convert common Markdown syntax to readable plain text for Tk labels."""
-    output = []
-    in_code_block = False
-    for line in str(message or "").splitlines():
-        if line.strip().startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if not in_code_block:
-            line = re.sub(r"^#{1,6}\s*", "", line)
-            line = re.sub(r"^>\s?", "", line)
-            line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
-            line = re.sub(r"__(.+?)__", r"\1", line)
-            line = re.sub(r"`([^`]+)`", r"\1", line)
-        output.append(line)
-    return "\n".join(output)
+    """Compatibility wrapper for callers using the original helper name."""
+    return strip_markdown(message)
 
 class HandoffCanvas(ctk.CTkCanvas):
     """Animated glowing arc that triggers on agent handoffs."""
@@ -200,6 +210,7 @@ class ChatTab(ctk.CTkFrame):
         self.provider_callback = provider_callback
         self._processing = False
         self.dialog_timeout = 600
+        self._register_swarm_handlers()
         self.build()
 
     def build(self):
@@ -698,14 +709,39 @@ class ChatTab(ctk.CTkFrame):
 
                         self._safe_after(finish_with_error)
                 else:
-                    self._safe_after(lambda: self._add_bubble(
-                        "STEWARD",
-                        "I couldn't map that to a workflow yet. Try asking me to "
-                        "organize files, search content, or check the API Hub.",
-                        NEON_PURPLE, align="left",
+                    feed = self.live_feed
+                    if feed:
+                        self._safe_after(lambda feed=feed: feed.agent_working(
+                            "Cortex", "Delegating complex task"
+                        ))
+                    delegation_result = self.supervisor.delegate_task(
+                        user_msg, ["Foldy", "Scout", "Click", "Syntax"]
+                    )
+                    delegated_response = str(
+                        delegation_result.get("response")
+                        or delegation_result.get("final_response")
+                        or "The delegated tasks returned no result."
+                    ).strip()
+                    delegation_state = (
+                        "ERROR" if delegation_result.get("error") else "DONE"
+                    )
+                    self._safe_after(lambda response=delegated_response,
+                                    state=delegation_state: self._add_bubble(
+                        "STEWARD", response, NEON_PURPLE, align="left", state=state,
                     ))
-                    if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done("Cortex"))
+                    delegation_results = delegation_result.get("results") or []
+                    for result in delegation_results:
+                        agent_name = result.get("agent", "Cortex")
+                        detail = str(result.get("result", "Task complete"))
+                        if feed:
+                            self._safe_after(
+                                lambda feed=feed, agent_name=agent_name,
+                                detail=detail: feed.agent_done(agent_name, detail)
+                            )
+                    if feed:
+                        self._safe_after(lambda feed=feed: feed.agent_done(
+                            "Cortex", "Hierarchical delegation complete"
+                        ))
 
             except Exception as e:
                 restore_input[0] = True
@@ -722,6 +758,24 @@ class ChatTab(ctk.CTkFrame):
                 self._safe_after(self._restore_return_key)
 
         threading.Thread(target=process, daemon=True).start()
+
+    def _register_swarm_handlers(self):
+        """Bind local specialist APIs to Cortex's delegation workflow."""
+        register = getattr(self.supervisor, "register_sub_agent", None)
+        if not callable(register):
+            return
+        register("Foldy", self._delegate_file_task)
+        register("Scout", self._delegate_scout_task)
+
+    def _delegate_file_task(self, task):
+        """Delegate file work as a non-mutating preview for later approval."""
+        return self.file_agent.run(task, dry_run=True)
+
+    def _delegate_scout_task(self, task):
+        """Delegate document research to the persistent RAG index."""
+        results = self._get_rag_agent().search(task, n_results=5)
+        return self._format_rag_results(task, results)
+
 
     def _get_rag_agent(self):
         """Create the persistent RAG index lazily on the first Scout query."""
@@ -775,7 +829,10 @@ class ChatTab(ctk.CTkFrame):
         return f"{provider} / {model}"
 
     def _add_bubble(self, sender, message, color, align="left", state="NORMAL"):
-        bubble = ChatBubble(self.chat_display, sender, message, color, align, state)
+        clean_message = strip_markdown(message)
+        bubble = ChatBubble(
+            self.chat_display, sender, clean_message, color, align, state
+        )
         self.after_idle(self._scroll_chat)
         return bubble
 

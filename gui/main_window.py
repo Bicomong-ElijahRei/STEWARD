@@ -200,8 +200,12 @@ class StewardGUI:
     def _perform_shutdown(self):
         """Centralized shutdown: stop observer, tray, then quit."""
         organizer = self.tabs.get("organizer")
-        if organizer is not None and getattr(organizer, "daemon_running", False):
-            organizer.stop_daemon()
+        if organizer is not None:
+            stop_scheduled_scan = getattr(organizer, "stop_scheduled_scan", None)
+            if callable(stop_scheduled_scan):
+                stop_scheduled_scan()
+            if getattr(organizer, "daemon_running", False):
+                organizer.stop_daemon()
         if hasattr(self, 'tray_icon') and self.tray_icon:
             self.tray_icon.stop()
         if getattr(self, "_fade_tick", None):
