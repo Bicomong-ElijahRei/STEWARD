@@ -31,6 +31,76 @@ AGENT_COLOR_MAP = {
     "Syntax": NEON_ORANGE,
 }
 
+class ChatBubble(ctk.CTkFrame):
+    """Animated chat bubble supporting THINKING, TOOL_USE, STREAMING, DONE, ERROR states."""
+    def __init__(self, parent, sender, message, color, align="left", state="NORMAL"):
+        super().__init__(parent, fg_color="#353545", corner_radius=12)
+        self.sender = sender
+        self.color = color
+        self.align = align
+        self._tick = None
+        self._base_color = "#353545"
+        self.build(message)
+        self.update_state(state)
+
+    def build(self, message):
+        self.pack(fill="x", padx=10, pady=4, anchor="e" if self.align == "right" else "w")
+        
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=(6, 0))
+        
+        self.sender_label = ctk.CTkLabel(
+            header, text=self.sender, font=("Nunito", 10, "bold"),
+            text_color=self.color, anchor="w",
+        )
+        self.sender_label.pack(side="left")
+        
+        self.icon_label = ctk.CTkLabel(
+            header, text="", font=("Nunito", 12), text_color=self.color, anchor="e",
+        )
+        self.icon_label.pack(side="right")
+        
+        self.msg_label = ctk.CTkLabel(
+            self, text=message, font=FONT_MONO, text_color=TEXT_BRIGHT,
+            anchor="w", justify="left", wraplength=500,
+        )
+        self.msg_label.pack(fill="x", padx=10, pady=(0, 6))
+
+    def update_state(self, state):
+        if self._tick:
+            self._tick.cancel()
+            self._tick = None
+            
+        if state == "THINKING":
+            self.icon_label.configure(text="⚙️")
+            self._start_pulse()
+        elif state == "TOOL_USE":
+            self.icon_label.configure(text="🔧")
+            self.configure(fg_color=self._base_color)
+        elif state == "STREAMING":
+            self.icon_label.configure(text="⌨️")
+            self._start_pulse()
+        elif state == "DONE":
+            self.icon_label.configure(text="✅")
+            self.configure(fg_color=self._base_color)
+        elif state == "ERROR":
+            self.icon_label.configure(text="❌")
+            self.configure(fg_color="#452525")
+        else:
+            self.icon_label.configure(text="")
+            self.configure(fg_color=self._base_color)
+
+    def _start_pulse(self):
+        step = [0]
+        def on_tick():
+            step[0] += 1
+            t = (step[0] % 20) / 20.0
+            self.configure(fg_color=lerp_color(self._base_color, "#45455A", t))
+            return True
+        self._tick = SafeTick(self, 50, on_tick).start()
+
+    def set_message(self, message):
+        self.msg_label.configure(text=message)
 
 class ChatTab(ctk.CTkFrame):
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
@@ -177,10 +247,11 @@ class ChatTab(ctk.CTkFrame):
                     ))
 
                 if agent_type == AGENT_FILE_OP:
-                    self._safe_after(lambda: self._add_bubble(
-                        "STEWARD", "[Foldy] Generating dry-run preview…",
-                        NEON_CYAN, align="left",
-                    ))
+                    foldy_bubble = [None]
+                    self._safe_after(lambda: foldy_bubble.__setitem__(0, self._add_bubble(
+                        "STEWARD", "Generating dry-run preview…",
+                        NEON_CYAN, align="left", state="THINKING",
+                    )))
 
                     dialog_timeout = getattr(self, "dialog_timeout", 600)
                     confirm_timed_out = [False]
@@ -207,6 +278,8 @@ class ChatTab(ctk.CTkFrame):
                     if confirm_timed_out[0]:
                         self.file_agent.discard_pending_plan()
                         logger.info("[Chat] approval dialog timed out; input restored")
+                        if foldy_bubble[0]:
+                            self._safe_after(lambda: foldy_bubble[0].update_state("ERROR"))
                         return
 
                     self._pending_plan_id = self.file_agent.get_pending_plan_id()
@@ -214,9 +287,14 @@ class ChatTab(ctk.CTkFrame):
                     preview_message = preview_result
                     if foldy_detail:
                         preview_message += f"\n\nHandled by {foldy_detail}"
-                    self._safe_after(lambda: self._add_bubble(
-                        "STEWARD", preview_message, NEON_CYAN, align="left",
-                    ))
+                    
+                    if foldy_bubble[0]:
+                        self._safe_after(lambda: foldy_bubble[0].set_message(preview_message))
+                        self._safe_after(lambda: foldy_bubble[0].update_state("DONE"))
+                    else:
+                        self._safe_after(lambda: self._add_bubble(
+                            "STEWARD", preview_message, NEON_CYAN, align="left", state="DONE",
+                        ))
 
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done(
@@ -238,15 +316,26 @@ class ChatTab(ctk.CTkFrame):
                         return
 
                     if exec_choice[0]:
+                        exec_bubble = [None]
+                        self._safe_after(lambda: exec_bubble.__setitem__(0, self._add_bubble(
+                            "STEWARD", "Executing operations…", NEON_CYAN, align="left", state="TOOL_USE",
+                        )))
                         try:
                             exec_result = self.file_agent.execute_pending_plan(
                                 self._pending_plan_id
                             )
                         except Exception as exc:
                             exec_result = f"Error: {exc}"
-                        self._safe_after(lambda: self._add_bubble(
-                            "STEWARD", exec_result, NEON_CYAN, align="left",
-                        ))
+                        
+                        if exec_bubble[0]:
+                            self._safe_after(lambda: exec_bubble[0].set_message(exec_result))
+                            self._safe_after(lambda: exec_bubble[0].update_state("DONE" if not exec_result.startswith("Error") else "ERROR"))
+                        else:
+                            self._safe_after(lambda: self._add_bubble(
+                                "STEWARD", exec_result, NEON_CYAN, align="left", 
+                                state="DONE" if not exec_result.startswith("Error") else "ERROR",
+                            ))
+                            
                         if self.live_feed:
                             self._safe_after(lambda: self.live_feed.agent_done(
                                 "Foldy", foldy_detail or "Operations executed"
@@ -255,7 +344,7 @@ class ChatTab(ctk.CTkFrame):
                         self.file_agent.discard_pending_plan()
                         self._safe_after(lambda: self._add_bubble(
                             "STEWARD", "Execution cancelled by user.",
-                            TEXT_MUTED, align="left",
+                            TEXT_MUTED, align="left", state="DONE",
                         ))
 
                 elif agent_type == AGENT_PC_CONTROL:
@@ -324,31 +413,10 @@ class ChatTab(ctk.CTkFrame):
                 )
         return f"{provider} / {model}"
 
-    def _add_bubble(self, sender, message, color, align="left"):
-        bubble = ctk.CTkFrame(self.chat_display, fg_color="#353545", corner_radius=12)
-        bubble.pack(fill="x", padx=10, pady=4, anchor="e" if align == "right" else "w")
-
-        sender_label = ctk.CTkLabel(
-            bubble,
-            text=sender,
-            font=("Nunito", 10, "bold"),
-            text_color=color,
-            anchor="w",
-        )
-        sender_label.pack(fill="x", padx=10, pady=(6, 0))
-
-        msg_label = ctk.CTkLabel(
-            bubble,
-            text=message,
-            font=FONT_MONO,
-            text_color=TEXT_BRIGHT,
-            anchor="w",
-            justify="left",
-            wraplength=500,
-        )
-        msg_label.pack(fill="x", padx=10, pady=(0, 6))
-
+    def _add_bubble(self, sender, message, color, align="left", state="NORMAL"):
+        bubble = ChatBubble(self.chat_display, sender, message, color, align, state)
         self.after_idle(self._scroll_chat)
+        return bubble
 
     def _scroll_chat(self):
         try:
