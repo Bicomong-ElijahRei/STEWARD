@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-22 | 016d336d | Reconciled state: fixed helpers.py imports, confirmed the single categorise_file and test class definitions, added duplicate-definition regression guards, and verified 90/90 unit tests green; Phase B 5/5 items done.
 2026-11-22 | d2687aec | B3 Live Constellation View implemented with stable responsive layout, live agent states, SafeTick cleanup, and 88/88 unit tests green.
 2026-11-22 | 2df98d09 | tools/migrate_live.py added; guarded live dry-run/execute/rollback with verified backups; 4/4 CLI tests green.
 2026-11-22 | b59b7c30 | Reconciled state: Phase B 4/5 items done; 85 unit tests green.
@@ -32,8 +33,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: d2687aec (B3 Live Constellation View)
-Suite: test_phase0_phase_a.py 88 green; test_validator.py 5/5
+HEAD: 016d336d (reconciled source and test state)
+Suite: test_phase0_phase_a.py 90 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
@@ -132,7 +133,7 @@ Gate: v2.0 frozen. All items: animations must not block the main thread and must
 nothing when the window closes mid-animation (depends N1/N2 closed).
 - B1  DONE | b59b7c30 | Four-state chat bubbles (THINKING/TOOL_USE/STREAMING/DONE/ERROR).
 - B2  DONE | b59b7c30 | Visual agent handoff arc (HandoffCanvas sine-wave animation).
-- B3  DONE | d2687aec | Live Constellation View: responsive node-link swarm diagram with IDLE/WORKING/DONE states, SafeTick-driven animation, and shutdown cleanup.
+- B3  DONE | d2687aec | Live Constellation View (node-link diagram with SafeTick-driven states).
 - B4  DONE | b59b7c30 | Smooth tab fade-in transitions.
 - B5  DONE | b59b7c30 | Execute button success pulse on file move.
 
