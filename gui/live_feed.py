@@ -11,6 +11,7 @@ from core.theme import (
     AGENT_COLORS,
 )
 from agents.agent_config import AGENT_CONFIG
+from gui.constellation_view import ConstellationView
 
 
 class LiveFeedWidget(ctk.CTkScrollableFrame):
@@ -27,6 +28,9 @@ class LiveFeedWidget(ctk.CTkScrollableFrame):
         )
         self.cards = []
         self._max_cards = 50
+
+        self.constellation_view = ConstellationView(self)
+        self.constellation_view.pack(fill="x", padx=4, pady=(4, 10))
 
     def add_event(self, agent_name: str, status: str, progress: float = 0.0,
                   detail: str = ""):
@@ -155,15 +159,18 @@ class LiveFeedWidget(ctk.CTkScrollableFrame):
         config = AGENT_CONFIG.get(agent_name, {})
         status = config.get("status_working", "Working…")
         self.add_event(agent_name, status, progress=0.5, detail=detail)
+        self.constellation_view.update_state(agent_name, "WORKING")
 
     def agent_done(self, agent_name: str, detail: str = ""):
         """Convenience: show an agent completed its task."""
         config = AGENT_CONFIG.get(agent_name, {})
         status = config.get("status_done", "Done.")
         self.add_event(agent_name, status, progress=1.0, detail=detail)
+        self.constellation_view.update_state(agent_name, "DONE")
 
     def agent_idle(self, agent_name: str):
         """Convenience: show an agent is idle."""
         config = AGENT_CONFIG.get(agent_name, {})
         status = config.get("status_idle", "Idle.")
         self.add_event(agent_name, status, progress=0.0)
+        self.constellation_view.update_state(agent_name, "IDLE")

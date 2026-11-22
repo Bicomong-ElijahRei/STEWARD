@@ -29,6 +29,7 @@ from core.database import (
 from core.discovery import DiscoveredModel, upsert_discovered_models
 from core.router import APIManager
 from gui.chat_tab import ChatTab
+from gui.constellation_view import AGENT_COLORS, ConstellationView
 from gui.live_feed import LiveFeedWidget
 from gui.main_window import StewardGUI
 from gui.anim import SafeTick, lerp_color
@@ -1820,6 +1821,83 @@ class CredentialStoreTests(unittest.TestCase):
             active = db.get_active_providers()
             self.assertIn("Free Model 1", [p["name"] for p in active])
             db.close()
+
+class ConstellationViewTests(unittest.TestCase):
+    """The live constellation renders responsively and cleans up animations."""
+
+    def setUp(self):
+        import tkinter as tk
+
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.widget = ConstellationView(self.root, width=400, height=300)
+
+    def tearDown(self):
+        try:
+            self.widget.destroy()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_init_and_resize(self):
+        self.assertEqual(set(self.widget.nodes), set(AGENT_COLORS))
+        self.assertEqual(len(self.widget.edges), 4)
+        self.assertTrue(self.widget.bind("<Configure>"))
+
+        before = self.widget.bbox(self.widget.nodes["Cortex"])
+        before_center = ((before[0] + before[2]) / 2, (before[1] + before[3]) / 2)
+
+        self.widget._on_resize(SimpleNamespace(width=600, height=400))
+
+        after = self.widget.bbox(self.widget.nodes["Cortex"])
+        after_center = ((after[0] + after[2]) / 2, (after[1] + after[3]) / 2)
+        self.assertGreater(after_center[0], before_center[0])
+        self.assertGreater(after_center[1], before_center[1])
+        self.assertAlmostEqual(after_center[0], 300, delta=2)
+        self.assertAlmostEqual(after_center[1], 200, delta=2)
+
+    def test_state_transitions(self):
+        with patch("gui.constellation_view.SafeTick") as tick_class:
+            tick = tick_class.return_value
+            tick.start.return_value = tick
+
+            self.widget.update_state("Foldy", "WORKING")
+
+            self.assertEqual(
+                self.widget.itemcget(self.widget.nodes["Foldy"], "fill"),
+                AGENT_COLORS["Foldy"],
+            )
+            tick_class.assert_called_once()
+            self.assertIs(tick_class.call_args.args[0], self.widget)
+            self.assertIn("on_tick", tick_class.call_args.kwargs)
+
+            tick_class.call_args.kwargs["on_tick"]()
+            pulsed_color = self.widget.itemcget(
+                self.widget.nodes["Foldy"], "fill"
+            )
+            self.assertNotEqual(pulsed_color, AGENT_COLORS["Foldy"])
+
+    def test_cleanup_on_destroy(self):
+        with patch("gui.constellation_view.SafeTick") as tick_class:
+            ticks = [Mock(), Mock()]
+            tick_class.side_effect = ticks
+            for tick in ticks:
+                tick.start.return_value = tick
+
+            self.widget.update_state("Foldy", "WORKING")
+            self.widget.update_state("Cortex", "WORKING")
+
+            try:
+                self.widget.destroy()
+            except Exception as exc:
+                self.fail(f"destroy raised {exc!r}")
+
+            for tick in ticks:
+                tick.cancel.assert_called_once_with()
+
 
 class PhaseBAnimTests(unittest.TestCase):
     """gui/anim.py: SafeTick ticks on schedule, stops on False, dies quietly."""
