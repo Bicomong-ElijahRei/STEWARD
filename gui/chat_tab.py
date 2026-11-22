@@ -21,6 +21,7 @@ from core.theme import (
 )
 from agents.agent_config import AGENT_CONFIG, AGENT_ROUTING_KEYS
 from gui.live_feed import LiveFeedWidget
+from gui.anim import SafeTick, lerp_color
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,10 @@ class ChatTab(ctk.CTkFrame):
                         self._safe_after(lambda: self.live_feed.agent_done(
                             "Foldy", foldy_detail or "Dry-run preview generated"
                         ))
+
+                    if self._pending_plan_id is None:
+                        logger.info("[Chat] No tool plan produced; awaiting user reply")
+                        return
 
                     exec_evt = threading.Event()
                     exec_choice = [False]

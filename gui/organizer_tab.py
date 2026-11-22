@@ -272,10 +272,11 @@ class OrganizerTab(ctk.CTkFrame):
                     resp = self.file_agent.api_manager.route_request(
                         messages=messages, agent_name="Foldy"
                     )
-                    category = resp["choices"][0]["message"]["content"].strip()
+                    category = sanitize_category(
+                        resp["choices"][0]["message"]["content"], filepath
+                    )
                 except Exception:
                     category = "Other"
-                category = category.strip().replace("/", "_").replace("\\", "_")
                 planned.append((f, filepath, os.path.join(dest, category, f)))
             self.after(0, lambda: self._render_preview(planned))
 
