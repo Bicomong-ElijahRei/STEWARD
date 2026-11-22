@@ -133,6 +133,19 @@ class RulesEngine:
             self._save_rules()
         return dict(rule)
 
+    def delete_rule(self, pattern: str) -> bool:
+        """Delete the first rule with ``pattern`` and persist the change."""
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("Rule pattern must be a non-empty string")
+
+        with self._lock:
+            for index, rule in enumerate(self._rules):
+                if rule.get("pattern") == pattern:
+                    self._rules.pop(index)
+                    self._save_rules()
+                    return True
+        return False
+
     def get_all_rules(self) -> List[Dict]:
         """Return a copy of the current rules in insertion order."""
         with self._lock:

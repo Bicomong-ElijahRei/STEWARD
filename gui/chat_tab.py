@@ -303,6 +303,24 @@ class ChatTab(ctk.CTkFrame):
         )
         self.send_btn.pack(side="right")
 
+        self.clear_btn = ctk.CTkButton(
+            input_frame,
+            text="Clear",
+            width=60,
+            height=36,
+            corner_radius=CORNER_RADIUS,
+            font=("Nunito", 12, "bold"),
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self.clear_chat,
+        )
+        self.clear_btn.pack(side="right", padx=(0, 8))
+
+    def clear_chat(self):
+        """Remove all visible chat bubbles without affecting the live feed."""
+        for widget in self.chat_display.winfo_children():
+            widget.destroy()
+
     def _clear_live_feed(self):
         """Clear visible live-feed activity cards from the chat header."""
         if self.live_feed:

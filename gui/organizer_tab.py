@@ -177,7 +177,7 @@ class OrganizerTab(ctk.CTkFrame):
             font=FONT_ROUNDED,
             fg_color="#4A4A5A",
             hover_color="#5A5A6A",
-            command=self.show_rules,
+            command=self.open_rules_manager,
         )
         self.btn_rules.pack(side="left", padx=(0, 16))
 
@@ -422,6 +422,210 @@ class OrganizerTab(ctk.CTkFrame):
             self.after(0, lambda: self.btn_execute.configure(state="normal"))
 
         threading.Thread(target=process, daemon=True).start()
+
+    def open_rules_manager(self):
+        """Open the interactive learning-rule manager."""
+        rules_path = getattr(self.file_agent, "rules_path", None)
+        if not isinstance(rules_path, (str, os.PathLike)):
+            messagebox.showerror(
+                "Rules Error", "No rules file is configured for this organizer."
+            )
+            return
+
+        try:
+            from utils.rules_engine import RulesEngine
+            RulesEngine(rules_path).get_all_rules()
+        except Exception as exc:
+            messagebox.showerror("Rules Error", f"Could not load rules: {exc}")
+            return
+
+        window = ctk.CTkToplevel(self)
+        window.title("STEWARD Learning Rules")
+        window.geometry("720x480")
+        window.transient(self.winfo_toplevel())
+        window.grab_set()
+        self._rules_window = window
+
+        header = ctk.CTkFrame(window, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        ctk.CTkLabel(
+            header,
+            text="Learning Rules",
+            font=("Nunito", 18, "bold"),
+            text_color=TEXT_BRIGHT,
+        ).pack(side="left")
+        ctk.CTkButton(
+            header,
+            text="Add Rule",
+            width=100,
+            height=34,
+            font=FONT_ROUNDED,
+            fg_color=NEON_PURPLE,
+            hover_color="#A56EEA",
+            command=self._prompt_add_rule,
+        ).pack(side="right")
+
+        self._rules_list = ctk.CTkScrollableFrame(window, fg_color="#2A2A35")
+        self._rules_list.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        self._refresh_rules_list()
+
+    def _refresh_rules_list(self):
+        """Reload rules from disk and rebuild the interactive manager list."""
+        rules_list = getattr(self, "_rules_list", None)
+        if rules_list is None:
+            return
+        for widget in rules_list.winfo_children():
+            widget.destroy()
+
+        from utils.rules_engine import RulesEngine
+
+        rules_path = getattr(self.file_agent, "rules_path", None)
+        rules = RulesEngine(rules_path).get_all_rules()
+        if not rules:
+            ctk.CTkLabel(
+                rules_list,
+                text="No rules yet. Add one or correct a categorization.",
+                font=FONT_ROUNDED,
+                text_color=TEXT_MUTED,
+            ).pack(pady=24)
+            return
+
+        for rule in sorted(
+            rules,
+            key=lambda item: item.get("priority", 100),
+            reverse=True,
+        ):
+            row = ctk.CTkFrame(rules_list, fg_color="#353545", corner_radius=10)
+            row.pack(fill="x", padx=8, pady=4)
+            pattern = rule.get("pattern", "")
+            target = rule.get("target", "")
+            ctk.CTkLabel(
+                row,
+                text=pattern,
+                width=320,
+                anchor="w",
+                font=FONT_MONO,
+                text_color=TEXT_BRIGHT,
+            ).pack(side="left", padx=(12, 8), pady=10)
+            ctk.CTkLabel(
+                row,
+                text=f"→ {target}",
+                width=180,
+                anchor="w",
+                font=FONT_ROUNDED,
+                text_color=NEON_CYAN,
+            ).pack(side="left", padx=8)
+            ctk.CTkButton(
+                row,
+                text="Delete",
+                width=72,
+                height=30,
+                fg_color="#DC2626",
+                hover_color="#B91C1C",
+                command=lambda value=pattern: self._prompt_delete_rule(value),
+            ).pack(side="right", padx=12)
+
+    def _prompt_add_rule(self):
+        """Ask for a rule pattern and target, then persist the new rule."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Add Learning Rule")
+        dialog.geometry("520x240")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        self._add_rule_dialog = dialog
+
+        ctk.CTkLabel(
+            dialog,
+            text="Pattern",
+            font=FONT_ROUNDED,
+            text_color=TEXT_MUTED,
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+        pattern_entry = ctk.CTkEntry(
+            dialog,
+            placeholder_text="Regular expression, e.g. .*invoice.*",
+            width=470,
+        )
+        pattern_entry.pack(padx=24)
+
+        ctk.CTkLabel(
+            dialog,
+            text="Target",
+            font=FONT_ROUNDED,
+            text_color=TEXT_MUTED,
+        ).pack(anchor="w", padx=24, pady=(14, 4))
+        target_entry = ctk.CTkEntry(
+            dialog,
+            placeholder_text="Destination category, e.g. Finance",
+            width=470,
+        )
+        target_entry.pack(padx=24)
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=24, pady=20)
+        ctk.CTkButton(
+            buttons,
+            text="Cancel",
+            width=100,
+            height=34,
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=dialog.destroy,
+        ).pack(side="right")
+        ctk.CTkButton(
+            buttons,
+            text="Add",
+            width=100,
+            height=34,
+            fg_color=NEON_PURPLE,
+            hover_color="#A56EEA",
+            command=lambda: self._submit_add_rule(pattern_entry.get(), target_entry.get()),
+        ).pack(side="right", padx=(0, 8))
+        pattern_entry.focus_set()
+
+    def _submit_add_rule(self, pattern: str, target: str):
+        """Validate and persist a rule entered in the Add Rule dialog."""
+        pattern = pattern.strip() if isinstance(pattern, str) else ""
+        target = target.strip() if isinstance(target, str) else ""
+        if not pattern or not target:
+            messagebox.showerror(
+                "Add Rule", "Pattern and Target are both required."
+            )
+            return False
+
+        try:
+            from utils.rules_engine import RulesEngine
+            RulesEngine(self.file_agent.rules_path).add_rule(pattern, target)
+        except Exception as exc:
+            messagebox.showerror("Add Rule", f"Could not add rule: {exc}")
+            return False
+
+        dialog = getattr(self, "_add_rule_dialog", None)
+        if dialog is not None:
+            dialog.destroy()
+            self._add_rule_dialog = None
+        self._refresh_rules_list()
+        return True
+
+    def _prompt_delete_rule(self, pattern: str):
+        """Confirm and delete a rule, then refresh the manager list."""
+        if not messagebox.askyesno(
+            "Delete Rule", f"Delete the rule with pattern '{pattern}'?"
+        ):
+            return False
+        return self._delete_rule(pattern)
+
+    def _delete_rule(self, pattern: str):
+        """Delete a rule from the configured rules file and refresh the list."""
+        try:
+            from utils.rules_engine import RulesEngine
+            deleted = RulesEngine(self.file_agent.rules_path).delete_rule(pattern)
+        except Exception as exc:
+            messagebox.showerror("Delete Rule", f"Could not delete rule: {exc}")
+            return False
+        if deleted:
+            self._refresh_rules_list()
+        return deleted
 
     def show_rules(self):
         """Display the current deterministic categorization rules."""

@@ -3308,6 +3308,43 @@ class RulesEngineTests(unittest.TestCase):
 
             self.assertTrue(os.path.exists(os.path.join(sorted_dir, "ABC", "unsafe.txt")))
 
+    def test_delete_rule_removes_and_persists_rule(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_delete_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            engine = RulesEngine(rules_path)
+            engine.add_rule(".*invoice.*", "Finance")
+            engine.add_rule(".*receipt.*", "Finance")
+
+            self.assertTrue(engine.delete_rule(".*invoice.*"))
+            self.assertFalse(engine.delete_rule(".*missing.*"))
+
+            persisted = RulesEngine(rules_path).get_all_rules()
+            self.assertEqual(len(persisted), 1)
+            self.assertEqual(persisted[0]["pattern"], ".*receipt.*")
+
+    def test_organizer_can_add_and_delete_rule(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_manage_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            organizer = OrganizerTab.__new__(OrganizerTab)
+            organizer.file_agent = Mock()
+            organizer.file_agent.rules_path = rules_path
+            organizer._refresh_rules_list = Mock()
+
+            self.assertTrue(organizer._submit_add_rule(".*invoice.*", "Finance"))
+            self.assertEqual(
+                RulesEngine(rules_path).get_all_rules()[0]["target"],
+                "Finance",
+            )
+            organizer._refresh_rules_list.assert_called_once()
+
+            self.assertTrue(organizer._delete_rule(".*invoice.*"))
+            self.assertEqual(RulesEngine(rules_path).get_all_rules(), [])
+            self.assertEqual(organizer._refresh_rules_list.call_count, 2)
+
     def test_organizer_rules_button_lists_current_rules(self):
         from utils.rules_engine import RulesEngine
 
@@ -3328,6 +3365,17 @@ class RulesEngineTests(unittest.TestCase):
         finally:
             if os.path.exists(organizer.file_agent.rules_path):
                 os.remove(organizer.file_agent.rules_path)
+
+    def test_clear_chat_destroys_all_chat_children(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat.chat_display = Mock()
+        children = [Mock(), Mock(), Mock()]
+        chat.chat_display.winfo_children.return_value = children
+
+        chat.clear_chat()
+
+        for child in children:
+            child.destroy.assert_called_once()
 
     def test_chat_append_marks_rule_categorization(self):
         chat = ChatTab.__new__(ChatTab)
