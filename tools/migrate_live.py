@@ -222,9 +222,6 @@ def validate_migration(db: database_module.DatabaseManager, before: dict) -> dic
         raise RuntimeError(
             f"Provider count changed: {before['providers']} -> {after['providers']}"
         )
-    credentials = db.get_all_credentials()
-    if before["providers"] > 0 and not credentials:
-        raise RuntimeError("Non-empty database has no credentials after migration")
     linked_names = [row[0] for row in db._conn.execute(
         "SELECT name FROM providers WHERE credential_id IS NOT NULL"
     )]

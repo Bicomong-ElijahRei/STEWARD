@@ -1458,14 +1458,64 @@ class Batch3Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="steward_dedup_") as tmp:
             dest = os.path.join(tmp, "Sorted"); os.makedirs(dest)
             handler = FileCreationHandler(Mock(), dest, None)
-            with patch("agent.daemon.threading.Thread"), \
-                 patch("agent.daemon.time.sleep", return_value=None), \
-                 patch.object(handler, "_process_file"):
-                for i in range(1001):
-                    handler.on_created(SimpleNamespace(
-                        is_directory=False, src_path=os.path.join(tmp, f"file_{i}.txt")))
+            handler._executor = Mock()
+            handler._executor.submit.side_effect = lambda *args, **kwargs: handler._pending_slots.release()
+            for i in range(1001):
+                handler.on_created(SimpleNamespace(
+                    is_directory=False, src_path=os.path.join(tmp, f"file_{i}.txt")))
             self.assertIn(os.path.join(tmp, "file_1000.txt"), handler.last_processed)
             self.assertLessEqual(len(handler.last_processed), 1000)
+
+    def test_duplicate_create_event_is_processed_once(self):
+        with tempfile.TemporaryDirectory(prefix="steward_dedup_event_") as tmp:
+            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+            handler._executor = Mock()
+            path = os.path.join(tmp, "note.txt")
+            event = SimpleNamespace(is_directory=False, src_path=path)
+            handler.on_created(event)
+            handler.on_created(event)
+            self.assertEqual(handler._executor.submit.call_count, 1)
+
+    def test_recreated_path_is_processed_again(self):
+        with tempfile.TemporaryDirectory(prefix="steward_recreate_") as tmp:
+            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+            handler._executor = Mock()
+            path = os.path.join(tmp, "note.txt")
+            event = SimpleNamespace(is_directory=False, src_path=path)
+            with patch.object(
+                FileCreationHandler, "_file_identity",
+                side_effect=[("device", 1), ("device", 2)],
+            ):
+                handler.on_created(event)
+                handler.on_created(event)
+            self.assertEqual(handler._executor.submit.call_count, 2)
+
+    def test_daemon_has_bounded_worker_and_pending_limits(self):
+        self.assertEqual(FileCreationHandler.MAX_WORKERS, 4)
+        self.assertEqual(FileCreationHandler.MAX_PENDING_FILES, 32)
+
+    def test_stop_prevents_new_daemon_work(self):
+        with tempfile.TemporaryDirectory(prefix="steward_daemon_stop_") as tmp:
+            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+            handler._executor = Mock()
+            handler.stop()
+            handler.on_created(SimpleNamespace(
+                is_directory=False, src_path=os.path.join(tmp, "note.txt")
+            ))
+            handler._executor.submit.assert_not_called()
+
+    def test_organizer_stop_stops_daemon_handler(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.observer = Mock()
+        organizer.daemon_running = True
+        daemon_handler = Mock()
+        organizer.daemon_handler = daemon_handler
+        organizer.daemon_status_label = Mock()
+        organizer._log = Mock()
+        organizer.stop_daemon()
+        daemon_handler.stop.assert_called_once()
+        self.assertFalse(organizer.daemon_running)
+        self.assertIsNone(organizer.daemon_handler)
 
     # M3 per-call: categorise_file(..., dry_run=False) moves even when agent.dry_run is True.
     def test_categorise_file_per_call_dry_run_overrides_agent_flag(self):
@@ -2313,6 +2363,7 @@ class MigrationCLITests(unittest.TestCase):
     """Exercise the live CLI only against isolated temporary runtime files."""
 
     SCRIPT = Path(__file__).resolve().parent / "tools" / "migrate_live.py"
+    RUNNER_SCRIPT = Path(__file__).resolve().parent / "tools" / "run_migration.py"
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="steward_migration_cli_")
@@ -2432,6 +2483,36 @@ class MigrationCLITests(unittest.TestCase):
             self.assertEqual(len(db.get_all_credentials()), 2)
         finally:
             db.close()
+
+    def test_legacy_runner_dry_run_delegates_safely(self):
+        before_hash = self.database_hash()
+        environment = os.environ.copy()
+        environment["APPDATA"] = str(self.appdata)
+        for name in ("CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "TF_BUILD", "BUILD_NUMBER"):
+            environment.pop(name, None)
+        result = subprocess.run(
+            [sys.executable, str(self.RUNNER_SCRIPT), "--dry-run"],
+            cwd=self.root, env=environment, capture_output=True, text=True, timeout=45,
+        )
+        self.assert_success(result)
+        self.assertIn("DRY RUN complete", result.stdout)
+        self.assertEqual(self.database_hash(), before_hash)
+
+    def test_dry_run_allows_database_with_only_unlinkable_provider(self):
+        db = DatabaseManager(str(self.db_path), str(self.key_path))
+        try:
+            with db._lock:
+                db._conn.execute("DELETE FROM providers")
+                db._conn.execute(
+                    "INSERT INTO providers "
+                    "(name, base_url, api_key_encrypted, model_name, is_local, credential_id) "
+                    "VALUES ('Local', 'http://localhost:11434/v1', NULL, 'local', 1, NULL)"
+                )
+                db._conn.commit()
+        finally:
+            db.close()
+        result = self.run_cli("--dry-run")
+        self.assert_success(result)
 
     def test_missing_key_fails_fast(self):
         self.key_path.unlink()

@@ -88,6 +88,7 @@ class OrganizerTab(ctk.CTkFrame):
         self.file_agent = file_agent
         self.gui = gui
         self.observer = None
+        self.daemon_handler = None
         self.daemon_running = False
         self.watched_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Incoming"))
         self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
@@ -450,6 +451,7 @@ class OrganizerTab(ctk.CTkFrame):
         self.observer = Observer()
         self.observer.schedule(event_handler, watch_path, recursive=False)
         self.observer.start()
+        self.daemon_handler = event_handler
         self.daemon_running = True
         self.daemon_status_label.configure(text="Daemon: RUNNING", text_color="#10B981")
         self._log(f"Daemon started. Watching: {watch_path}")
@@ -459,6 +461,10 @@ class OrganizerTab(ctk.CTkFrame):
             self.observer.stop()
             self.observer.join()
             self.observer = None
+        if self.daemon_handler is not None:
+            self.daemon_handler.stop()
+            self.daemon_handler = None
+        if self.daemon_running:
             self.daemon_running = False
             self.daemon_status_label.configure(text="Daemon: STOPPED", text_color="#9CA3AF")
             self._log("Daemon stopped.")
