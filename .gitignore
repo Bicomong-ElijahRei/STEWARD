@@ -28,6 +28,8 @@ dist/
 # ==========================================
 # Ignore the operation log so it doesn't spam your repo
 steward_operations.json
+# Local ChromaDB knowledge index (runtime data, never source)
+rag_index/
 # Ignore your working directories if they contain personal files
 Incoming/
 Sorted/

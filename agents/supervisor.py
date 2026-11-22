@@ -7,6 +7,7 @@ Does NOT execute file operations directly - only produces routing decisions.
 
 import json
 import logging
+import re
 from typing import Dict, Any
 from core.router import APIManager
 
@@ -32,7 +33,9 @@ SUPERVISOR_SYSTEM_PROMPT = """You are the STEWARD Supervisor. Your job is to cla
 Available agents:
 - FILE_OP: File operations (move, rename, delete, read, list, create folder, organize, undo, redo)
 - PC_CONTROL: PC control / desktop automation (mouse, keyboard, screen, launch apps)
-- RAG: Semantic search / document Q&A over stored knowledge
+- RAG: Semantic search / document Q&A over stored knowledge. Route requests
+  containing search, find, recall, or "what does my file say" here unless the
+  user explicitly requests a filesystem mutation or file listing.
 - CODING: Code generation, debugging, refactoring
 - UNKNOWN: Cannot classify / general conversation
 
@@ -88,6 +91,13 @@ class SupervisorAgent:
             Dict with keys: agent (str), action (str)
             Example: {"agent": "FILE_OP", "action": "move file.txt to Sorted/Docs"}
         """
+        self.last_provider = None
+        if self._is_rag_request(user_input):
+            decision = {"agent": AGENT_RAG, "action": user_input.strip()}
+            self._last_file_action = None
+            self._remember(user_input, decision["action"])
+            return decision
+
         messages = [
             {"role": "system", "content": self._system_prompt},
             *self._conversation,
@@ -164,6 +174,29 @@ class SupervisorAgent:
         ])
         if len(self._conversation) > 8:
             del self._conversation[:-8]
+
+    @staticmethod
+    def _is_rag_request(text):
+        """Return whether text explicitly requests knowledge retrieval."""
+        stripped = text.strip().lower()
+        if not stripped:
+            return False
+        file_op_phrases = (
+            "move ", "rename ", "delete ", "remove ", "create folder",
+            "organize ", "sort files", "list files", "list directory",
+            "find duplicates", "find duplicate", "search for duplicates",
+            "read file", "read my file",
+        )
+        if any(phrase in stripped for phrase in file_op_phrases):
+            return False
+        tokens = set(re.findall(r"[a-z]+", stripped))
+        if tokens.intersection({"search", "find", "recall"}):
+            return True
+        rag_phrases = (
+            "what does my file say", "what does the file say",
+            "what do my files say",
+        )
+        return any(phrase in stripped for phrase in rag_phrases)
 
     @staticmethod
     def _is_actionable_request(text):
