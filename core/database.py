@@ -242,11 +242,29 @@ class DatabaseManager:
                 return cred_id
         
     def delete_credential(self, cred_id: int) -> bool:
-        """Delete a credential by ID. Referencing providers have credential_id set to NULL via ON DELETE SET NULL."""
+        """Delete a credential and disable providers that relied on it.
+
+        A provider's legacy key column may still contain the same encrypted
+        secret. Clearing that duplicate and deactivating the provider prevents
+        a deleted credential from remaining routable through the fallback read.
+        """
         with self._lock:
             cursor = self._conn.cursor()
-            cursor.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
-            self._conn.commit()
+            cursor.execute("SELECT 1 FROM credentials WHERE id = ?", (cred_id,))
+            if cursor.fetchone() is None:
+                return False
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("""
+                    UPDATE providers
+                    SET api_key_encrypted = NULL, credential_id = NULL, is_active = 0
+                    WHERE credential_id = ?
+                """, (cred_id,))
+                cursor.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return cursor.rowcount > 0
 
     def add_provider(self, name, base_url, api_key, model_name="",
@@ -392,12 +410,34 @@ class DatabaseManager:
             return [self._provider_from_row(row) for row in rows]
 
     def delete_provider(self, name: str) -> bool:
-        """Delete a provider by name."""
+        """Delete a provider and remove a credential that has no remaining users."""
         with self._lock:
             cursor = self._conn.cursor()
-            cursor.execute("DELETE FROM providers WHERE name = ?", (name,))
-            self._conn.commit()
-            return cursor.rowcount > 0
+            cursor.execute(
+                "SELECT credential_id FROM providers WHERE name = ?", (name,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            credential_id = row["credential_id"]
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute("DELETE FROM providers WHERE name = ?", (name,))
+                deleted = cursor.rowcount > 0
+                if deleted and credential_id is not None:
+                    cursor.execute(
+                        "SELECT 1 FROM providers WHERE credential_id = ? LIMIT 1",
+                        (credential_id,),
+                    )
+                    if cursor.fetchone() is None:
+                        cursor.execute(
+                            "DELETE FROM credentials WHERE id = ?", (credential_id,)
+                        )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return deleted
 
     def get_provider(self, name):
         """Return one provider, explicitly marking an undecryptable API key."""

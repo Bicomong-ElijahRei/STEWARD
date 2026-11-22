@@ -78,12 +78,20 @@ class ConstellationView(ctk.CTkCanvas):
         self.labels.clear()
         self.edges.clear()
 
-        radius = min(width, height) * RELATIVE_RADIUS
-        node_radius = max(10, min(18, radius * 0.16))
+        # Scale each axis independently so wide panels are actually used.
+        # Reserve vertical room below the lower node for its label on short
+        # canvases; otherwise the "Scout" label can be clipped at the edge.
+        radius_x = width * 0.5
+        node_radius = max(10, min(18, min(radius_x, height) * 0.16))
+        max_radius_y = max(
+            0,
+            (height / 2 - node_radius - 12 - 8) / 0.7,
+        )
+        radius_y = min(height * 0.4, max_radius_y)
         positions = {
             agent_name: (
-                width / 2 + (relative_x - 0.5) * 2 * radius,
-                height / 2 + (relative_y - 0.5) * 2 * radius,
+                width / 2 + (relative_x - 0.5) * 2 * radius_x,
+                height / 2 + (relative_y - 0.5) * 2 * radius_y,
             )
             for agent_name, (relative_x, relative_y) in AGENT_POSITIONS.items()
         }

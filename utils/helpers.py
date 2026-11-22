@@ -44,25 +44,44 @@ def sanitize_category(text, filepath="", max_len=40):
     """
     ext = os.path.splitext(filepath or "")[1].lower()
     fallback = _EXT_FALLBACK.get(ext, "Other")
-    if not text:
+    if not isinstance(text, str) or not text:
         return fallback
+    if isinstance(max_len, bool) or not isinstance(max_len, int) or max_len <= 0:
+        return fallback
+
     stripped = text.strip()
     if "\n" in stripped or len(stripped) > max_len:
         return fallback
     # Remove markdown formatting characters but preserve underscores (valid in Windows)
-    first = re.sub(r"[*`#]", "", stripped.splitlines()[0])
+    first = re.sub(r"[*`#]", "", stripped)
     # Remove Windows-illegal characters
     first = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", first)
     # Normalize whitespace
-    first = re.sub(r"\s+", " ", first).strip().rstrip(". ")
-    if not first or first.endswith((".", "!", "?", ":", ",")):
+    first = re.sub(r"\s+", " ", first).strip()
+    first = first[:max_len].rstrip(". ")
+    if not first or first.endswith(("!", "?", ":", ",")):
         return fallback
     # Windows reserves device names even when an extension is present
     # (for example, CON.txt). Never create such a directory.
     device_stem = first.split(".", 1)[0].rstrip(" .").upper()
     if device_stem in _WINDOWS_RESERVED_NAMES:
         return fallback
-    return first[:max_len]
+    return first
+
+
+FILE_PREVIEW_LIMIT = 2000
+FILE_PREVIEW_MARKER = (
+    f"\n\n[Content truncated: showing first {FILE_PREVIEW_LIMIT} characters]"
+)
+
+
+def truncate_file_preview(text, limit=FILE_PREVIEW_LIMIT):
+    """Bound a file preview and explicitly disclose when content was cut off."""
+    if not isinstance(text, str):
+        return text
+    if len(text) <= limit:
+        return text
+    return text[:limit] + FILE_PREVIEW_MARKER
 
 def read_file_content_simple(file_path):
     """Read text content from .txt, .pdf, .docx, or .xlsx (first 2000 chars) without AI."""
@@ -70,20 +89,20 @@ def read_file_content_simple(file_path):
     try:
         if ext == '.txt':
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read(2000)
+                return truncate_file_preview(f.read(FILE_PREVIEW_LIMIT + 1))
         elif ext == '.pdf':
             with open(file_path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
                 text = ''
                 for page in reader.pages[:3]:
                     text += page.extract_text() or ''
-                return text[:2000]
+                return truncate_file_preview(text)
         elif ext == '.docx':
             if docx is None:
                 return "python-docx not installed. Install with: pip install python-docx"
             doc = docx.Document(file_path)
             paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-            return "\n".join(paragraphs)[:2000]
+            return truncate_file_preview("\n".join(paragraphs))
         elif ext == '.xlsx':
             if openpyxl is None:
                 return "openpyxl not installed. Install with: pip install openpyxl"
@@ -96,7 +115,7 @@ def read_file_content_simple(file_path):
                     values = [str(v) for v in row if v is not None]
                     if values:
                         result.append(" | ".join(values))
-            return "\n".join(result)[:2000]
+            return truncate_file_preview("\n".join(result))
         return "[Content extraction not supported]"
     except Exception as e:
         return f"Error reading file: {e}"

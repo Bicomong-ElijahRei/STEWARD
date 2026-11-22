@@ -237,13 +237,31 @@ class ChatTab(ctk.CTkFrame):
         self.feed_panel.pack(side="right", fill="y", padx=(8, 0))
         self.feed_panel.pack_propagate(False)
 
+        feed_header = ctk.CTkFrame(
+            self.feed_panel, fg_color="transparent"
+        )
+        feed_header.pack(fill="x", padx=10, pady=(14, 8))
+
         feed_title = ctk.CTkLabel(
-            self.feed_panel,
+            feed_header,
             text="📡 Live Feed",
             font=("Nunito", 14, "bold"),
             text_color=NEON_PURPLE,
         )
-        feed_title.pack(pady=(14, 8), padx=10, anchor="w")
+        feed_title.pack(side="left")
+
+        self.btn_clear_feed = ctk.CTkButton(
+            feed_header,
+            text="Clear",
+            width=58,
+            height=26,
+            corner_radius=8,
+            font=("Nunito", 11, "bold"),
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self._clear_live_feed,
+        )
+        self.btn_clear_feed.pack(side="right")
 
         if self.live_feed is None:
             self.live_feed = LiveFeedWidget(self.feed_panel, width=300)
@@ -281,6 +299,11 @@ class ChatTab(ctk.CTkFrame):
             command=self.send_chat,
         )
         self.send_btn.pack(side="right")
+
+    def _clear_live_feed(self):
+        """Clear visible live-feed activity cards from the chat header."""
+        if self.live_feed:
+            self.live_feed.clear()
 
     def _is_alive(self):
         try:
@@ -374,7 +397,7 @@ class ChatTab(ctk.CTkFrame):
                         return user_choice[0]
 
                     preview_result = self.file_agent.run(
-                        user_msg, dry_run=True, confirm_callback=confirm_callback
+                        action, dry_run=True, confirm_callback=confirm_callback
                     )
                     if confirm_timed_out[0]:
                         restore_input[0] = True

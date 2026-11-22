@@ -75,6 +75,10 @@ class SupervisorAgent:
         self.api_manager = api_manager
         self._system_prompt = SUPERVISOR_SYSTEM_PROMPT
         self.last_provider = None
+        # Instance-local, bounded context. Keep only recent user/assistant
+        # turns and the latest file intent needed for short follow-ups.
+        self._conversation = []
+        self._last_file_action = None
 
     def route(self, user_input: str) -> Dict[str, Any]:
         """
@@ -86,6 +90,7 @@ class SupervisorAgent:
         """
         messages = [
             {"role": "system", "content": self._system_prompt},
+            *self._conversation,
             {"role": "user", "content": user_input},
         ]
 
@@ -133,7 +138,16 @@ class SupervisorAgent:
                 logger.warning(f"Invalid supervisor response: {parsed!r}")
                 return {"agent": AGENT_UNKNOWN, "action": user_input}
 
-            return {"agent": agent_type, "action": action.strip()}
+            decision = {"agent": agent_type, "action": action.strip()}
+            if agent_type == AGENT_FILE_OP:
+                decision["action"] = self._merge_file_follow_up(
+                    user_input, decision["action"]
+                )
+                self._last_file_action = decision["action"]
+            elif self._is_actionable_request(user_input):
+                self._last_file_action = None
+            self._remember(user_input, decision["action"])
+            return decision
 
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             logger.error(f"Failed to parse supervisor response: {e}")
@@ -141,3 +155,44 @@ class SupervisorAgent:
         except Exception as e:
             logger.error(f"Supervisor routing failed: {e}")
             return {"agent": AGENT_UNKNOWN, "action": user_input}
+
+    def _remember(self, user_input, action):
+        """Append one bounded user/assistant turn to this supervisor's context."""
+        self._conversation.extend([
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": action},
+        ])
+        if len(self._conversation) > 8:
+            del self._conversation[:-8]
+
+    @staticmethod
+    def _is_actionable_request(text):
+        """Return whether text is a complete request rather than a noun phrase."""
+        stripped = text.strip().lower()
+        if not stripped:
+            return False
+        operation_words = {
+            "create", "delete", "list", "move", "open", "organize", "read",
+            "redo", "rename", "search", "sort", "undo", "write",
+        }
+        return any(
+            word.strip(".,!?;:").strip('"') in operation_words
+            for word in stripped.split()
+        )
+
+    def _merge_file_follow_up(self, user_input, action):
+        """Merge an unambiguous short follow-up into the latest file intent."""
+        if self._last_file_action is None:
+            return action
+        if self._is_actionable_request(user_input):
+            return action
+        if len(user_input.strip().split()) > 3:
+            return action
+
+        prior = self._last_file_action.strip()
+        follow_up = action.strip()
+        if not follow_up or follow_up.lower() == prior.lower():
+            return action
+        if prior.lower() in follow_up.lower():
+            return follow_up
+        return f"{prior} in {follow_up}"

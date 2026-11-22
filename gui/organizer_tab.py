@@ -94,7 +94,10 @@ class OrganizerTab(ctk.CTkFrame):
         self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
         self.preview_rows = []
         self.pending_operations = []
+        self._preview_generation = 0
         self.build()
+        self.watched_var.trace_add("write", self._on_preview_paths_changed)
+        self.dest_var.trace_add("write", self._on_preview_paths_changed)
 
     def build(self):
         header = ctk.CTkFrame(self, fg_color="transparent", height=50)
@@ -243,9 +246,20 @@ class OrganizerTab(ctk.CTkFrame):
         self.undo_slider.set(100)
         self.undo_slider.pack(fill="x", padx=20, pady=(0, 10))
 
+    def _on_preview_paths_changed(self, *_args):
+        """Invalidate any preview whose source or destination is now stale."""
+        self._preview_generation = getattr(self, "_preview_generation", 0) + 1
+        for row in self.preview_rows:
+            row.destroy()
+        self.preview_rows.clear()
+        self.pending_operations.clear()
+        self.btn_execute.configure(state="disabled")
+
     def preview_incoming(self):
         incoming = self.watched_var.get()
         dest = self.dest_var.get()
+        self._preview_generation = getattr(self, "_preview_generation", 0) + 1
+        generation = self._preview_generation
 
         if not os.path.exists(incoming):
             self._log(f"Incoming folder not found: {incoming}")
@@ -280,11 +294,16 @@ class OrganizerTab(ctk.CTkFrame):
                 except Exception:
                     category = "Other"
                 planned.append((f, filepath, os.path.join(dest, category, f)))
-            self.after(0, lambda: self._render_preview(planned))
+            self.after(0, lambda: self._render_preview(planned, generation=generation))
 
         threading.Thread(target=process, daemon=True).start()
 
-    def _render_preview(self, planned):
+    def _render_preview(self, planned, generation=None):
+        if generation is not None and generation != getattr(
+            self, "_preview_generation", generation
+        ):
+            self.btn_execute.configure(state="disabled")
+            return
         for row in self.preview_rows:
             row.destroy()
         self.preview_rows.clear()

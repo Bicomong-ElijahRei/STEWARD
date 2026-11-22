@@ -2389,6 +2389,237 @@ class ChatNoPlanTests(unittest.TestCase):
         chat.file_agent.execute_pending_plan.assert_not_called()
         ChatWorkflowTests().assert_input_restored(chat)
 
+class SnoopAndFixRegressionTests(unittest.TestCase):
+    """Focused contracts for the confirmed Snoop & Fix defects."""
+
+    def test_file_preview_marks_truncated_content(self):
+        from agent.tools import read_file_content
+
+        with tempfile.TemporaryDirectory(prefix="steward_truncated_") as tmp:
+            source = os.path.join(tmp, "large.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("A" * 2500)
+
+            result = read_file_content(source)
+
+        self.assertIn("[content truncated", result.lower())
+        self.assertTrue(result.startswith("A" * 2000))
+
+    def test_category_sanitizer_handles_non_string_and_invalid_limit(self):
+        from utils.helpers import sanitize_category
+
+        self.assertEqual(sanitize_category(None, "photo.png"), "Images")
+        self.assertEqual(sanitize_category(123, "report.pdf"), "Documents")
+        self.assertEqual(sanitize_category("Reports", "report.pdf", max_len=0), "Documents")
+        self.assertEqual(sanitize_category("Reports", "report.pdf", max_len=-1), "Documents")
+
+    def test_supervisor_merges_unambiguous_short_file_follow_up(self):
+        manager = Mock()
+        manager.route_request.side_effect = [
+            {
+                "choices": [{"message": {"content": json.dumps({
+                    "agent": AGENT_FILE_OP,
+                    "action": "organize files by type",
+                })}}]
+            },
+            {
+                "choices": [{"message": {"content": json.dumps({
+                    "agent": AGENT_FILE_OP,
+                    "action": "incoming",
+                })}}]
+            },
+        ]
+        supervisor = SupervisorAgent(manager)
+
+        first = supervisor.route("sort my files")
+        second = supervisor.route("incoming")
+
+        self.assertEqual(first["action"], "organize files by type")
+        self.assertEqual(second["agent"], AGENT_FILE_OP)
+        self.assertIn("organize files by type", second["action"].lower())
+        self.assertIn("incoming", second["action"].lower())
+
+    def test_supervisor_context_is_instance_local_and_bounded(self):
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "agent": AGENT_FILE_OP,
+                "action": "organize files",
+            })}}]
+        }
+        first = SupervisorAgent(manager)
+        second = SupervisorAgent(manager)
+
+        for _ in range(20):
+            first.route("organize files")
+
+        self.assertLessEqual(len(first._conversation), 8)
+        self.assertEqual(second._conversation, [])
+
+    def test_chat_hands_resolved_file_action_to_foldy(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_FILE_OP, "action": "organize Incoming by type"}
+        )
+        chat.file_agent.run.return_value = "Preview ready"
+        chat.file_agent.get_pending_plan_id.return_value = None
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+
+        chat.file_agent.run.assert_called_once()
+        self.assertEqual(
+            chat.file_agent.run.call_args.args[0],
+            "organize Incoming by type",
+        )
+        for callback in callbacks:
+            callback()
+
+    def test_organizer_destination_change_invalidates_preview(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.watched_var = Mock()
+        organizer.dest_var = Mock()
+        organizer.dest_var.get.return_value = "Changed"
+        row = Mock()
+        organizer.preview_rows = [row]
+        organizer.pending_operations = [{"selected": True}]
+        organizer.btn_execute = Mock()
+
+        organizer._on_preview_paths_changed()
+
+        row.destroy.assert_called_once()
+        self.assertEqual(organizer.pending_operations, [])
+        organizer.btn_execute.configure.assert_called_with(state="disabled")
+
+    def test_organizer_discards_stale_async_preview(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.preview_rows = []
+        organizer.pending_operations = []
+        organizer.btn_execute = Mock()
+        organizer._preview_generation = 2
+
+        organizer._render_preview(
+            [("old.txt", "old-source", "old-destination")],
+            generation=1,
+        )
+
+        self.assertEqual(organizer.pending_operations, [])
+        organizer.btn_execute.configure.assert_called_with(state="disabled")
+
+    def test_deleting_credential_invalidates_all_referencing_providers(self):
+        with tempfile.TemporaryDirectory(prefix="steward_delete_cred_") as tmp:
+            db = DatabaseManager(
+                os.path.join(tmp, "test.db"),
+                os.path.join(tmp, "test.key"),
+            )
+            try:
+                credential_id = db.set_credential(
+                    "https://api.shared.test/v1", "shared-secret"
+                )
+                db.add_provider(
+                    "Primary",
+                    "https://api.shared.test/v1",
+                    "shared-secret",
+                    credential_id=credential_id,
+                )
+                db.add_provider(
+                    "Backup",
+                    "https://api.shared.test/v1",
+                    "shared-secret",
+                    credential_id=credential_id,
+                )
+
+                self.assertTrue(db.delete_credential(credential_id))
+
+                for name in ("Primary", "Backup"):
+                    provider = db.get_provider(name)
+                    self.assertFalse(provider["is_active"])
+                    self.assertFalse(provider["api_key"])
+                    self.assertIsNone(provider["credential_id"])
+                self.assertEqual(db.get_active_providers(), [])
+            finally:
+                db.close()
+
+    def test_deleting_last_provider_removes_orphan_credential(self):
+        with tempfile.TemporaryDirectory(prefix="steward_delete_provider_") as tmp:
+            db = DatabaseManager(
+                os.path.join(tmp, "test.db"),
+                os.path.join(tmp, "test.key"),
+            )
+            try:
+                credential_id = db.set_credential(
+                    "https://api.orphan.test/v1", "orphan-secret"
+                )
+                db.add_provider(
+                    "OnlyProvider",
+                    "https://api.orphan.test/v1",
+                    "orphan-secret",
+                    credential_id=credential_id,
+                )
+
+                self.assertTrue(db.delete_provider("OnlyProvider"))
+
+                self.assertIsNone(db.get_provider("OnlyProvider"))
+                self.assertIsNone(db.get_credential_by_id(credential_id))
+            finally:
+                db.close()
+
+    def test_deleting_provider_keeps_credential_shared_by_another_provider(self):
+        with tempfile.TemporaryDirectory(prefix="steward_shared_credential_") as tmp:
+            db = DatabaseManager(
+                os.path.join(tmp, "test.db"),
+                os.path.join(tmp, "test.key"),
+            )
+            try:
+                credential_id = db.set_credential(
+                    "https://api.shared.test/v1", "shared-secret"
+                )
+                for name in ("Primary", "Backup"):
+                    db.add_provider(
+                        name,
+                        "https://api.shared.test/v1",
+                        "shared-secret",
+                        credential_id=credential_id,
+                    )
+
+                self.assertTrue(db.delete_provider("Primary"))
+
+                self.assertIsNotNone(db.get_credential_by_id(credential_id))
+                self.assertIsNotNone(db.get_provider("Backup"))
+            finally:
+                db.close()
+
+    def test_chat_has_visible_live_feed_clear_control(self):
+        source = Path(
+            Path(__file__).resolve().parent / "gui" / "chat_tab.py"
+        ).read_text(encoding="utf-8-sig")
+        self.assertIn("self.btn_clear_feed = ctk.CTkButton(", source)
+        self.assertIn('text="Clear"', source)
+        self.assertIn("command=self._clear_live_feed", source)
+
+    def test_constellation_uses_both_axes_and_keeps_labels_in_bounds(self):
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            widget = ConstellationView(root, width=400, height=300)
+            widget._on_resize(SimpleNamespace(width=800, height=220))
+
+            cortex = widget.bbox(widget.nodes["Cortex"])
+            syntax = widget.bbox(widget.nodes["Syntax"])
+            scout = widget.bbox(widget.nodes["Scout"])
+            scout_label = widget.bbox(widget.labels["Scout"])
+
+            self.assertGreater(cortex[0] - syntax[0], 250)
+            self.assertGreater(scout[1] - cortex[1], 40)
+            self.assertGreaterEqual(scout[0], 0)
+            self.assertLessEqual(scout[2], 800)
+            self.assertGreaterEqual(scout_label[1], 0)
+            self.assertLessEqual(scout_label[3], 220)
+        finally:
+            root.destroy()
+
+
 class SourceIntegrityTests(unittest.TestCase):
     """Guard against accidental duplicate definitions during hand edits."""
 

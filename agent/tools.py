@@ -5,6 +5,7 @@ import hashlib
 import glob
 import PyPDF2
 from datetime import datetime
+from utils.helpers import FILE_PREVIEW_LIMIT, truncate_file_preview
 
 try:
     import docx  # python-docx
@@ -70,20 +71,20 @@ def read_file_content(file_path):
     try:
         if ext == '.txt':
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read(2000)
+                return truncate_file_preview(f.read(FILE_PREVIEW_LIMIT + 1))
         elif ext == '.pdf':
             with open(file_path, 'rb') as f:
                 reader = PyPDF2.PdfReader(f)
                 text = ''
                 for page in reader.pages[:3]:
                     text += page.extract_text() or ''
-                return text[:2000]
+                return truncate_file_preview(text)
         elif ext == '.docx':
             if docx is None:
                 return "python-docx not installed. Install with: pip install python-docx"
             doc = docx.Document(file_path)
             paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-            return "\n".join(paragraphs)[:2000]
+            return truncate_file_preview("\n".join(paragraphs))
         elif ext == '.xlsx':
             if openpyxl is None:
                 return "openpyxl not installed. Install with: pip install openpyxl"
@@ -96,7 +97,7 @@ def read_file_content(file_path):
                     values = [str(v) for v in row if v is not None]
                     if values:
                         result.append(" | ".join(values))
-            return "\n".join(result)[:2000]
+            return truncate_file_preview("\n".join(result))
         else:
             return "[Content extraction not supported]"
     except Exception as e:

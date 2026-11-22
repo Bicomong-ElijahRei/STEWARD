@@ -7,7 +7,11 @@ Includes full undo/redo support via JSON operation log.
 """
 
 import os
-from utils.helpers import sanitize_category
+from utils.helpers import (
+    FILE_PREVIEW_LIMIT,
+    sanitize_category,
+    truncate_file_preview,
+)
 import shutil
 import json
 import logging
@@ -332,7 +336,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         try:
             if ext == ".txt":
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    return f.read(2000)
+                    return truncate_file_preview(f.read(FILE_PREVIEW_LIMIT + 1))
             elif ext == ".pdf":
                 if PyPDF2 is None:
                     return "PyPDF2 not installed. Install with: pip install PyPDF2"
@@ -341,13 +345,13 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     text = ""
                     for page in reader.pages[:3]:
                         text += page.extract_text() or ""
-                    return text[:2000]
+                    return truncate_file_preview(text)
             elif ext == ".docx":
                 if docx is None:
                     return "python-docx not installed. Install with: pip install python-docx"
                 doc = docx.Document(file_path)
                 paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-                return "\n".join(paragraphs)[:2000]
+                return truncate_file_preview("\n".join(paragraphs))
             elif ext == ".xlsx":
                 if openpyxl is None:
                     return "openpyxl not installed. Install with: pip install openpyxl"
@@ -360,7 +364,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         values = [str(v) for v in row if v is not None]
                         if values:
                             result.append(" | ".join(values))
-                return "\n".join(result)[:2000]
+                return truncate_file_preview("\n".join(result))
             else:
                 return f"[Content extraction not supported for extension: {ext}]"
         except Exception as e:
