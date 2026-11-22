@@ -1131,6 +1131,36 @@ class ChatWorkflowTests(unittest.TestCase):
                 callback()
         self.assert_input_restored(chat)
 
+    def test_dialog_unanswered_times_out_and_restores_input(self):
+        chat, callbacks = self.make_chat(
+            routing={"agent": AGENT_FILE_OP, "action": "move a file"}
+        )
+        chat.dialog_timeout = 0.05
+        chat.file_agent.run.return_value = "Preview ready"
+        chat.file_agent.get_pending_plan_id.return_value = "preview-plan-id"
+
+        worker_thread = None
+        orig_thread = threading.Thread
+
+        class CapturedThread(orig_thread):
+            def __init__(self, target, daemon=True):
+                nonlocal worker_thread
+                super().__init__(target=target, daemon=daemon)
+                worker_thread = self
+
+        with patch("gui.chat_tab.threading.Thread", CapturedThread):
+            with self.assertLogs("gui.chat_tab", level="INFO") as logs:
+                chat.send_chat()
+                self.assertIsNotNone(worker_thread)
+                worker_thread.join(timeout=0.3)
+                self.assertFalse(worker_thread.is_alive(), "Worker blocked on unanswered dialog")
+                self.assertTrue(any("approval dialog timed out; input restored" in m for m in logs.output))
+
+        chat.file_agent.discard_pending_plan.assert_called_once()
+        for callback in callbacks:
+            callback()
+        self.assert_input_restored(chat)
+
 class Batch2BTests(unittest.TestCase):
     def make_agent(self, root):
         log_path = os.path.join(root, "operations.json")
@@ -1261,24 +1291,18 @@ class Batch3Tests(unittest.TestCase):
              patch("agent.daemon.time.sleep", return_value=None):
             self.assertTrue(handler._wait_until_stable(filepath, timeout=2.0, interval=0.01))
 
-    # M2 dedup: after 1001 on_created calls, the most recent path is still tracked.
     def test_dedup_keeps_most_recent_after_1001(self):
-        handler = FileCreationHandler.__new__(FileCreationHandler)
-        handler.root = tempfile.mkdtemp()
-        handler.dest_base = os.path.join(handler.root, "Sorted")
-        os.makedirs(handler.dest_base)
-
-        handler.last_processed = OrderedDict()
-
-        with patch("agent.daemon.threading.Thread"), \
-             patch("agent.daemon.time.sleep", return_value=None), \
-             patch.object(handler, "_process_file"):
-            for i in range(1001):
-                path = os.path.join(handler.root, f"file_{i}.txt")
-                handler.on_created(SimpleNamespace(is_directory=False, src_path=path))
-
-        most_recent = os.path.join(handler.root, "file_1000.txt")
-        self.assertIn(most_recent, handler.last_processed)
+        with tempfile.TemporaryDirectory(prefix="steward_dedup_") as tmp:
+            dest = os.path.join(tmp, "Sorted"); os.makedirs(dest)
+            handler = FileCreationHandler(Mock(), dest, None)
+            with patch("agent.daemon.threading.Thread"), \
+                 patch("agent.daemon.time.sleep", return_value=None), \
+                 patch.object(handler, "_process_file"):
+                for i in range(1001):
+                    handler.on_created(SimpleNamespace(
+                        is_directory=False, src_path=os.path.join(tmp, f"file_{i}.txt")))
+            self.assertIn(os.path.join(tmp, "file_1000.txt"), handler.last_processed)
+            self.assertLessEqual(len(handler.last_processed), 1000)
 
     # M3 per-call: categorise_file(..., dry_run=False) moves even when agent.dry_run is True.
     def test_categorise_file_per_call_dry_run_overrides_agent_flag(self):

@@ -41,6 +41,7 @@ class ChatTab(ctk.CTkFrame):
         self.live_feed = live_feed
         self.provider_callback = provider_callback
         self._processing = False
+        self.dialog_timeout = 600
         self.build()
 
     def build(self):
@@ -181,6 +182,9 @@ class ChatTab(ctk.CTkFrame):
                         NEON_CYAN, align="left",
                     ))
 
+                    dialog_timeout = getattr(self, "dialog_timeout", 600)
+                    confirm_timed_out = [False]
+
                     def confirm_callback(tool_name, args):
                         preview = f"Tool: {tool_name}\nArguments: {json.dumps(args, indent=2)}"
                         evt = threading.Event()
@@ -192,12 +196,19 @@ class ChatTab(ctk.CTkFrame):
                             )
                             evt.set()
                         self._safe_after(ask)
-                        evt.wait()
+                        if not evt.wait(timeout=dialog_timeout):
+                            confirm_timed_out[0] = True
+                            return False
                         return user_choice[0]
 
                     preview_result = self.file_agent.run(
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
+                    if confirm_timed_out[0]:
+                        self.file_agent.discard_pending_plan()
+                        logger.info("[Chat] approval dialog timed out; input restored")
+                        return
+
                     self._pending_plan_id = self.file_agent.get_pending_plan_id()
                     foldy_detail = self._report_provider("Foldy")
                     preview_message = preview_result
@@ -221,7 +232,10 @@ class ChatTab(ctk.CTkFrame):
                         )
                         exec_evt.set()
                     self._safe_after(ask_exec)
-                    exec_evt.wait()
+                    if not exec_evt.wait(timeout=dialog_timeout):
+                        self.file_agent.discard_pending_plan()
+                        logger.info("[Chat] approval dialog timed out; input restored")
+                        return
 
                     if exec_choice[0]:
                         try:

@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-22 | 1ac5b1a8 | Batch 4a closed: bounded dialog waits in chat_tab.py (L2 closed) and strengthened dedup test with real __init__; 62 tests green.
 2026-11-22 | 1a538464 | v2.0 frozen. README shipped.
 2026-11-22 | 7f682d6d | App smoke-tested live: window renders, chat routes, provider failover observed end-to-end in Live Feed. Added shared-credential-store item to v2.1 backlog.
 2026-11-22 | 8d22ea78 | Batch 3b closed. All remediation batches (1, 2A, 2B, 3a, 3b) complete. 61 tests green.
@@ -26,8 +27,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: 1a538464
-Suite: test_phase0_phase_a.py 61 green; test_validator.py 5/5
+HEAD: 1ac5b1a8
+Suite: test_phase0_phase_a.py 62 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies;
 Cline/Kimi for feature volume. Never two writers on one file.
@@ -82,9 +83,8 @@ Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
 - M8  DONE | 8d22ea78 | Organizer builds FilePreviewRow + BooleanVar on worker thread; pending_
       operations mutated from worker. Accept: construction and mutation on main thread.
 - N6  DONE | 8d22ea78 | Daemon dest_base vs hardcoded sandbox roots. Accept: reconciled, documented.
-- L2  PARTIAL | 77c9a3b2 | _scroll_chat is now guarded (shipped). REMAINING: evt.wait() and
-      exec_evt.wait() in gui/chat_tab.py are still unbounded. Deferred to v2.1 by owner
-      decision; see backlog. Do not mark DONE.
+- L2  DONE | 1ac5b1a8 | _scroll_chat guarded (77c9a3b2); evt.wait()/exec_evt.wait() in
+      gui/chat_tab.py now timeout; worker exits cleanly and restores input on no answer.
 - L3  DONE | 8d22ea78 | quit_app calls root.quit() from pystray thread; WM_DELETE overwritten;
       observer not stopped. Accept: one coherent marshaled shutdown path.
 - L4  DONE | 77c9a3b2 | Untrack __pycache__/, .vscode/, Sorted media (keep on disk). The large .mkv is
@@ -154,8 +154,8 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
   (e.g. %APPDATA%\STEWARD\). Paths are currently os.getcwd()-based. Rationale: an agent with
   shell access deleted the production DB; .clineignore governs file tools only. Keep
   irreplaceable data outside the blast radius.
-- L2 remainder: bound evt.wait()/exec_evt.wait() in gui/chat_tab.py with timeouts and handle
-  the cancelled path so a worker cannot block forever.
+- L2 remainder: bound evt.wait()/exec_evt.wait() in gui/chat_tab.py with timeouts: DONE | 1ac5b1a8
+- Dedup test strengthening: DONE | 1ac5b1a8
 - Shared credential store: new credentials table keyed by normalized base_url; providers
   reference credential_id instead of storing api_key_encrypted per row. Add/rotate a key
   once and every model on that endpoint inherits it. Motivation: one provider key currently
