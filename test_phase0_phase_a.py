@@ -1,8 +1,12 @@
 """Isolated regression tests for immutable plans and agent-aware routing."""
 
+import hashlib
 import json
 import os
+from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -1909,6 +1913,139 @@ class ChatNoPlanTests(unittest.TestCase):
             cb()
         chat.file_agent.execute_pending_plan.assert_not_called()
         ChatWorkflowTests().assert_input_restored(chat)
+
+class MigrationCLITests(unittest.TestCase):
+    """Exercise the live CLI only against isolated temporary runtime files."""
+
+    SCRIPT = Path(__file__).resolve().parent / "tools" / "migrate_live.py"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="steward_migration_cli_")
+        self.root = Path(self.temp_dir.name)
+        self.db_path = self.root / "steward.db"
+        self.key_path = self.root / "secret.key"
+        self.backup_dir = self.root / "backups"
+        self.appdata = self.root / "appdata"
+        db = DatabaseManager(str(self.db_path), str(self.key_path))
+        providers = [
+            ("SharedOne", "https://shared.example/v1", db._encrypt("key-one")),
+            ("SharedTwo", "https://shared.example/v1/", db._encrypt("key-one")),
+            ("Other", "https://other.example/v1", db._encrypt("key-two")),
+        ]
+        with db._lock:
+            db._conn.executemany(
+                "INSERT INTO providers "
+                "(name, base_url, api_key_encrypted, model_name, credential_id) "
+                "VALUES (?, ?, ?, 'test-model', NULL)",
+                providers,
+            )
+            db._conn.commit()
+        db.close()
+        (self.root / "steward_operations.json").write_text("[]\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def database_hash(self):
+        return hashlib.sha256(self.db_path.read_bytes()).hexdigest()
+
+    def run_cli(self, *arguments, confirmation=None):
+        environment = os.environ.copy()
+        environment["APPDATA"] = str(self.appdata)
+        for name in ("CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "TF_BUILD", "BUILD_NUMBER"):
+            environment.pop(name, None)
+        arguments = [str(argument) for argument in arguments]
+        if confirmation is None:
+            command = [sys.executable, str(self.SCRIPT), *arguments]
+        else:
+            wrapper = (
+                "import runpy, sys; from unittest.mock import patch; "
+                f"sys.argv = {[str(self.SCRIPT), *arguments]!r};\n"
+                "with patch.object(sys.stdin, 'isatty', return_value=True), "
+                f"patch('builtins.input', return_value={confirmation!r}): "
+                f"runpy.run_path({str(self.SCRIPT)!r}, run_name='__main__')"
+            )
+            command = [sys.executable, "-c", wrapper]
+        return subprocess.run(
+            command, cwd=self.root, env=environment, capture_output=True,
+            text=True, timeout=45,
+        )
+
+    def assert_success(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_dry_run_does_not_modify_db(self):
+        before_hash = self.database_hash()
+        result = self.run_cli("--dry-run", "--backup-dir", self.backup_dir)
+        self.assert_success(result)
+        self.assertIn("DRY RUN complete", result.stdout)
+        self.assertEqual(self.database_hash(), before_hash)
+        self.assertFalse(self.backup_dir.exists())
+
+    def test_execute_creates_backup_and_migrates(self):
+        result = self.run_cli(
+            "--execute", "--backup-dir", self.backup_dir, confirmation="MIGRATE"
+        )
+        self.assert_success(result)
+        database_backups = list(self.backup_dir.glob("steward_backup_*.db"))
+        manifests = list(self.backup_dir.glob("steward_backup_*_manifest.json"))
+        self.assertEqual(len(database_backups), 1)
+        self.assertEqual(len(manifests), 1)
+        self.assertEqual(len(list(self.backup_dir.glob("steward_backup_*.key"))), 1)
+        self.assertEqual(len(list(self.backup_dir.glob("*_operations.json"))), 1)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(set(manifest["files"]), {
+            "steward.db", "secret.key", "steward_operations.json",
+        })
+        for entry in manifest["files"].values():
+            backup_path = Path(entry["backup_path"])
+            self.assertTrue(backup_path.is_file())
+            digest = hashlib.sha256(backup_path.read_bytes()).hexdigest().upper()
+            self.assertEqual(digest, entry["sha256"])
+
+        db = DatabaseManager(str(self.db_path), str(self.key_path))
+        try:
+            providers = db.get_all_providers()
+            self.assertEqual(len(providers), 3)
+            self.assertTrue(all(p["credential_id"] is not None for p in providers))
+            self.assertEqual(len(db.get_all_credentials()), 2)
+            self.assertEqual(
+                {p["name"]: p["api_key"] for p in providers},
+                {"SharedOne": "key-one", "SharedTwo": "key-one", "Other": "key-two"},
+            )
+        finally:
+            db.close()
+
+    def test_rollback_reverses_migration(self):
+        migrated = self.run_cli(
+            "--execute", "--backup-dir", self.backup_dir, confirmation="MIGRATE"
+        )
+        self.assert_success(migrated)
+        rolled_back = self.run_cli(
+            "--rollback", "--backup-dir", self.root / "rollback_backups",
+            confirmation="ROLLBACK",
+        )
+        self.assert_success(rolled_back)
+        db = DatabaseManager(str(self.db_path), str(self.key_path))
+        try:
+            providers = db.get_all_providers()
+            self.assertTrue(all(p["credential_id"] is None for p in providers))
+            self.assertEqual(
+                {p["name"]: p["api_key"] for p in providers},
+                {"SharedOne": "key-one", "SharedTwo": "key-one", "Other": "key-two"},
+            )
+            self.assertEqual(len(db.get_all_credentials()), 2)
+        finally:
+            db.close()
+
+    def test_missing_key_fails_fast(self):
+        self.key_path.unlink()
+        result = self.run_cli("--dry-run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("secret.key is missing", result.stderr)
+        self.assertFalse(self.key_path.exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()
