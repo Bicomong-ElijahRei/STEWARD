@@ -1,8 +1,8 @@
 import os
+import queue
 import time
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from watchdog.events import FileSystemEventHandler
 
 
@@ -24,10 +24,17 @@ class FileCreationHandler(FileSystemEventHandler):
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._pending_slots = threading.BoundedSemaphore(self.MAX_PENDING_FILES)
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.MAX_WORKERS,
-            thread_name_prefix="steward-daemon",
-        )
+        self._queue = queue.Queue(maxsize=self.MAX_PENDING_FILES)
+        self._workers = [
+            threading.Thread(
+                target=self._worker_loop,
+                name=f"steward-daemon-{index + 1}",
+                daemon=True,
+            )
+            for index in range(self.MAX_WORKERS)
+        ]
+        for worker in self._workers:
+            worker.start()
 
     @staticmethod
     def _file_identity(filepath):
@@ -38,32 +45,40 @@ class FileCreationHandler(FileSystemEventHandler):
             return None
         return (stat.st_dev, stat.st_ino)
 
+    def _enqueue_file(self, filepath):
+        """Apply backpressure without making the watchdog callback uninterruptible."""
+        while not self._stopped.is_set():
+            if self._pending_slots.acquire(timeout=0.05):
+                break
+        else:
+            return False
+        try:
+            self._queue.put_nowait(filepath)
+            return True
+        except queue.Full:
+            self._pending_slots.release()
+            return False
+
     def on_created(self, event):
         if event.is_directory or self._stopped.is_set():
             return
         filepath = event.src_path
-        self._pending_slots.acquire()
-        if self._stopped.is_set():
-            self._pending_slots.release()
-            return
         identity = self._file_identity(filepath) or ("missing", filepath)
         with self._lock:
             previous_identity = self.last_processed.get(filepath)
             if previous_identity == identity:
                 self.last_processed.move_to_end(filepath)
-                self._pending_slots.release()
                 return
             self.last_processed[filepath] = identity
             self.last_processed.move_to_end(filepath)
             while len(self.last_processed) > self.MAX_TRACKED_FILES:
                 self.last_processed.popitem(last=False)
-        try:
-            self._executor.submit(self._process_file, filepath)
-        except RuntimeError:
-            # The handler may have been stopped between the state check and
-            # submission. A stopped daemon must not begin new work.
-            self._pending_slots.release()
-            return
+        if not self._enqueue_file(filepath):
+            # A stop raced with backpressure. Remove only this identity so a
+            # later restart can reconsider the path if necessary.
+            with self._lock:
+                if self.last_processed.get(filepath) == identity:
+                    self.last_processed.pop(filepath, None)
 
     @staticmethod
     def _wait_until_stable(filepath, timeout=10.0, interval=0.5):
@@ -80,6 +95,18 @@ class FileCreationHandler(FileSystemEventHandler):
             time.sleep(interval)
         return False
 
+    def _worker_loop(self):
+        while not self._stopped.is_set():
+            try:
+                filepath = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                self._process_file(filepath)
+            finally:
+                self._queue.task_done()
+                self._pending_slots.release()
+
     def _process_file(self, filepath):
         try:
             if self._stopped.is_set():
@@ -95,10 +122,17 @@ class FileCreationHandler(FileSystemEventHandler):
             print(f"[Daemon] {result}")
         except Exception as e:
             print(f"[Daemon] Error: {e}")
-        finally:
-            self._pending_slots.release()
 
     def stop(self):
-        """Stop accepting work and cancel tasks that have not started."""
+        """Stop accepting work, discard queued files, and release workers."""
         self._stopped.set()
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                self._queue.task_done()
+                self._pending_slots.release()
+        for worker in self._workers:
+            worker.join(timeout=0.2)

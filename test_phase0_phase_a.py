@@ -34,6 +34,7 @@ from core.database import (
 )
 from core.discovery import DiscoveredModel, upsert_discovered_models
 from core.router import APIManager
+from tools import migrate_live as migration_cli
 from gui.chat_tab import (
     ChatBubble,
     ChatTab,
@@ -1457,52 +1458,70 @@ class Batch3Tests(unittest.TestCase):
     def test_dedup_keeps_most_recent_after_1001(self):
         with tempfile.TemporaryDirectory(prefix="steward_dedup_") as tmp:
             dest = os.path.join(tmp, "Sorted"); os.makedirs(dest)
-            handler = FileCreationHandler(Mock(), dest, None)
-            handler._executor = Mock()
-            handler._executor.submit.side_effect = lambda *args, **kwargs: handler._pending_slots.release()
-            for i in range(1001):
-                handler.on_created(SimpleNamespace(
-                    is_directory=False, src_path=os.path.join(tmp, f"file_{i}.txt")))
-            self.assertIn(os.path.join(tmp, "file_1000.txt"), handler.last_processed)
-            self.assertLessEqual(len(handler.last_processed), 1000)
+            with patch.object(FileCreationHandler, "_process_file"):
+                handler = FileCreationHandler(Mock(), dest, None)
+                try:
+                    for i in range(1001):
+                        handler.on_created(SimpleNamespace(
+                            is_directory=False, src_path=os.path.join(tmp, f"file_{i}.txt")))
+                    self.assertIn(os.path.join(tmp, "file_1000.txt"), handler.last_processed)
+                    self.assertLessEqual(len(handler.last_processed), 1000)
+                finally:
+                    handler.stop()
 
     def test_duplicate_create_event_is_processed_once(self):
         with tempfile.TemporaryDirectory(prefix="steward_dedup_event_") as tmp:
-            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
-            handler._executor = Mock()
-            path = os.path.join(tmp, "note.txt")
-            event = SimpleNamespace(is_directory=False, src_path=path)
-            handler.on_created(event)
-            handler.on_created(event)
-            self.assertEqual(handler._executor.submit.call_count, 1)
+            with patch.object(FileCreationHandler, "_process_file") as process_file:
+                handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+                try:
+                    path = os.path.join(tmp, "note.txt")
+                    event = SimpleNamespace(is_directory=False, src_path=path)
+                    handler.on_created(event)
+                    handler.on_created(event)
+                    handler._queue.join()
+                    self.assertEqual(process_file.call_count, 1)
+                finally:
+                    handler.stop()
 
     def test_recreated_path_is_processed_again(self):
         with tempfile.TemporaryDirectory(prefix="steward_recreate_") as tmp:
-            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
-            handler._executor = Mock()
-            path = os.path.join(tmp, "note.txt")
-            event = SimpleNamespace(is_directory=False, src_path=path)
-            with patch.object(
-                FileCreationHandler, "_file_identity",
-                side_effect=[("device", 1), ("device", 2)],
-            ):
-                handler.on_created(event)
-                handler.on_created(event)
-            self.assertEqual(handler._executor.submit.call_count, 2)
+            with patch.object(FileCreationHandler, "_process_file") as process_file:
+                handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+                try:
+                    path = os.path.join(tmp, "note.txt")
+                    event = SimpleNamespace(is_directory=False, src_path=path)
+                    with patch.object(
+                        FileCreationHandler, "_file_identity",
+                        side_effect=[("device", 1), ("device", 2)],
+                    ):
+                        handler.on_created(event)
+                        handler.on_created(event)
+                    handler._queue.join()
+                    self.assertEqual(process_file.call_count, 2)
+                finally:
+                    handler.stop()
 
     def test_daemon_has_bounded_worker_and_pending_limits(self):
         self.assertEqual(FileCreationHandler.MAX_WORKERS, 4)
         self.assertEqual(FileCreationHandler.MAX_PENDING_FILES, 32)
+        with tempfile.TemporaryDirectory(prefix="steward_daemon_workers_") as tmp:
+            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+            try:
+                self.assertEqual(len(handler._workers), 4)
+                self.assertTrue(all(worker.daemon for worker in handler._workers))
+                self.assertEqual(handler._queue.maxsize, 32)
+            finally:
+                handler.stop()
 
     def test_stop_prevents_new_daemon_work(self):
         with tempfile.TemporaryDirectory(prefix="steward_daemon_stop_") as tmp:
-            handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
-            handler._executor = Mock()
-            handler.stop()
-            handler.on_created(SimpleNamespace(
-                is_directory=False, src_path=os.path.join(tmp, "note.txt")
-            ))
-            handler._executor.submit.assert_not_called()
+            with patch.object(FileCreationHandler, "_process_file") as process_file:
+                handler = FileCreationHandler(Mock(), os.path.join(tmp, "Sorted"), None)
+                handler.stop()
+                handler.on_created(SimpleNamespace(
+                    is_directory=False, src_path=os.path.join(tmp, "note.txt")
+                ))
+                process_file.assert_not_called()
 
     def test_organizer_stop_stops_daemon_handler(self):
         organizer = OrganizerTab.__new__(OrganizerTab)
@@ -1822,6 +1841,36 @@ class CredentialStoreTests(unittest.TestCase):
             self.assertEqual(prov2_first["credential_id"], prov2_second["credential_id"])
             self.assertEqual(creds_count_1, creds_count_2)
             self.assertEqual(prov1_second["api_key"], "shared-openrouter-key")
+            db.close()
+
+    def test_migration_preserves_existing_shared_credential_link(self):
+        with tempfile.TemporaryDirectory(prefix="steward_mig_linked_") as tmp:
+            db_path = os.path.join(tmp, "test.db")
+            key_path = os.path.join(tmp, "test.key")
+            db = DatabaseManager(db_path, key_path)
+
+            credential_id = db.set_credential("https://api.shared.com/v1", "shared-key")
+            db.add_provider(
+                name="SharedProvider",
+                base_url="https://api.shared.com/v1",
+                api_key="shared-key",
+                credential_id=credential_id,
+                is_active=True,
+            )
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE providers SET api_key_encrypted = NULL WHERE name = ?",
+                    ("SharedProvider",),
+                )
+                db._conn.commit()
+
+            result = migrate_to_shared_credentials(db)
+            provider = db.get_provider("SharedProvider")
+
+            self.assertEqual(result["credentials_created"], 0)
+            self.assertEqual(provider["credential_id"], credential_id)
+            self.assertEqual(provider["api_key"], "shared-key")
+            self.assertEqual(len(db.get_all_credentials()), 1)
             db.close()
 
     def test_migration_rollback(self):
@@ -2520,6 +2569,14 @@ class MigrationCLITests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("secret.key is missing", result.stderr)
         self.assertFalse(self.key_path.exists())
+
+    def test_live_confirmation_is_bounded(self):
+        logger = Mock()
+        with patch.object(migration_cli, "CONFIRMATION_TIMEOUT_SECONDS", 0.05), \
+             patch.object(migration_cli.sys.stdin, "isatty", return_value=True), \
+             patch("builtins.input", side_effect=lambda prompt: __import__("time").sleep(1)):
+            with self.assertRaisesRegex(RuntimeError, "Confirmation timed out"):
+                migration_cli.confirm("execute", logger)
 
 
 

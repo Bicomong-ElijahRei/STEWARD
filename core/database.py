@@ -529,8 +529,11 @@ def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
             cursor.execute("SELECT * FROM providers")
             raw_providers = [dict(r) for r in cursor.fetchall()]
 
-            # 3. Group by normalized base_url
+            # 3. Group by normalized base_url. A provider that already points
+            # to a decryptable shared credential is authoritative and must not
+            # be detached just because its legacy column is empty.
             endpoints: dict[str, list[dict]] = {}
+            already_linked: list[dict] = []
             for p in raw_providers:
                 if p.get("is_local"):
                     cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
@@ -539,12 +542,27 @@ def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
                 if not url:
                     cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
                     continue
+                credential_id = p.get("credential_id")
+                if credential_id is not None:
+                    cursor.execute(
+                        "SELECT api_key_encrypted FROM credentials WHERE id = ?",
+                        (credential_id,),
+                    )
+                    credential_row = cursor.fetchone()
+                    if credential_row is not None:
+                        try:
+                            db._decrypt(credential_row["api_key_encrypted"])
+                        except InvalidToken:
+                            pass
+                        else:
+                            already_linked.append(p)
+                            continue
                 endpoints.setdefault(url, []).append(p)
 
             now = datetime.now(timezone.utc).isoformat()
             endpoints_migrated = 0
             credentials_created = 0
-            providers_linked = 0
+            providers_linked = len(already_linked)
 
             # 4. Process each endpoint
             for norm_url, prov_list in endpoints.items():

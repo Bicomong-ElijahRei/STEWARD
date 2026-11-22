@@ -9,13 +9,16 @@ import json
 import logging
 import os
 from pathlib import Path
+import queue
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 
 REPO_DIR = Path(__file__).resolve().parents[1]
+CONFIRMATION_TIMEOUT_SECONDS = 300
 sys.path.insert(0, str(REPO_DIR))
 
 import core.database as database_module  # noqa: E402
@@ -309,9 +312,27 @@ def confirm(action: str, logger: logging.Logger) -> bool:
             f"--{action} requires an interactive terminal outside CI; confirmation refused"
         )
     expected = "MIGRATE" if action == "execute" else "ROLLBACK"
-    answer = input(
-        f"This will modify the LIVE database. Type {expected} to continue: "
-    ).strip()
+    prompt = f"This will modify the LIVE database. Type {expected} to continue: "
+    answers: queue.Queue = queue.Queue(maxsize=1)
+
+    def read_answer():
+        try:
+            answers.put(input(prompt))
+        except Exception as exc:
+            answers.put(exc)
+
+    reader = threading.Thread(target=read_answer, name="steward-migration-confirm", daemon=True)
+    reader.start()
+    try:
+        answer = answers.get(timeout=CONFIRMATION_TIMEOUT_SECONDS)
+    except queue.Empty as exc:
+        raise RuntimeError(
+            f"Confirmation timed out after {CONFIRMATION_TIMEOUT_SECONDS} seconds; "
+            "live database was not modified"
+        ) from exc
+    if isinstance(answer, Exception):
+        raise RuntimeError(f"Could not read confirmation: {answer}") from answer
+    answer = answer.strip()
     if answer != expected:
         logger.warning("Operator confirmation did not match; no backup or mutation attempted")
         return False
