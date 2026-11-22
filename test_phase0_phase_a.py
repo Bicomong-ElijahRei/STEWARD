@@ -34,7 +34,12 @@ from core.database import (
 )
 from core.discovery import DiscoveredModel, upsert_discovered_models
 from core.router import APIManager
-from gui.chat_tab import ChatTab
+from gui.chat_tab import (
+    ChatBubble,
+    ChatTab,
+    HandoffCanvas,
+    render_markdown_text,
+)
 from gui.constellation_view import AGENT_COLORS, ConstellationView
 from gui.live_feed import LiveFeedWidget
 from gui.main_window import StewardGUI
@@ -560,8 +565,8 @@ class ProviderVisualizationTests(unittest.TestCase):
         detail = ChatTab._report_provider(chat, "Cortex")
 
         self.assertEqual(detail, "Backup / model")
-        chat.after.assert_called_once()
-        self.assertEqual(chat.after.call_args.args[0], 0)
+        self.assertEqual(chat.after.call_count, 2)
+        self.assertTrue(all(call.args[0] == 0 for call in chat.after.call_args_list))
         chat.live_feed.provider_failover.assert_called_once_with("Primary", "Backup")
         chat.provider_callback.assert_called_once_with("Cortex", provider_info)
 
@@ -1110,6 +1115,7 @@ class ChatWorkflowTests(unittest.TestCase):
 
     def test_exception_callback_renders_error_and_restores_input(self):
         chat, callbacks = self.make_chat(route_error=RuntimeError("router exploded"))
+        chat.chat_entry.get.side_effect = ["organize this", ""]
         with self.assertLogs("gui.chat_tab", level="ERROR"):
             with patch("gui.chat_tab.threading.Thread", self.ImmediateThread):
                 chat.send_chat()
@@ -1123,7 +1129,25 @@ class ChatWorkflowTests(unittest.TestCase):
             if call.args and call.args[0] == "STEWARD"
         ]
         self.assertIn("Error: router exploded", rendered)
+        chat.chat_entry.insert.assert_called_once_with(0, "organize this")
         self.assert_input_restored(chat)
+
+    def test_unknown_request_uses_actionable_fallback_copy(self):
+        chat, callbacks = self.make_chat(
+            routing={"agent": AGENT_UNKNOWN, "action": "organize this"}
+        )
+        with patch("gui.chat_tab.threading.Thread", self.ImmediateThread):
+            chat.send_chat()
+
+        for callback in callbacks:
+            callback()
+        rendered = [
+            call.args[1] for call in chat._add_bubble.call_args_list
+            if call.args and call.args[0] == "STEWARD"
+        ]
+        self.assertTrue(rendered)
+        self.assertIn("organize files", rendered[-1])
+        self.assertNotIn("not sure how to help", rendered[-1].lower())
 
     def test_file_approval_uses_plan_id_captured_at_preview(self):
         chat, callbacks = self.make_chat(
@@ -1165,6 +1189,7 @@ class ChatWorkflowTests(unittest.TestCase):
             routing={"agent": AGENT_FILE_OP, "action": "move a file"}
         )
         chat.dialog_timeout = 0.05
+        chat.chat_entry.get.side_effect = ["organize this", ""]
         chat.file_agent.run.return_value = "Preview ready"
         chat.file_agent.get_pending_plan_id.return_value = "preview-plan-id"
 
@@ -1189,7 +1214,115 @@ class ChatWorkflowTests(unittest.TestCase):
         with patch("gui.chat_tab.messagebox.askyesno", return_value=False):
             for callback in callbacks:
                 callback()
+        chat.chat_entry.insert.assert_called_once_with(0, "organize this")
         self.assert_input_restored(chat)
+
+class GUIPresentationTests(unittest.TestCase):
+    """Pass 2 regressions for readable, responsive, lifecycle-safe GUI code."""
+
+    def test_markdown_is_rendered_as_readable_plain_text(self):
+        rendered = render_markdown_text(
+            "## Result\n**Moved** the file\n```json\n{\"ok\": true}\n```"
+        )
+        self.assertIn("Result", rendered)
+        self.assertIn("Moved the file", rendered)
+        self.assertIn('{"ok": true}', rendered)
+        self.assertNotIn("**", rendered)
+        self.assertNotIn("```", rendered)
+
+    def test_chat_bubble_wrap_follows_available_width(self):
+        bubble = ChatBubble.__new__(ChatBubble)
+        bubble.msg_label = Mock()
+        bubble.msg_label.cget.return_value = 500
+        bubble._on_resize(SimpleNamespace(width=440))
+        bubble.msg_label.configure.assert_called_once_with(wraplength=420)
+
+    def test_chat_animations_cancel_before_destroy(self):
+        bubble = ChatBubble.__new__(ChatBubble)
+        bubble_tick = Mock()
+        bubble._tick = bubble_tick
+        with patch("gui.chat_tab.ctk.CTkFrame.destroy"):
+            bubble.destroy()
+        bubble_tick.cancel.assert_called_once_with()
+
+        handoff = HandoffCanvas.__new__(HandoffCanvas)
+        handoff_tick = Mock()
+        handoff._tick = handoff_tick
+        with patch("gui.chat_tab.ctk.CTkCanvas.destroy"):
+            handoff.destroy()
+        handoff_tick.cancel.assert_called_once_with()
+
+    def test_provider_status_callback_is_marshalled_to_main_thread(self):
+        provider_info = {"provider": "Primary", "model": "model"}
+        callbacks = []
+        chat = SimpleNamespace(
+            supervisor=SimpleNamespace(last_provider=provider_info),
+            file_agent=SimpleNamespace(last_provider=None),
+            provider_callback=Mock(),
+            live_feed=None,
+            _safe_after=Mock(side_effect=callbacks.append),
+        )
+
+        ChatTab._report_provider(chat, "Cortex")
+
+        chat.provider_callback.assert_not_called()
+        self.assertEqual(len(callbacks), 1)
+        callbacks[0]()
+        chat.provider_callback.assert_called_once_with("Cortex", provider_info)
+
+    def test_activation_failure_keeps_exception_text_after_scope(self):
+        settings = SettingsTab.__new__(SettingsTab)
+        settings._safe_after = Mock()
+        settings._on_activation_failed = Mock()
+        with patch(
+            "gui.settings_tab.validate_provider",
+            side_effect=RuntimeError("provider exploded"),
+        ):
+            settings._run_provider_activation(
+                {"name": "Primary", "base_url": "https://example.test"},
+                "key",
+                None,
+            )
+
+        callback = settings._safe_after.call_args.args[0]
+        callback()
+        settings._on_activation_failed.assert_called_once_with(
+            "Primary", "provider exploded"
+        )
+
+    def test_organizer_uses_sanitized_category_and_counts_only_successes(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.file_agent = Mock()
+        organizer.file_agent.move_file.side_effect = [
+            "Error: destination unavailable",
+            "Moved file",
+        ]
+        organizer.gui = None
+        organizer.pending_operations = [
+            {"filename": "bad.txt", "source": "bad.txt", "destination": "x/bad.txt", "selected": True},
+            {"filename": "good.txt", "source": "good.txt", "destination": "x/good.txt", "selected": True},
+        ]
+        organizer.btn_execute = Mock()
+        organizer._log = Mock()
+        callbacks = []
+        organizer.after = Mock(side_effect=lambda delay, callback: callbacks.append(callback))
+
+        class ImmediateThread:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with patch("gui.organizer_tab.messagebox.askyesno", return_value=True), \
+             patch("gui.organizer_tab.threading.Thread", ImmediateThread):
+            organizer.execute_selected()
+
+        for callback in callbacks:
+            callback()
+        messages = [call.args[0] for call in organizer._log.call_args_list]
+        self.assertTrue(any("1 files moved" in message for message in messages), messages)
+
 
 class Batch2BTests(unittest.TestCase):
     def make_agent(self, root):
@@ -1429,11 +1562,13 @@ class Batch3Tests(unittest.TestCase):
     # M8: preview rows must be built on the Tk main thread, never on the worker.
     def test_preview_rows_built_on_main_thread(self):
         recorded = []
+        destinations = []
 
         class RecordingRow:
             def __init__(self, parent, filename, source, destination, on_toggle,
                          *args, **kwargs):
                 recorded.append(threading.current_thread().name)
+                destinations.append(destination)
 
             def pack(self, *args, **kwargs):
                 pass
@@ -1478,6 +1613,7 @@ class Batch3Tests(unittest.TestCase):
 
         self.assertTrue(recorded, "No FilePreviewRow was constructed")
         self.assertTrue(all(name == "MainThread" for name in recorded), recorded)
+        self.assertTrue(destinations[0].endswith(os.path.join("Docs", "a.txt")), destinations)
 
     # L3 observer: _perform_shutdown must stop the organizer's daemon.
     def test_perform_shutdown_stops_organizer_daemon(self):

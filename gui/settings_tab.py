@@ -615,7 +615,7 @@ class SettingsTab(ctk.CTkFrame):
         except Exception as exc:
             error = str(exc)
             self._safe_after(
-                lambda: self._on_activation_failed(name, error)
+                lambda error=error: self._on_activation_failed(name, error)
             )
             return
 

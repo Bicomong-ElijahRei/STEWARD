@@ -43,6 +43,7 @@ class StewardGUI:
 
         self.current_tab = None
         self.tabs = {}
+        self._fade_tick = None
 
         self.outer = ctk.CTkFrame(root, fg_color=BG_DEEP_SPACE)
         self.outer.pack(fill="both", expand=True, padx=0, pady=0)
@@ -110,6 +111,9 @@ class StewardGUI:
 
     def _fade_in_content(self):
         """Animate the content frame fading in from black."""
+        if self._fade_tick:
+            self._fade_tick.cancel()
+            self._fade_tick = None
         duration_ms = 200
         steps = 10
         interval = duration_ms // steps
@@ -123,7 +127,7 @@ class StewardGUI:
             self.content.configure(fg_color=current_color)
             return t < 1.0
 
-        SafeTick(self.content, interval, on_tick).start()
+        self._fade_tick = SafeTick(self.content, interval, on_tick).start()
 
     def switch_tab(self, tab_name):
         """Hide the current tab and show the requested one."""
@@ -200,6 +204,9 @@ class StewardGUI:
             organizer.stop_daemon()
         if hasattr(self, 'tray_icon') and self.tray_icon:
             self.tray_icon.stop()
+        if getattr(self, "_fade_tick", None):
+            self._fade_tick.cancel()
+            self._fade_tick = None
         self.root.quit()
         self.root.destroy()
 

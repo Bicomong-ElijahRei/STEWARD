@@ -11,6 +11,7 @@ import json
 import threading
 import logging
 import math
+import re
 
 from agents.supervisor import (
     AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
@@ -32,6 +33,24 @@ AGENT_COLOR_MAP = {
     "Scout": NEON_BLUE,
     "Syntax": NEON_ORANGE,
 }
+
+
+def render_markdown_text(message):
+    """Convert common Markdown syntax to readable plain text for Tk labels."""
+    output = []
+    in_code_block = False
+    for line in str(message or "").splitlines():
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if not in_code_block:
+            line = re.sub(r"^#{1,6}\s*", "", line)
+            line = re.sub(r"^>\s?", "", line)
+            line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+            line = re.sub(r"__(.+?)__", r"\1", line)
+            line = re.sub(r"`([^`]+)`", r"\1", line)
+        output.append(line)
+    return "\n".join(output)
 
 class HandoffCanvas(ctk.CTkCanvas):
     """Animated glowing arc that triggers on agent handoffs."""
@@ -63,6 +82,14 @@ class HandoffCanvas(ctk.CTkCanvas):
             
         self._tick = SafeTick(self, 30, on_tick).start()
 
+    def destroy(self):
+        """Cancel the handoff animation before destroying the canvas."""
+        if self._tick:
+            self._tick.cancel()
+            self._tick = None
+        super().destroy()
+
+
 class ChatBubble(ctk.CTkFrame):
     """Animated chat bubble supporting THINKING, TOOL_USE, STREAMING, DONE, ERROR states."""
     def __init__(self, parent, sender, message, color, align="left", state="NORMAL"):
@@ -93,10 +120,29 @@ class ChatBubble(ctk.CTkFrame):
         self.icon_label.pack(side="right")
         
         self.msg_label = ctk.CTkLabel(
-            self, text=message, font=FONT_MONO, text_color=TEXT_BRIGHT,
-            anchor="w", justify="left", wraplength=500,
+            self,
+            text=render_markdown_text(message),
+            font=FONT_MONO,
+            text_color=TEXT_BRIGHT,
+            anchor="w",
+            justify="left",
+            wraplength=500,
         )
         self.msg_label.pack(fill="x", padx=10, pady=(0, 6))
+        self.msg_label.bind("<Configure>", self._on_resize)
+
+    def _on_resize(self, event):
+        """Keep message wrapping responsive to the available bubble width."""
+        width = int(getattr(event, "width", 0) or 0)
+        if width <= 0:
+            return
+        target = max(120, width - 20)
+        try:
+            current = int(self.msg_label.cget("wraplength"))
+        except Exception:
+            current = 0
+        if current != target:
+            self.msg_label.configure(wraplength=target)
 
     def update_state(self, state):
         if self._tick:
@@ -132,7 +178,14 @@ class ChatBubble(ctk.CTkFrame):
         self._tick = SafeTick(self, 50, on_tick).start()
 
     def set_message(self, message):
-        self.msg_label.configure(text=message)
+        self.msg_label.configure(text=render_markdown_text(message))
+
+    def destroy(self):
+        """Cancel bubble animation before Tk destroys the widget tree."""
+        if self._tick:
+            self._tick.cancel()
+            self._tick = None
+        super().destroy()
 
 class ChatTab(ctk.CTkFrame):
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
@@ -248,6 +301,14 @@ class ChatTab(ctk.CTkFrame):
         self.chat_entry.bind("<Return>", lambda e: self.send_chat())
         self._processing = False
 
+    def _restore_input(self, message):
+        """Restore an unfinished request without overwriting newer typing."""
+        try:
+            if not self.chat_entry.get().strip():
+                self.chat_entry.insert(0, message)
+        except Exception:
+            pass
+
     def send_chat(self):
         if self._processing:
             return
@@ -255,6 +316,7 @@ class ChatTab(ctk.CTkFrame):
         if not user_msg:
             return
         self._processing = True
+        restore_input = [False]
         self.chat_entry.delete(0, "end")
         self._add_bubble("You", user_msg, TEXT_BRIGHT, align="right")
         # Prevent concurrent submissions while a preview/approval is in flight.
@@ -315,6 +377,7 @@ class ChatTab(ctk.CTkFrame):
                         user_msg, dry_run=True, confirm_callback=confirm_callback
                     )
                     if confirm_timed_out[0]:
+                        restore_input[0] = True
                         self.file_agent.discard_pending_plan()
                         logger.info("[Chat] approval dialog timed out; input restored")
                         if foldy_bubble[0]:
@@ -354,6 +417,7 @@ class ChatTab(ctk.CTkFrame):
                         exec_evt.set()
                     self._safe_after(ask_exec)
                     if not exec_evt.wait(timeout=dialog_timeout):
+                        restore_input[0] = True
                         self.file_agent.discard_pending_plan()
                         logger.info("[Chat] approval dialog timed out; input restored")
                         return
@@ -417,13 +481,15 @@ class ChatTab(ctk.CTkFrame):
                 else:
                     self._safe_after(lambda: self._add_bubble(
                         "STEWARD",
-                        f"[Cortex] I'm not sure how to help with: {user_msg}",
+                        "I couldn't map that to a workflow yet. Try asking me to "
+                        "organize files, search content, or check the API Hub.",
                         NEON_PURPLE, align="left",
                     ))
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done("Cortex"))
 
             except Exception as e:
+                restore_input[0] = True
                 logger.error(f"Chat processing error: {e}")
                 self._safe_after(lambda e=e: self._add_bubble(
                     "STEWARD", f"Error: {e}", "#FF5555", align="left",
@@ -432,6 +498,8 @@ class ChatTab(ctk.CTkFrame):
                 # Always re-enable input once preview/approval is complete,
                 # regardless of which agent branch ran or whether it errored.
                 self._safe_after(lambda: self.send_btn.configure(state="normal"))
+                if restore_input[0]:
+                    self._safe_after(lambda: self._restore_input(user_msg))
                 self._safe_after(self._restore_return_key)
 
         threading.Thread(target=process, daemon=True).start()
@@ -445,7 +513,10 @@ class ChatTab(ctk.CTkFrame):
         provider = provider_info.get("provider", "Unknown")
         model = provider_info.get("model", "default")
         if self.provider_callback:
-            self.provider_callback(agent_name, provider_info)
+            self._safe_after(
+                lambda agent_name=agent_name, provider_info=provider_info:
+                self.provider_callback(agent_name, provider_info)
+            )
         if self.live_feed:
             for failover in provider_info.get("failovers", []):
                 failed = failover.get("failed_provider", "Unknown")

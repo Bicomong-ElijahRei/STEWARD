@@ -86,6 +86,8 @@ class LiveFeedWidget(ctk.CTkScrollableFrame):
                 font=("Consolas", 9),
                 text_color=TEXT_MUTED,
                 anchor="w",
+                wraplength=260,
+                justify="left",
             )
             detail_label.pack(fill="x", padx=10, pady=(0, 4))
 

@@ -17,6 +17,7 @@ import logging
 from agent.daemon import FileCreationHandler
 from watchdog.observers import Observer
 from gui.anim import SafeTick, lerp_color
+from utils.helpers import sanitize_category
 
 from core.theme import (
     BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
@@ -360,6 +361,8 @@ class OrganizerTab(ctk.CTkFrame):
                 try:
                     result = self.file_agent.move_file(op["source"], op["destination"])
                     self.after(0, lambda r=result: self._log(f"[Execute] {r}"))
+                    if isinstance(result, str) and result.startswith("Error"):
+                        continue
                     if self.gui:
                         self.after(0, lambda op=op: self.gui.feed_agent_done("Foldy", f"Moved {op['filename']}"))
                     success_count += 1
