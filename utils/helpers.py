@@ -33,7 +33,8 @@ def sanitize_category(text, filepath="", max_len=40):
     stripped = text.strip()
     if "\n" in stripped or len(stripped) > max_len:
         return fallback
-    first = _re.sub(r"[*`#]", "", stripped.splitlines()[0])
+    # Note: underscore (_) is intentionally kept here as it is valid in Windows folder names
+    first = re.sub(r"[*`#]", "", stripped.splitlines()[0])
     first = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", first)
     first = re.sub(r"\s+", " ", first).strip().rstrip(". ")
     if not first or first.endswith((".", "!", "?", ":", ",")):
