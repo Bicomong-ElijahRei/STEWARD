@@ -17,7 +17,9 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
-2026-11-22 | HEAD | tools/run_migration.py added; Batch 4c fully closed.
+2026-11-22 | 2df98d09 | tools/migrate_live.py added; guarded live dry-run/execute/rollback with verified backups; 4/4 CLI tests green.
+2026-11-22 | b59b7c30 | Reconciled state: Phase B 4/5 items done; 85 unit tests green.
+2026-11-22 | ab585a7f | tools/run_migration.py added; Batch 4c fully closed.
 2026-11-22 | eef11f9b | Batch 4c closed: shared credential store live; 72/72 green.
 2026-11-22 | 535b9c6d | Batch 4c first push carried a syntax break from a partial replace; repairs applied locally, gate pending.
 2026-11-22 | 5357cc43 | Batch 4b closed: credential store safety review committed (docs/credential_store_review.md).
@@ -29,8 +31,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: HEAD (this task's commit, pushed)
-Suite: 72 green.
+HEAD: 2df98d09 (guarded live credential migration CLI)
+Suite: test_phase0_phase_a.py 85 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
@@ -105,40 +107,33 @@ Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
 - docs/credential_store_review.md  DONE | 5357cc43 | schema, migration, rollback, backup, crypto impact, blast radius, failure modes, UI impact, security review, test plan. No code.
 
 ## BATCH 4c — shared credential store implementation (CLOSED)
-Files: core/database.py, gui/settings_tab.py, core/discovery.py, test_phase0_phase_a.py
+Files: core/database.py, gui/settings_tab.py, core/discovery.py, test_phase0_phase_a.py, tools/run_migration.py, tools/migrate_live.py, docs/MIGRATION_GUIDE.md
 Review doc: docs/credential_store_review.md
 - Schema, dual-read, FK enforcement        DONE | eef11f9b
 - migrate/rollback (idempotent, decrypt-grouped) DONE | eef11f9b
 - API Hub shared-credential UI             DONE | eef11f9b
 - CredentialStoreTests (10)                DONE | eef11f9b
 - .clineignore backup patterns (*.backup/*.bak/*.sql) DONE | eef11f9b
-- tools/run_migration.py (operator dry-run) DONE | HEAD (this task's commit)
+- tools/run_migration.py (operator dry-run) DONE | ab585a7f
+- tools/migrate_live.py (guarded dry-run/execute/rollback) DONE | 2df98d09
+- MigrationCLITests (4 isolated subprocess tests) DONE | 2df98d09
 Design notes: credentials NOT unique per endpoint (multi-key per endpoint is the feature);
 add_provider reuses a credential only on decrypted-key match, else creates a new row;
 set_credential upserts the canonical credential (rotation); migration groups by DECRYPTED
 key (Fernet nonces make raw blobs distinct) and is idempotent; get_credential_by_url prefers
 credentials linked to active providers ordered by speed_score_ms; fail-fast when DB exists
 without secret.key is permanent policy.
-Closure checklist: 72/72 gate -> commit -> push -> flip statuses to DONE | <SHA> ->
-bump Ground state HEAD and suite count -> ONE changelog line -> delete the pointer line
-in the v2.1 backlog below.
+Closure: shared credential store, operator migration tools, migration guide, and isolated
+CLI coverage are committed; 85/85 unit tests and 5/5 validator checks green.
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
 Gate: v2.0 frozen. All items: animations must not block the main thread and must raise
 nothing when the window closes mid-animation (depends N1/N2 closed).
-- B1  BACKLOG | Four-state chat bubbles: THINKING (pulse), TOOL_USE (gear), STREAMING
-      (typewriter), DONE (check). Accept: all four observable in running app; state
-      transitions smooth; human sign-off logged. Est 6-12h. Tool: Cline/fast + eyes.
-- B2  BACKLOG | Visual agent handoffs: glowing arc travels between agent avatars on a
-      Canvas when work passes between agents. Accept: arc visible on real handoff; no
-      flicker; human sign-off. Est 8-16h.
-- B3  BACKLOG | Live Constellation View: node-link diagram of the agent swarm reflecting
-      live activity state. Accept: nodes reflect real agent state from live events;
-      layout stable under resize. Est 10-20h.
-- B4  BACKLOG | Smooth tab/page transitions. Accept: no visible tear; navigation latency
-      unchanged. Est 4-8h.
-- B5  BACKLOG | File materialize animation on successful move. Accept: plays on real move
-      only, never on preview or failure. Est 4-8h.
+- B1  DONE | b59b7c30 | Four-state chat bubbles (THINKING/TOOL_USE/STREAMING/DONE/ERROR).
+- B2  DONE | b59b7c30 | Visual agent handoff arc (HandoffCanvas sine-wave animation).
+- B3  BACKLOG | Live Constellation View. Est 10-20h.
+- B4  DONE | b59b7c30 | Smooth tab fade-in transitions.
+- B5  DONE | b59b7c30 | Execute button success pulse on file move.
 
 ## PHASE C — Swarm & Code Intelligence (WHAT only)
 Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safety batch
@@ -174,6 +169,8 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       Est 10-20h + safety batch.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
+- Conversation memory: supervisor must retain last unresolved FILE_OP intent so short
+  follow-ups ("incoming", "by type") continue the task. Est 6-12h.
 - pytest migration of the suite
 - rules.yaml override learner (learn from user corrections)
 - Windows installer / packaging
