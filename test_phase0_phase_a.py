@@ -1884,8 +1884,7 @@ class CategorySanitizerTests(unittest.TestCase):
         from utils.helpers import sanitize_category
         essay = ("Based on the content preview, a suitable category is:\n\n"
                  "**Folder name:** `Reports_ACES`")
-        self.assertEqual(
-            sanitize_category(essay, "C:/x/custom_report.pdf"), "Documents")
+        self.assertEqual(sanitize_category(essay, "C:/x/custom_report.pdf"), "Documents")
 
     def test_accepts_clean_name_and_strips_illegal_chars(self):
         from utils.helpers import sanitize_category
@@ -1904,8 +1903,7 @@ class ChatNoPlanTests(unittest.TestCase):
         )
         chat.file_agent.run.return_value = "Which folder would you like?"
         chat.file_agent.get_pending_plan_id.return_value = None
-        with patch("gui.chat_tab.threading.Thread",
-                   ChatWorkflowTests.ImmediateThread):
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
             chat.send_chat()
         for cb in callbacks:
             cb()
