@@ -27,6 +27,7 @@ from core.router import APIManager
 from gui.chat_tab import ChatTab
 from gui.live_feed import LiveFeedWidget
 from gui.main_window import StewardGUI
+from gui.anim import SafeTick, lerp_color
 from gui.organizer_tab import FilePreviewRow, OrganizerTab
 from gui.settings_tab import SettingsTab
 
@@ -1815,6 +1816,67 @@ class CredentialStoreTests(unittest.TestCase):
             self.assertIn("Free Model 1", [p["name"] for p in active])
             db.close()
 
+class PhaseBAnimTests(unittest.TestCase):
+    """gui/anim.py: SafeTick ticks on schedule, stops on False, dies quietly."""
 
+    def make_widget(self, exists=True):
+        widget = Mock()
+        widget.winfo_exists.return_value = exists
+        scheduled = []
+
+        def after(delay, callback):
+            scheduled.append((delay, callback))
+            return len(scheduled)
+
+        widget.after.side_effect = after
+        widget.after_cancel = Mock()
+        return widget, scheduled
+
+    def test_tick_runs_until_callback_returns_false(self):
+        widget, scheduled = self.make_widget()
+        calls = []
+
+        def on_tick():
+            calls.append(1)
+            return len(calls) < 3
+
+        done = []
+        SafeTick(widget, 16, on_tick, on_done=lambda: done.append(True)).start()
+        while scheduled:
+            _, cb = scheduled.pop(0)
+            cb()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(done, [True])
+
+    def test_destroyed_widget_finishes_without_raising(self):
+        widget, scheduled = self.make_widget(exists=False)
+        done = []
+        SafeTick(widget, 16, lambda: True, on_done=lambda: done.append(True)).start()
+        self.assertEqual(scheduled, [])
+        self.assertEqual(done, [True])
+        widget.after.assert_not_called()
+
+    def test_cancel_stops_future_ticks(self):
+        widget, scheduled = self.make_widget()
+        calls = []
+        tick = SafeTick(widget, 16, lambda: calls.append(1) or True)
+        tick.start()
+        tick.cancel()
+        self.assertEqual(calls, [])
+        widget.after_cancel.assert_called()
+
+    def test_after_error_finishes_quietly(self):
+        widget = Mock()
+        widget.winfo_exists.return_value = True
+        widget.after.side_effect = RuntimeError("main thread is not in main loop")
+        done = []
+        SafeTick(widget, 16, lambda: True, on_done=lambda: done.append(True)).start()
+        self.assertEqual(done, [True])
+
+    def test_lerp_color_endpoints(self):
+        self.assertEqual(lerp_color("#000000", "#FFFFFF", 0.0), "#000000")
+        self.assertEqual(lerp_color("#000000", "#FFFFFF", 1.0), "#FFFFFF")
+        self.assertEqual(lerp_color("#2A2A35", "#2A2A35", 0.5), "#2A2A35")
+        
 if __name__ == "__main__":
     unittest.main()
