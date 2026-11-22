@@ -12,6 +12,7 @@ from core.theme import (
     apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE,
     NEON_CYAN, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
 )
+from gui.anim import SafeTick, lerp_color
 from gui.chat_tab import ChatTab
 from gui.organizer_tab import OrganizerTab
 from gui.settings_tab import SettingsTab
@@ -107,12 +108,30 @@ class StewardGUI:
 
         self.setup_tray()
 
+    def _fade_in_content(self):
+        """Animate the content frame fading in from black."""
+        duration_ms = 200
+        steps = 10
+        interval = duration_ms // steps
+        step = [0]
+
+        def on_tick():
+            step[0] += 1
+            t = step[0] / steps
+            # Interpolate from black (#000000) to BG_DEEP_SPACE
+            current_color = lerp_color("#000000", BG_DEEP_SPACE, t)
+            self.content.configure(fg_color=current_color)
+            return t < 1.0
+
+        SafeTick(self.content, interval, on_tick).start()
+
     def switch_tab(self, tab_name):
         """Hide the current tab and show the requested one."""
         if self.current_tab is not None:
             self.tabs[self.current_tab].pack_forget()
 
         self.tabs[tab_name].pack(fill="both", expand=True, padx=20, pady=20)
+        self._fade_in_content()
         if tab_name == "settings":
             # Repopulate canvas-hosted cards after pack_forget()/pack() and
             # show the latest provider state whenever API Hub is opened.
