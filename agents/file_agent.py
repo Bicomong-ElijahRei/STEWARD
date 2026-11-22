@@ -755,6 +755,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         return _get_file_info(safe_path)
 
     def categorise_file(self, filepath: str, dest_base: str, root_window=None, dry_run=None) -> str:
+        """Categorize a sandboxed file, honoring the per-call dry-run override."""
         try:
             filepath = self._sandbox_path(filepath)
         except (OSError, TypeError, ValueError) as exc:
