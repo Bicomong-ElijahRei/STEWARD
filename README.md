@@ -46,7 +46,7 @@ semantics, credential recovery, and GUI threading/lifecycle.
 See ARCHITECTURE.md for the module map and the two critical request paths.
 See PLAN.md for scope, status, and the roadmap.
 
-## Known limitations (be honest here)
+## Known limitations
 - Chat handles file-operation intents. Click (PC control), Scout (RAG), and Syntax (coding)
   are registered personas but not implemented; general conversation falls through to a
   canned response.
