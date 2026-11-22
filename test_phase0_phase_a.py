@@ -3198,5 +3198,150 @@ class RAGSearchDisplayTests(unittest.TestCase):
                 rag.close()
 
 
+class RulesEngineTests(unittest.TestCase):
+    """Exercise deterministic rules and their LLM-bypass integration."""
+
+    def make_agent(self, root, rules_path):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(
+                api_manager=Mock(),
+                root_path=root,
+                rules_path=rules_path,
+            )
+        agent.OPERATION_LOG_PATH = log_path
+        return agent
+
+    def make_workspace(self, tmp, filename):
+        incoming = os.path.join(tmp, "Incoming")
+        sorted_dir = os.path.join(tmp, "Sorted")
+        os.makedirs(incoming)
+        os.makedirs(sorted_dir)
+        source = os.path.join(incoming, filename)
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("test content")
+        return source, sorted_dir
+
+    def test_rule_matches_and_bypasses_llm(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_bypass_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            RulesEngine(rules_path).add_rule(
+                pattern=".*invoice.*", target="Finance"
+            )
+            source, sorted_dir = self.make_workspace(tmp, "invoice_123.txt")
+            agent = self.make_agent(tmp, rules_path)
+
+            result = agent.categorise_file(source, sorted_dir, dry_run=False)
+
+            agent.api_manager.route_request.assert_not_called()
+            self.assertTrue(
+                os.path.exists(os.path.join(sorted_dir, "Finance", "invoice_123.txt"))
+            )
+            self.assertIn("[Rule]", result)
+            self.assertTrue(agent.last_categorized_by_rule)
+            self.assertEqual(agent.last_rule_pattern, ".*invoice.*")
+
+    def test_no_rule_falls_back_to_llm(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rules_fallback_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            source, sorted_dir = self.make_workspace(tmp, "unknown_file.txt")
+            agent = self.make_agent(tmp, rules_path)
+            agent.api_manager.route_request.return_value = {
+                "choices": [{"message": {"content": "Documents"}}]
+            }
+
+            result = agent.categorise_file(source, sorted_dir, dry_run=False)
+
+            agent.api_manager.route_request.assert_called_once()
+            self.assertTrue(
+                os.path.exists(os.path.join(sorted_dir, "Documents", "unknown_file.txt"))
+            )
+            self.assertNotIn("[Rule]", result)
+            self.assertFalse(agent.last_categorized_by_rule)
+
+    def test_higher_priority_rule_matches_first(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_priority_") as tmp:
+            engine = RulesEngine(os.path.join(tmp, "rules.yaml"))
+            engine.add_rule(".*invoice.*", "General", priority=10)
+            engine.add_rule("invoice.*", "Finance", priority=200)
+            self.assertEqual(engine.match_rule("invoice_123.txt"), "Finance")
+
+    def test_missing_rules_file_is_created_with_empty_structure(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_missing_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            engine = RulesEngine(rules_path)
+            self.assertTrue(os.path.exists(rules_path))
+            self.assertEqual(engine.get_all_rules(), [])
+            with open(rules_path, "r", encoding="utf-8") as handle:
+                self.assertIn("rules", handle.read())
+
+    def test_learn_override_generates_and_persists_rule(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_learn_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            agent = self.make_agent(tmp, rules_path)
+
+            pattern = agent.learn_override(
+                "invoice_123.txt", "Documents", "Finance"
+            )
+
+            self.assertEqual(pattern, ".*invoice.*")
+            self.assertEqual(RulesEngine(rules_path).match_rule("invoice_456.txt"), "Finance")
+
+    def test_rule_target_is_sanitized_before_folder_creation(self):
+        from utils.rules_engine import RulesEngine
+
+        with tempfile.TemporaryDirectory(prefix="steward_rules_safe_") as tmp:
+            rules_path = os.path.join(tmp, "rules.yaml")
+            RulesEngine(rules_path).add_rule(".*unsafe.*", "A/B:C")
+            source, sorted_dir = self.make_workspace(tmp, "unsafe.txt")
+            agent = self.make_agent(tmp, rules_path)
+
+            agent.categorise_file(source, sorted_dir, dry_run=False)
+
+            self.assertTrue(os.path.exists(os.path.join(sorted_dir, "ABC", "unsafe.txt")))
+
+    def test_organizer_rules_button_lists_current_rules(self):
+        from utils.rules_engine import RulesEngine
+
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.file_agent = Mock()
+        organizer.file_agent.rules_path = os.path.join(
+            tempfile.gettempdir(), "steward_rules_ui_test.yaml"
+        )
+        RulesEngine(organizer.file_agent.rules_path).add_rule(
+            ".*invoice.*", "Finance"
+        )
+        try:
+            with patch("gui.organizer_tab.messagebox.showinfo") as showinfo:
+                organizer.show_rules()
+            showinfo.assert_called_once()
+            self.assertIn(".*invoice.*", showinfo.call_args.args[1])
+            self.assertIn("Finance", showinfo.call_args.args[1])
+        finally:
+            if os.path.exists(organizer.file_agent.rules_path):
+                os.remove(organizer.file_agent.rules_path)
+
+    def test_chat_append_marks_rule_categorization(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat.file_agent = Mock()
+        chat.file_agent.last_categorized_by_rule = True
+        chat._add_bubble = Mock()
+
+        chat.append_chat("STEWARD", "Moved invoice_123.txt")
+
+        self.assertEqual(
+            chat._add_bubble.call_args.args[1],
+            "[Rule] Moved invoice_123.txt",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

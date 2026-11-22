@@ -7,6 +7,7 @@ Includes full undo/redo support via JSON operation log.
 """
 
 import os
+import re
 from utils.helpers import (
     FILE_PREVIEW_LIMIT,
     sanitize_category,
@@ -60,6 +61,7 @@ class FileAgent:
         api_manager: APIManager,
         root_path: Optional[str] = None,
         dry_run: bool = True,
+        rules_path: Optional[str] = None,
     ):
         self.root_path = os.path.realpath(os.path.abspath(root_path or os.getcwd()))
         self.allowed_roots = tuple(
@@ -68,11 +70,14 @@ class FileAgent:
         )
         self.api_manager = api_manager
         self.dry_run = dry_run
+        self.rules_path = rules_path or os.path.join(self.root_path, "rules.yaml")
         self._lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._pending_plan = None
         self._pending_plan_id = None
         self.last_provider = None
+        self.last_categorized_by_rule = False
+        self.last_rule_pattern = None
         self._operation_log = self._load_operation_log()
 
         self.system_prompt = f"""You are STEWARD File Agent, an AI file manager for: {self.root_path}
@@ -780,29 +785,85 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             return f"Error: {exc}"
         if not os.path.exists(filepath):
             return f"File not found: {filepath}"
-        content = self.read_file_content(filepath)
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nReply with ONLY a single short folder name, no explanation.",
-            },
-        ]
-        try:
-            response = self.api_manager.route_request(
-                messages=messages, agent_name="Foldy"
-            )
-            self.last_provider = response.get("_steward")
-            category = sanitize_category(
-                response["choices"][0]["message"]["content"], filepath
-            )
-        except Exception as exc:
-            logger.exception("Could not categorise '%s': %s", filepath, exc)
-            return f"Error categorising file: {exc}"
+
+        from utils.rules_engine import RulesEngine
+
+        self.last_categorized_by_rule = False
+        self.last_rule_pattern = None
+        rules_engine = RulesEngine(self.rules_path)
+        category = rules_engine.match_rule(os.path.basename(filepath))
+        matched_rule = rules_engine.last_matched_rule
+        used_rule = category is not None
+
+        if used_rule:
+            category = sanitize_category(category, filepath)
+            pattern = matched_rule.get("pattern", "") if matched_rule else ""
+            self.last_categorized_by_rule = True
+            self.last_rule_pattern = pattern
+            logger.info("Categorized by rule: [%s]", pattern)
+        else:
+            content = self.read_file_content(filepath)
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nReply with ONLY a single short folder name, no explanation.",
+                },
+            ]
+            try:
+                response = self.api_manager.route_request(
+                    messages=messages, agent_name="Foldy"
+                )
+                self.last_provider = response.get("_steward")
+                category = sanitize_category(
+                    response["choices"][0]["message"]["content"], filepath
+                )
+            except Exception as exc:
+                logger.exception("Could not categorise '%s': %s", filepath, exc)
+                return f"Error categorising file: {exc}"
+
         dest_folder = os.path.join(dest_base, category)
         dest_path = os.path.join(dest_folder, os.path.basename(filepath))
         effective_dry_run = self.dry_run if dry_run is None else dry_run
         if effective_dry_run:
-            return f"[Dry Run] Would categorise '{filepath}' as '{category}' → move to '{dest_path}'"
+            marker = "[Rule] " if used_rule else ""
+            return f"{marker}[Dry Run] Would categorise '{filepath}' as '{category}' → move to '{dest_path}'"
         self.create_folder(dest_folder)
-        return self.move_file(filepath, dest_path)
+        result = self.move_file(filepath, dest_path)
+        if used_rule and not result.startswith("Error"):
+            return f"[Rule] {result}"
+        return result
+
+    def learn_override(
+        self,
+        filename: str,
+        suggested_category: str,
+        actual_category: str,
+    ) -> str:
+        """Learn a deterministic filename rule from a user correction."""
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError("A filename is required to learn a rule")
+        if not isinstance(actual_category, str) or not actual_category.strip():
+            raise ValueError("An actual category is required to learn a rule")
+
+        from utils.rules_engine import RulesEngine
+
+        stem = os.path.splitext(os.path.basename(filename))[0]
+        tokens = [
+            token for token in re.split(r"[^A-Za-z0-9]+", stem)
+            if token and not token.isdigit()
+        ]
+        if not tokens:
+            raise ValueError("Filename does not contain a learnable pattern")
+        keyword = max(tokens, key=len)
+        pattern = f".*{re.escape(keyword)}.*"
+
+        rules_engine = RulesEngine(self.rules_path)
+        rules_engine.add_rule(pattern, actual_category)
+        logger.info(
+            "Learned rule from override: pattern=[%s] suggested=[%s] actual=[%s]",
+            pattern,
+            suggested_category,
+            actual_category,
+        )
+        return pattern

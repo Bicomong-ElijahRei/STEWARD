@@ -769,6 +769,12 @@ class ChatTab(ctk.CTkFrame):
             pass  # Widget may have been destroyed
 
     def append_chat(self, sender, message):
+        """Append a chat bubble and make rule-based categorization explicit."""
+        if (
+            getattr(self.file_agent, "last_categorized_by_rule", False)
+            and "[Rule]" not in str(message)
+        ):
+            message = f"[Rule] {message}"
         self._add_bubble(sender, message, TEXT_BRIGHT, align="left")
 
 

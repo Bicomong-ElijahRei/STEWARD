@@ -168,6 +168,19 @@ class OrganizerTab(ctk.CTkFrame):
         )
         self.btn_redo.pack(side="left", padx=(0, 16))
 
+        self.btn_rules = ctk.CTkButton(
+            btn_row,
+            text="Rules",
+            width=90,
+            height=36,
+            corner_radius=10,
+            font=FONT_ROUNDED,
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self.show_rules,
+        )
+        self.btn_rules.pack(side="left", padx=(0, 16))
+
         self.btn_start_daemon = ctk.CTkButton(
             btn_row,
             text="Start Daemon",
@@ -277,22 +290,34 @@ class OrganizerTab(ctk.CTkFrame):
 
         def process():
             planned = []
+            from utils.rules_engine import RulesEngine
+
+            rules_path = getattr(self.file_agent, "rules_path", None)
+            rules_engine = None
+            if isinstance(rules_path, (str, os.PathLike)):
+                rules_engine = RulesEngine(rules_path)
             for f in files:
                 filepath = os.path.join(incoming, f)
-                content = self.file_agent.read_file_content(filepath)
-                messages = [
-                    {"role": "system", "content": self.file_agent.system_prompt},
-                    {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
-                ]
-                try:
-                    resp = self.file_agent.api_manager.route_request(
-                        messages=messages, agent_name="Foldy"
-                    )
-                    category = sanitize_category(
-                        resp["choices"][0]["message"]["content"], filepath
-                    )
-                except Exception:
-                    category = "Other"
+                category = None
+                if rules_engine is not None:
+                    category = rules_engine.match_rule(os.path.basename(filepath))
+                if category is None:
+                    content = self.file_agent.read_file_content(filepath)
+                    messages = [
+                        {"role": "system", "content": self.file_agent.system_prompt},
+                        {"role": "user", "content": f"Categorise this file: {filepath}\nContent preview: {content[:500]}\nSuggest a category folder name."},
+                    ]
+                    try:
+                        resp = self.file_agent.api_manager.route_request(
+                            messages=messages, agent_name="Foldy"
+                        )
+                        category = sanitize_category(
+                            resp["choices"][0]["message"]["content"], filepath
+                        )
+                    except Exception:
+                        category = "Other"
+                else:
+                    category = sanitize_category(category, filepath)
                 planned.append((f, filepath, os.path.join(dest, category, f)))
             self.after(0, lambda: self._render_preview(planned, generation=generation))
 
@@ -397,6 +422,35 @@ class OrganizerTab(ctk.CTkFrame):
             self.after(0, lambda: self.btn_execute.configure(state="normal"))
 
         threading.Thread(target=process, daemon=True).start()
+
+    def show_rules(self):
+        """Display the current deterministic categorization rules."""
+        from utils.rules_engine import RulesEngine
+
+        try:
+            rules = RulesEngine(self.file_agent.rules_path).get_all_rules()
+        except Exception as exc:
+            messagebox.showerror("Rules Error", f"Could not load rules: {exc}")
+            return
+
+        if not rules:
+            messagebox.showinfo(
+                "Learning Rules",
+                "No rules yet. STEWARD will learn from user overrides.",
+            )
+            return
+
+        lines = []
+        for rule in sorted(
+            rules,
+            key=lambda item: item.get("priority", 100),
+            reverse=True,
+        ):
+            lines.append(
+                f"Priority {rule.get('priority', 100)}: "
+                f"{rule.get('pattern', '')} → {rule.get('target', '')}"
+            )
+        messagebox.showinfo("Learning Rules", "\n".join(lines))
 
     def undo_last(self):
         result = self.file_agent.undo_last()
