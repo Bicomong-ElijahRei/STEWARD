@@ -370,14 +370,33 @@ def format_counts(values: dict) -> str:
     )
 
 
+def live_state_paths() -> tuple[Path, Path, Path]:
+    """Resolve the active AppData state, with a legacy-root fallback.
+
+    The fallback supports the guarded one-time transition when the AppData copy
+    has not been created yet.  Once AppData contains the database, all live
+    migration operations target that copy.
+    """
+    app_data_db = Path(database_module.DB_PATH)
+    app_data_key = Path(database_module.KEY_PATH)
+    legacy_root = Path.cwd()
+    legacy_db = legacy_root / "steward.db"
+
+    if app_data_db.is_file() or not legacy_db.is_file():
+        database_path = app_data_db
+        key_path = app_data_key
+    else:
+        database_path = legacy_db
+        key_path = legacy_root / "secret.key"
+    return database_path, key_path, database_path.parent / "steward_operations.json"
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     logger = None
     try:
         logger = make_logger()
-        database_path = Path(database_module.DB_PATH)
-        key_path = Path(database_module.KEY_PATH)
-        operations_path = database_path.parent / "steward_operations.json"
+        database_path, key_path, operations_path = live_state_paths()
         logger.info("Mode=%s; database=%s; key=%s", args.mode, database_path, key_path)
         report(logger, f"Pre-flight database: {database_path}")
         before = preflight(database_path, key_path)

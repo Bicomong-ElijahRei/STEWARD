@@ -27,6 +27,18 @@ _WINDOWS_RESERVED_NAMES = frozenset({
     *(f"LPT{number}" for number in range(1, 10)),
 })
 
+
+def get_app_data_dir() -> str:
+    """Return the platform-appropriate application data directory."""
+    app_data = (
+        os.environ.get("APPDATA")
+        or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    )
+    steward_dir = os.path.join(app_data, "STEWARD")
+    os.makedirs(steward_dir, exist_ok=True)
+    return steward_dir
+
+
 def sanitize_category(text, filepath="", max_len=40):
     """Reduce a model response to a valid Windows folder name.
 

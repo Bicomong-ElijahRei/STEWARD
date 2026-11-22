@@ -8,13 +8,44 @@ import sqlite3
 import json
 import threading
 import os
+import shutil
 import uuid
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from cryptography.fernet import Fernet, InvalidToken
 
-DB_PATH = os.path.join(os.getcwd(), "steward.db")
-KEY_PATH = os.path.join(os.getcwd(), "secret.key")
+from utils.helpers import get_app_data_dir
+
+
+APP_DATA_DIR = get_app_data_dir()
+DB_PATH = os.path.join(APP_DATA_DIR, "steward.db")
+KEY_PATH = os.path.join(APP_DATA_DIR, "secret.key")
+
+
+def migrate_legacy_database_files(
+    db_path: str = DB_PATH,
+    key_path: str = KEY_PATH,
+    legacy_root: str | None = None,
+) -> dict[str, bool]:
+    """Copy legacy root database/key files into AppData without overwriting data.
+
+    The source files are intentionally retained.  This is a safe, one-time
+    transition from the repository working directory to the platform's
+    application-data directory.
+    """
+    legacy_root = legacy_root or os.getcwd()
+    migrated = {"database": False, "key": False}
+    sources = (
+        (os.path.join(legacy_root, "secret.key"), key_path, "key"),
+        (os.path.join(legacy_root, "steward.db"), db_path, "database"),
+    )
+    for source_path, destination_path, label in sources:
+        if os.path.exists(destination_path) or not os.path.exists(source_path):
+            continue
+        os.makedirs(os.path.dirname(os.path.abspath(destination_path)), exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+        migrated[label] = True
+    return migrated
 
 DECRYPTION_ERROR = (
     "Stored API key cannot be decrypted. Restore the matching secret.key "
@@ -37,6 +68,8 @@ class DatabaseManager:
         self.db_path = db_path
         self.key_path = key_path
         self._lock = threading.Lock()
+        if self.db_path == DB_PATH and self.key_path == KEY_PATH:
+            migrate_legacy_database_files(self.db_path, self.key_path)
         self._key = self._load_or_create_key()
         self._cipher = Fernet(self._key)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)

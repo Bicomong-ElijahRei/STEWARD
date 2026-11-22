@@ -10,6 +10,7 @@ import os
 import re
 from utils.helpers import (
     FILE_PREVIEW_LIMIT,
+    get_app_data_dir,
     sanitize_category,
     truncate_file_preview,
 )
@@ -53,8 +54,25 @@ from core.router import APIManager
 logger = logging.getLogger(__name__)
 
 
+def migrate_legacy_operation_log(
+    operation_log_path: str,
+    legacy_root: str | None = None,
+) -> bool:
+    """Copy the legacy root operation log into AppData once, if needed."""
+    legacy_root = legacy_root or os.getcwd()
+    old_path = os.path.join(legacy_root, "steward_operations.json")
+    if os.path.exists(operation_log_path) or not os.path.exists(old_path):
+        return False
+    os.makedirs(os.path.dirname(os.path.abspath(operation_log_path)), exist_ok=True)
+    shutil.copy2(old_path, operation_log_path)
+    return True
+
+
 class FileAgent:
-    OPERATION_LOG_PATH = os.path.join(os.getcwd(), "steward_operations.json")
+    DEFAULT_OPERATION_LOG_PATH = os.path.join(
+        get_app_data_dir(), "steward_operations.json"
+    )
+    OPERATION_LOG_PATH = DEFAULT_OPERATION_LOG_PATH
 
     def __init__(
         self,
@@ -78,6 +96,7 @@ class FileAgent:
         self.last_provider = None
         self.last_categorized_by_rule = False
         self.last_rule_pattern = None
+        self._migrate_legacy_operation_log()
         self._operation_log = self._load_operation_log()
 
         self.system_prompt = f"""You are STEWARD File Agent, an AI file manager for: {self.root_path}
@@ -172,6 +191,12 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         elif func_name == "suggest_deletions":
             safe_args["directory"] = self._sandbox_path(args.get("directory"))
         return safe_args
+
+    def _migrate_legacy_operation_log(self) -> bool:
+        """Copy the legacy root operation log into AppData once, if needed."""
+        if self.OPERATION_LOG_PATH != self.DEFAULT_OPERATION_LOG_PATH:
+            return False
+        return migrate_legacy_operation_log(self.OPERATION_LOG_PATH)
 
     def _load_operation_log(self) -> List[Dict[str, Any]]:
         if os.path.exists(self.OPERATION_LOG_PATH):
