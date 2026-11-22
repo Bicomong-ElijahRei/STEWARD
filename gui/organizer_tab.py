@@ -16,6 +16,7 @@ import logging
 
 from agent.daemon import FileCreationHandler
 from watchdog.observers import Observer
+from gui.anim import SafeTick, lerp_color
 
 from core.theme import (
     BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, BORDER_COLOR,
@@ -312,6 +313,30 @@ class OrganizerTab(ctk.CTkFrame):
         selected_count = sum(1 for op in self.pending_operations if op["selected"])
         self._log(f"Selected {selected_count}/{len(self.pending_operations)} files for execution.")
 
+    def _pulse_execute_success(self):
+        """Animate the execute button to bright green and back to signal success."""
+        start_color = "#00C853"  # Normal success green
+        end_color = "#00E676"    # Bright green pulse
+        duration_ms = 400
+        steps = 20
+        interval = duration_ms // steps
+        step = [0]
+
+        def on_tick():
+            step[0] += 1
+            t = step[0] / steps
+            # Pulse out and back: t goes 0 -> 1 -> 0
+            pulse_t = 1.0 - abs(2.0 * t - 1.0) if t <= 1.0 else 0.0
+            if pulse_t <= 0.0:
+                self.btn_execute.configure(fg_color=start_color)
+                return False  # Stop the tick
+            
+            current_color = lerp_color(start_color, end_color, pulse_t)
+            self.btn_execute.configure(fg_color=current_color)
+            return True
+
+        SafeTick(self.btn_execute, interval, on_tick).start()
+
     def execute_selected(self):
         selected_ops = [op for op in self.pending_operations if op["selected"]]
         if not selected_ops:
@@ -329,15 +354,22 @@ class OrganizerTab(ctk.CTkFrame):
         self.btn_execute.configure(state="disabled")
 
         def process():
+            success_count = 0
             for op in selected_ops:
                 try:
                     result = self.file_agent.move_file(op["source"], op["destination"])
                     self.after(0, lambda r=result: self._log(f"[Execute] {r}"))
                     if self.gui:
                         self.after(0, lambda op=op: self.gui.feed_agent_done("Foldy", f"Moved {op['filename']}"))
+                    success_count += 1
                 except Exception as e:
                     self.after(0, lambda e=e: self._log(f"[Execute] Error: {e}"))
-            self.after(0, lambda: self._log("Execution complete."))
+            
+            # Trigger animation on the main thread if anything succeeded
+            if success_count > 0:
+                self.after(0, self._pulse_execute_success)
+                
+            self.after(0, lambda: self._log(f"Execution complete. {success_count} files moved."))
             self.after(0, lambda: self.btn_execute.configure(state="normal"))
 
         threading.Thread(target=process, daemon=True).start()
