@@ -17,24 +17,26 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
-2026-11-22 | 1ac5b1a8 | Batch 4a closed: bounded dialog waits in chat_tab.py (L2 closed) and strengthened dedup test with real __init__; 62 tests green.
-2026-11-22 | 1a538464 | v2.0 frozen. README shipped.
-2026-11-22 | 7f682d6d | App smoke-tested live: window renders, chat routes, provider failover observed end-to-end in Live Feed. Added shared-credential-store item to v2.1 backlog.
-2026-11-22 | 8d22ea78 | Batch 3b closed. All remediation batches (1, 2A, 2B, 3a, 3b) complete. 61 tests green.
-2026-11-22 | 8d22ea78 | L2 split: scroll guard shipped in 77c9a3b2; unbounded evt.wait()/exec_evt.wait() deferred to v2.1. Owner decision: a blocked daemon worker is not data loss.
+2026-11-22 | HEAD | tools/run_migration.py added; Batch 4c fully closed.
+2026-11-22 | eef11f9b | Batch 4c closed: shared credential store live; 72/72 green.
+2026-11-22 | 535b9c6d | Batch 4c first push carried a syntax break from a partial replace; repairs applied locally, gate pending.
+2026-11-22 | 5357cc43 | Batch 4b closed: credential store safety review committed (docs/credential_store_review.md).
+2026-11-22 | 3f0ed7d1 | Batch 4a closed: bounded dialog waits (L2 fully closed) and strengthened dedup test; 62 tests green.
+2026-11-22 | 33e2b281 | v2.0 FROZEN. README shipped. (amends 1a538464)
+2026-11-22 | 7f682d6d | PLAN state repair; app smoke-tested live (failover observed end-to-end); credential store queued to v2.1.
 2026-11-22 | b80d2933 | Emergency DB recovery: steward.db restored from C:\temp\db_data.json (16 providers, 4 traces), 16/16 keys decrypted. Invariant corrected: hashes MAY change. Cause: an agent deleted the DB trying to force a hash match.
 2026-11-21 | a4408e7f | Document created. Batch 1 (H1,H2,H3,H4,H7) closed and verified.
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: 1ac5b1a8
-Suite: test_phase0_phase_a.py 62 green; test_validator.py 5/5
+HEAD: HEAD (this task's commit, pushed)
+Suite: 72 green.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
-Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies;
-Cline/Kimi for feature volume. Never two writers on one file.
+Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Freeze line
-v2.0 FROZEN as of 1a538464. All remediation and housekeeping closed. New findings and features go to the v2.1 backlog.
+v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
+v2.1 in progress: 4a, 4b, and 4c closed. New findings go to the backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -83,7 +85,7 @@ Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
 - M8  DONE | 8d22ea78 | Organizer builds FilePreviewRow + BooleanVar on worker thread; pending_
       operations mutated from worker. Accept: construction and mutation on main thread.
 - N6  DONE | 8d22ea78 | Daemon dest_base vs hardcoded sandbox roots. Accept: reconciled, documented.
-- L2  DONE | 1ac5b1a8 | _scroll_chat guarded (77c9a3b2); evt.wait()/exec_evt.wait() in
+- L2  DONE | 3f0ed7d1 | _scroll_chat guarded (77c9a3b2); evt.wait()/exec_evt.wait() in
       gui/chat_tab.py now timeout; worker exits cleanly and restores input on no answer.
 - L3  DONE | 8d22ea78 | quit_app calls root.quit() from pystray thread; WM_DELETE overwritten;
       observer not stopped. Accept: one coherent marshaled shutdown path.
@@ -93,7 +95,33 @@ Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
 ## Housekeeping (v2.0)
 - .clineignore  DONE | 036b6403 | create + commit; blocks secret.key/.env/*.db/media, NOT Sorted/ wholesale
 - .clinerules   DONE | 036b6403 | commit (already authored)
-- README.md     DONE | 1a538464
+- README.md     DONE | 33e2b281 | repo description, capabilities, safety model, install, tests, honest limitations
+
+## BATCH 4a — v2.1 quick wins
+- L2 remainder (bounded dialog waits)   DONE | 3f0ed7d1
+- Dedup test strengthening (real __init__, retention AND boundedness) DONE | 3f0ed7d1
+
+## BATCH 4b — credential store safety review
+- docs/credential_store_review.md  DONE | 5357cc43 | schema, migration, rollback, backup, crypto impact, blast radius, failure modes, UI impact, security review, test plan. No code.
+
+## BATCH 4c — shared credential store implementation (CLOSED)
+Files: core/database.py, gui/settings_tab.py, core/discovery.py, test_phase0_phase_a.py
+Review doc: docs/credential_store_review.md
+- Schema, dual-read, FK enforcement        DONE | eef11f9b
+- migrate/rollback (idempotent, decrypt-grouped) DONE | eef11f9b
+- API Hub shared-credential UI             DONE | eef11f9b
+- CredentialStoreTests (10)                DONE | eef11f9b
+- .clineignore backup patterns (*.backup/*.bak/*.sql) DONE | eef11f9b
+- tools/run_migration.py (operator dry-run) DONE | HEAD (this task's commit)
+Design notes: credentials NOT unique per endpoint (multi-key per endpoint is the feature);
+add_provider reuses a credential only on decrypted-key match, else creates a new row;
+set_credential upserts the canonical credential (rotation); migration groups by DECRYPTED
+key (Fernet nonces make raw blobs distinct) and is idempotent; get_credential_by_url prefers
+credentials linked to active providers ordered by speed_score_ms; fail-fast when DB exists
+without secret.key is permanent policy.
+Closure checklist: 72/72 gate -> commit -> push -> flip statuses to DONE | <SHA> ->
+bump Ground state HEAD and suite count -> ONE changelog line -> delete the pointer line
+in the v2.1 backlog below.
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
 Gate: v2.0 frozen. All items: animations must not block the main thread and must raise
@@ -154,19 +182,6 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
   (e.g. %APPDATA%\STEWARD\). Paths are currently os.getcwd()-based. Rationale: an agent with
   shell access deleted the production DB; .clineignore governs file tools only. Keep
   irreplaceable data outside the blast radius.
-- L2 remainder: bound evt.wait()/exec_evt.wait() in gui/chat_tab.py with timeouts: DONE | 1ac5b1a8
-- Dedup test strengthening: DONE | 1ac5b1a8
-- Shared credential store: new credentials table keyed by normalized base_url; providers
-  reference credential_id instead of storing api_key_encrypted per row. Add/rotate a key
-  once and every model on that endpoint inherits it. Motivation: one provider key currently
-  has to be pasted into N rows and rotated in N places.
-  Accept: adding a credential makes it usable by all providers on that endpoint; rotating it
-  updates all of them; a provider with no credential renders as recoverable, never crashes;
-  existing per-row keys migrate without loss.
-  REQUIRES ITS OWN SAFETY REVIEW BEFORE IMPLEMENTATION: schema migration on live data, and
-  the blast radius of a single key grows from one row to many. Interim workaround already
-  exists: discovery activation reuses credentials by base_url.
-  Est 8-16h + safety batch.
 
 ## Rules of engagement
 1. Work ONLY the batch or phase named in your prompt.
@@ -176,7 +191,7 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 5. Update statuses here in the closing commit; update HEAD on push; log structural changes.
 6. Context death: commit proven work, write the handoff ledger INTO THIS FILE.
 7. Environment: PowerShell (no &&, no rg, no tail), unittest not pytest, BOM files need
-    utf-8-sig, protected files never modified, helper scripts outside the repo.
+   utf-8-sig, protected files never modified, helper scripts outside the repo.
 
 ## Session start (the whole preamble)
 Read ARCHITECTURE.md and PLAN.md. Work ONLY <BATCH-or-PHASE>. Follow Rules of engagement.
