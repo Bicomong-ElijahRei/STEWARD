@@ -21,9 +21,11 @@ from agents.file_agent import FileAgent
 from agents.supervisor import (
     AGENT_FILE_OP,
     AGENT_PC_CONTROL,
+    AGENT_RAG,
     AGENT_UNKNOWN,
     SupervisorAgent,
 )
+from agents.rag_agent import RAGAgent
 import core.database as database_module
 from core.database import (
     DatabaseManager,
@@ -2637,6 +2639,218 @@ class SourceIntegrityTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertEqual(source.count("def categorise_file("), 1)
+
+
+class RAGTests(unittest.TestCase):
+    """Exercise the isolated ChromaDB ingestion and retrieval pipeline."""
+
+    class LexicalEmbeddingFunction:
+        """Small deterministic embedding function for offline regression tests."""
+
+        def __call__(self, input):
+            import math
+            import re
+
+            vectors = []
+            for text in input:
+                vector = [0.0] * 64
+                tokens = [
+                    token for token in re.split(r"[^A-Za-z0-9]+", text.lower())
+                    if token
+                ]
+                for token in tokens:
+                    index = int(hashlib.sha256(token.encode()).hexdigest(), 16) % 64
+                    vector[index] += 1.0
+                norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+                vectors.append([value / norm for value in vector])
+            return vectors
+
+        def embed_query(self, input):
+            return self(input)
+
+        @staticmethod
+        def name():
+            return "steward_test_lexical"
+
+        @staticmethod
+        def build_from_config(config):
+            return RAGTests.LexicalEmbeddingFunction()
+
+        def get_config(self):
+            return {}
+
+        def default_space(self):
+            return "cosine"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory(prefix="steward_rag_test_")
+        self.index_path = os.path.join(self.temp_dir.name, "rag_index")
+        self.agent = RAGAgent(
+            persist_directory=self.index_path,
+            collection_name="steward_docs",
+            embedding_function=self.LexicalEmbeddingFunction(),
+            max_search_distance=1.0,
+        )
+        self.addCleanup(self.temp_dir.cleanup)
+        self.addCleanup(self.agent.close)
+
+    def test_ingest_and_search(self):
+        source = os.path.join(self.temp_dir.name, "known.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write(
+                "STEWARD_RAG_TEST_TOKEN_123 is the unique searchable marker. "
+                "The remaining text describes a deterministic retrieval test."
+            )
+
+        chunk_count = self.agent.ingest_file(source)
+        results = self.agent.search("STEWARD RAG TEST")
+
+        self.assertGreaterEqual(chunk_count, 1)
+        self.assertTrue(results)
+        self.assertIn("STEWARD_RAG_TEST_TOKEN_123", results[0]["content"])
+        self.assertEqual(results[0]["source"], os.path.abspath(source))
+        self.assertIn("source", results[0])
+        self.assertIn("distance", results[0])
+
+    def test_empty_search(self):
+        source = os.path.join(self.temp_dir.name, "known.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("STEWARD_RAG_TEST_TOKEN_123")
+        self.agent.ingest_file(source)
+
+        results = self.agent.search("zzzqqxyv unrelated gibberish")
+
+        self.assertTrue(not results or results[0]["distance"] >= 1.0)
+
+    def test_emptying_file_removes_stale_chunks(self):
+        source = os.path.join(self.temp_dir.name, "emptied.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("CONTENT_TO_REMOVE")
+        self.agent.ingest_file(source)
+
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("")
+        self.agent.ingest_file(source)
+
+        self.assertEqual(self.agent.collection.count(), 0)
+        self.assertEqual(self.agent.search("CONTENT REMOVE"), [])
+
+    def test_changed_file_replaces_stale_chunks(self):
+        source = os.path.join(self.temp_dir.name, "changing.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("ORIGINAL_STEWARD_CONTENT")
+        self.agent.ingest_file(source)
+
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("REPLACED_STEWARD_CONTENT")
+        self.agent.ingest_file(source)
+
+        results = self.agent.search("REPLACED STEWARD")
+        self.assertTrue(results)
+        self.assertIn("REPLACED_STEWARD_CONTENT", results[0]["content"])
+        self.assertNotIn("ORIGINAL_STEWARD_CONTENT", results[0]["content"])
+        self.assertEqual(self.agent.collection.count(), 1)
+
+    def test_chunking_uses_overlap(self):
+        chunks = RAGAgent.chunk_text("A" * 600, chunk_size=500, chunk_overlap=50)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(len(chunks[0]), 500)
+        self.assertEqual(len(chunks[1]), 150)
+        self.assertEqual(chunks[0][-50:], chunks[1][:50])
+
+    def test_ingest_directory_recursively_indexes_supported_files(self):
+        nested = os.path.join(self.temp_dir.name, "nested")
+        os.makedirs(nested)
+        source = os.path.join(nested, "guide.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("DIRECTORY_RAG_TOKEN")
+        with open(os.path.join(nested, "ignored.csv"), "w", encoding="utf-8") as handle:
+            handle.write("ignored")
+
+        summary = self.agent.ingest_directory(self.temp_dir.name)
+
+        self.assertEqual(summary["ingested_files"], 1)
+        self.assertEqual(summary["ingested_chunks"], 1)
+        self.assertEqual(summary["errors"], [])
+        results = self.agent.search("DIRECTORY RAG TOKEN")
+        self.assertTrue(results)
+        self.assertIn("DIRECTORY_RAG_TOKEN", results[0]["content"])
+
+    def test_scout_formats_known_source_and_content(self):
+        source = "C:\\docs\\known.txt"
+        results = [{
+            "source": source,
+            "content": "STEWARD_RAG_TEST_TOKEN_123 known snippet",
+            "distance": 0.1,
+        }]
+
+        message = ChatTab._format_rag_results("known token", results)
+
+        self.assertIn("Search Results for [known token]", message)
+        self.assertIn(source, message)
+        self.assertIn("STEWARD_RAG_TEST_TOKEN_123", message)
+
+    def test_scout_empty_result_copy(self):
+        self.assertEqual(
+            ChatTab._format_rag_results("missing", []),
+            "No relevant documents found in the knowledge base.",
+        )
+
+    def test_chat_scout_searches_and_renders_known_result(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_RAG, "action": "semantic search"}
+        )
+        chat.chat_entry.get.return_value = "STEWARD RAG TEST"
+        chat.rag_agent = Mock()
+        chat.rag_agent.search.return_value = [{
+            "source": "known.txt",
+            "content": "STEWARD_RAG_TEST_TOKEN_123",
+            "distance": 0.1,
+        }]
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+
+        chat.rag_agent.search.assert_called_once_with("STEWARD RAG TEST")
+        for callback in callbacks:
+            callback()
+        rendered = [
+            call.args[1] for call in chat._add_bubble.call_args_list
+            if call.args and call.args[0] == "STEWARD"
+        ]
+        self.assertTrue(any("STEWARD_RAG_TEST_TOKEN_123" in message for message in rendered))
+
+    def test_default_rag_index_is_created_on_first_scout_query(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rag_default_") as tmp:
+            expected_index = os.path.join(tmp, "rag_index")
+            chat = ChatTab.__new__(ChatTab)
+            chat.rag_agent = None
+
+            with patch("os.getcwd", return_value=tmp):
+                rag_agent = chat._get_rag_agent()
+
+            self.assertIs(rag_agent, chat.rag_agent)
+            self.assertTrue(os.path.isdir(expected_index))
+            rag_agent.close()
+
+    def test_supervisor_routes_recall_phrases_to_rag(self):
+        for phrase in (
+            "search my notes",
+            "find information about taxes",
+            "recall the project decision",
+            "what does my file say about launch dates",
+        ):
+            with self.subTest(phrase=phrase):
+                manager = Mock()
+                manager.route_request.return_value = {
+                    "choices": [{"message": {"content": json.dumps({
+                        "agent": AGENT_RAG,
+                        "action": f"semantic search for {phrase}",
+                    })}}]
+                }
+                supervisor = SupervisorAgent(manager)
+                result = supervisor.route(phrase)
+                self.assertEqual(result["agent"], AGENT_RAG)
 
 
 class MigrationCLITests(unittest.TestCase):
