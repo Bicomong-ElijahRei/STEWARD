@@ -1,4 +1,5 @@
 import os
+import re
 import PyPDF2
 
 try:
@@ -11,6 +12,33 @@ try:
 except ImportError:
     openpyxl = None
 
+_EXT_FALLBACK = {
+    ".pdf": "Documents", ".doc": "Documents", ".docx": "Documents",
+    ".xls": "Spreadsheets", ".xlsx": "Spreadsheets", ".csv": "Spreadsheets",
+    ".txt": "Text", ".md": "Text",
+    ".jpg": "Images", ".jpeg": "Images", ".png": "Images", ".gif": "Images",
+    ".mp4": "Media", ".mkv": "Media", ".mov": "Media", ".mp3": "Audio",
+    ".zip": "Archives", ".rar": "Archives", ".7z": "Archives",
+}
+
+def sanitize_category(text, filepath="", max_len=40):
+    """Reduce a model response to a valid Windows folder name.
+    Rejects conversational replies (multi-line, sentences, long) and falls
+    back to a deterministic extension category instead of an invalid name.
+    """
+    ext = os.path.splitext(filepath or "")[1].lower()
+    fallback = _EXT_FALLBACK.get(ext, "Other")
+    if not text:
+        return fallback
+    stripped = text.strip()
+    if "\n" in stripped or len(stripped) > max_len:
+        return fallback
+    first = _re.sub(r"[*`#]", "", stripped.splitlines()[0])
+    first = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", first)
+    first = re.sub(r"\s+", " ", first).strip().rstrip(". ")
+    if not first or first.endswith((".", "!", "?", ":", ",")):
+        return fallback
+    return first[:max_len]
 
 def read_file_content_simple(file_path):
     """Read text content from .txt, .pdf, .docx, or .xlsx (first 2000 chars) without AI."""
