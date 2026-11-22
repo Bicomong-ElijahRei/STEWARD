@@ -445,6 +445,263 @@ class DatabaseManager:
         if _db_instance is self:
             _db_instance = None
 
+    def migrate_to_shared_credentials(self):
+        return migrate_to_shared_credentials(self)
+
+    def rollback_from_shared_credentials(self):
+        return rollback_from_shared_credentials(self)
+
+# ── Migration & Rollback Logic ──────────────────────────────────────────
+
+def _precedence_key(p):
+    """Sort key for conflict resolution:
+    1. Active (0) wins over inactive (1)
+    2. Lower valid speed_score_ms wins (speed <= 0 or None treated as 9999)
+    3. Alphabetical name as deterministic tie-breaker
+    """
+    active_rank = 0 if p.get("is_active") else 1
+    speed = p.get("speed_score_ms")
+    if speed is None or speed <= 0:
+        speed = 9999
+    name = p.get("name") or ""
+    return (active_rank, speed, name)
+
+
+def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
+    """Migrate legacy providers to the shared credentials table inside a single BEGIN IMMEDIATE transaction.
+    
+    Idempotent: running multiple times yields the same database state.
+    """
+    if db is None:
+        db = get_db()
+
+    with db._lock:
+        conn = db._conn
+        prev_isolation = conn.isolation_level
+        conn.isolation_level = None  # Autocommit mode to allow explicit BEGIN IMMEDIATE
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            # 1. Ensure schema is ready
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS credentials (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_url_normalized TEXT UNIQUE NOT NULL,
+                    api_key_encrypted BLOB NOT NULL,
+                    label TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_base_url_normalized 
+                ON credentials(base_url_normalized)
+            """)
+            cursor.execute("PRAGMA table_info(providers)")
+            columns = {row["name"] for row in cursor.fetchall()}
+            if "credential_id" not in columns:
+                cursor.execute(
+                    "ALTER TABLE providers ADD COLUMN credential_id INTEGER REFERENCES credentials(id) ON DELETE SET NULL"
+                )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_providers_credential_id ON providers(credential_id)"
+            )
+
+            # 2. Fetch all providers
+            cursor.execute("SELECT * FROM providers")
+            raw_providers = [dict(r) for r in cursor.fetchall()]
+
+            # 3. Group by normalized base_url
+            endpoints: dict[str, list[dict]] = {}
+            for p in raw_providers:
+                if p.get("is_local"):
+                    cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
+                    continue
+                url = normalize_base_url(p.get("base_url") or "")
+                if not url:
+                    cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
+                    continue
+                endpoints.setdefault(url, []).append(p)
+
+            now = datetime.now(timezone.utc).isoformat()
+            endpoints_migrated = 0
+            credentials_created = 0
+            providers_linked = 0
+
+            # 4. Process each endpoint
+            for norm_url, prov_list in endpoints.items():
+                endpoints_migrated += 1
+                valid_keyed: dict[str, list[dict]] = {}
+                keyless_or_undecryptable: list[dict] = []
+
+                for p in prov_list:
+                    raw_blob = p.get("api_key_encrypted")
+                    if p.get("credential_id"):
+                        cursor.execute("SELECT api_key_encrypted FROM credentials WHERE id = ?", (p["credential_id"],))
+                        c_row = cursor.fetchone()
+                        if c_row:
+                            raw_blob = c_row["api_key_encrypted"]
+
+                    if not raw_blob:
+                        keyless_or_undecryptable.append(p)
+                        continue
+                    try:
+                        decrypted = db._decrypt(raw_blob)
+                    except InvalidToken:
+                        cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
+                        continue
+
+                    if not decrypted.strip():
+                        keyless_or_undecryptable.append(p)
+                    else:
+                        valid_keyed.setdefault(decrypted, []).append(p)
+
+                if not valid_keyed:
+                    continue
+
+                distinct_keys = []
+                for dec_key, plist in valid_keyed.items():
+                    best_prov = min(plist, key=_precedence_key)
+                    distinct_keys.append((dec_key, best_prov, plist))
+
+                distinct_keys.sort(key=lambda item: _precedence_key(item[1]))
+
+                winning_key, winning_best_prov, winning_plist = distinct_keys[0]
+                winning_enc = db._encrypt(winning_key)
+
+                cursor.execute(
+                    "SELECT id FROM credentials WHERE base_url_normalized = ?",
+                    (norm_url,)
+                )
+                existing_cred = cursor.fetchone()
+                if existing_cred:
+                    canonical_cred_id = existing_cred["id"]
+                    cursor.execute("""
+                        UPDATE credentials SET
+                            api_key_encrypted = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                    """, (winning_enc, now, canonical_cred_id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (norm_url, winning_enc, winning_best_prov.get("name") or norm_url, now, now))
+                    canonical_cred_id = cursor.lastrowid
+                    credentials_created += 1
+
+                for p in winning_plist:
+                    cursor.execute("""
+                        UPDATE providers SET
+                            credential_id = ?,
+                            api_key_encrypted = ?
+                        WHERE id = ?
+                    """, (canonical_cred_id, winning_enc, p["id"]))
+                    providers_linked += 1
+
+                for p in keyless_or_undecryptable:
+                    cursor.execute("""
+                        UPDATE providers SET
+                            credential_id = ?,
+                            api_key_encrypted = ?
+                        WHERE id = ?
+                    """, (canonical_cred_id, winning_enc, p["id"]))
+                    providers_linked += 1
+
+                for dec_key, sec_best_prov, sec_plist in distinct_keys[1:]:
+                    sec_enc = db._encrypt(dec_key)
+                    sec_name = sec_best_prov.get("name") or "unknown"
+                    disambiguated_url = f"{norm_url}#legacy-{sec_name}"
+                    label = f"Legacy key from {sec_name}"
+
+                    cursor.execute(
+                        "SELECT id FROM credentials WHERE base_url_normalized = ?",
+                        (disambiguated_url,)
+                    )
+                    existing_sec = cursor.fetchone()
+                    if existing_sec:
+                        sec_cred_id = existing_sec["id"]
+                        cursor.execute("""
+                            UPDATE credentials SET
+                                api_key_encrypted = ?,
+                                label = ?,
+                                updated_at = ?
+                            WHERE id = ?
+                        """, (sec_enc, label, now, sec_cred_id))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (disambiguated_url, sec_enc, label, now, now))
+                        sec_cred_id = cursor.lastrowid
+                        credentials_created += 1
+
+                    for p in sec_plist:
+                        cursor.execute("""
+                            UPDATE providers SET
+                                credential_id = ?,
+                                api_key_encrypted = ?
+                            WHERE id = ?
+                        """, (sec_cred_id, sec_enc, p["id"]))
+                        providers_linked += 1
+
+            cursor.execute("COMMIT")
+            return {
+                "endpoints_migrated": endpoints_migrated,
+                "credentials_created": credentials_created,
+                "providers_linked": providers_linked,
+            }
+        except Exception:
+            cursor.execute("ROLLBACK")
+            raise
+        finally:
+            conn.isolation_level = prev_isolation
+
+
+def rollback_from_shared_credentials(db: DatabaseManager | None = None) -> dict:
+    """Reverse migration to shared credentials.
+    
+    Populates legacy api_key_encrypted from joined credentials and sets
+    credential_id = NULL on all providers. Does NOT drop credentials table.
+    """
+    if db is None:
+        db = get_db()
+
+    with db._lock:
+        conn = db._conn
+        prev_isolation = conn.isolation_level
+        conn.isolation_level = None
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            cursor.execute("""
+                SELECT p.id, c.api_key_encrypted 
+                FROM providers p 
+                JOIN credentials c ON p.credential_id = c.id
+                WHERE p.credential_id IS NOT NULL
+            """)
+            joined_rows = cursor.fetchall()
+            restored_count = 0
+            for row in joined_rows:
+                cursor.execute("""
+                    UPDATE providers SET
+                        api_key_encrypted = ?,
+                        credential_id = NULL
+                    WHERE id = ?
+                """, (row["api_key_encrypted"], row["id"]))
+                restored_count += 1
+
+            cursor.execute("""
+                UPDATE providers SET credential_id = NULL WHERE credential_id IS NOT NULL
+            """)
+            cursor.execute("COMMIT")
+            return {"providers_restored": restored_count}
+        except Exception:
+            cursor.execute("ROLLBACK")
+            raise
+        finally:
+            conn.isolation_level = prev_isolation
+
 # ── Singleton Helpers ────────────────────────────────────────────────────
 
 _db_instance = None
