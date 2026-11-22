@@ -12,3 +12,6 @@ __pycache__/
 *.mp4
 *.pdf
 *.log
+*.backup
+*.bak
+*.sql

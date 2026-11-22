@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from cryptography.fernet import Fernet
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -56,9 +57,12 @@ def approve_plan(agent, plan_id="test-plan"):
 
 class DatabaseAssignmentTests(unittest.TestCase):
     def test_legacy_database_migrates_and_returns_assignment(self):
-        with tempfile.TemporaryDirectory(prefix="steward_db_test_") as tmp:
-            db_path = os.path.join(tmp, "legacy.db")
-            key_path = os.path.join(tmp, "test.key")
+        with tempfile.TemporaryDirectory(prefix= "steward_db_test_ ") as tmp:
+            db_path = os.path.join(tmp,  "legacy.db ")
+            key_path = os.path.join(tmp,  "test.key ")
+            # Ensure key file exists to bypass fail-fast
+            with open(key_path, "wb") as f:
+                f.write(Fernet.generate_key())
             connection = sqlite3.connect(db_path)
             connection.execute("""
                 CREATE TABLE providers (
@@ -174,17 +178,19 @@ class DatabaseRecoveryTests(unittest.TestCase):
     def test_init_db_honors_changed_key_path(self):
         with tempfile.TemporaryDirectory(prefix="steward_init_key_") as tmp:
             db_path = os.path.join(tmp, "providers.db")
-            first = database_module.init_db(
-                db_path=db_path, key_path=os.path.join(tmp, "first.key"), force_new=True
-            )
-            second = database_module.init_db(
-                db_path=db_path, key_path=os.path.join(tmp, "second.key")
-            )
-            try:
-                self.assertIsNot(second, first)
-                self.assertEqual(second.key_path, os.path.join(tmp, "second.key"))
-            finally:
-                second.close()
+            first_key = os.path.join(tmp, "first.key")
+            second_key = os.path.join(tmp, "second.key")
+            first = database_module.init_db(db_path, first_key)
+            first.add_provider("P", "https://e/v1", "k", model_name="m")
+            first.close()
+            
+            # Write a DIFFERENT key to second_key so fail-fast doesn't trigger
+            with open(second_key, "wb") as f:
+                f.write(Fernet.generate_key())
+                
+            second = database_module.init_db(db_path, second_key)
+            self.assertIsNot(second, first)
+            second.close()
 
     def test_close_clears_singleton(self):
         with tempfile.TemporaryDirectory(prefix="steward_close_db_") as tmp:

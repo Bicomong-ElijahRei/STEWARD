@@ -143,17 +143,24 @@ class DatabaseManager:
             self._conn.commit()
 
     def get_credential_by_url(self, base_url: str):
-        """Retrieve credential by base URL (normalized)."""
+        """Retrieve credential by base URL (normalized). Prefers credentials linked to active providers."""
         norm_url = normalize_base_url(base_url)
         if not norm_url:
             return None
         with self._lock:
             cursor = self._conn.cursor()
-            cursor.execute(
-                "SELECT * FROM credentials WHERE base_url_normalized = ?",
-                (norm_url,)
-            )
+            # Prefer credential linked to an active, fast provider
+            cursor.execute("""
+                SELECT c.* FROM credentials c
+                JOIN providers p ON p.credential_id = c.id
+                WHERE c.base_url_normalized = ? AND p.is_active = 1
+                ORDER BY p.speed_score_ms ASC
+                LIMIT 1
+            """, (norm_url,))
             row = cursor.fetchone()
+            if not row:
+                cursor.execute("SELECT * FROM credentials WHERE base_url_normalized = ? LIMIT 1", (norm_url,))
+                row = cursor.fetchone()
             if not row:
                 return None
             cred = dict(row)
@@ -206,7 +213,7 @@ class DatabaseManager:
             return results
 
     def set_credential(self, base_url: str, api_key: str, label: str = "") -> int:
-        """Create or update a shared credential. Returns credential ID."""
+        """Create or update the canonical shared credential for a base URL. Returns credential ID."""
         norm_url = normalize_base_url(base_url)
         if not norm_url:
             raise ValueError("base_url is required for set_credential")
@@ -214,25 +221,26 @@ class DatabaseManager:
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             cursor = self._conn.cursor()
-            cursor.execute("""
-                INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(base_url_normalized) DO UPDATE SET
-                    api_key_encrypted = excluded.api_key_encrypted,
-                    label = CASE WHEN excluded.label != '' THEN excluded.label ELSE credentials.label END,
-                    updated_at = excluded.updated_at
-            """, (norm_url, enc_key, label, now, now))
-            cursor.execute("SELECT id FROM credentials WHERE base_url_normalized = ?", (norm_url,))
+            # Find existing credential for this URL (take the oldest/canonical one)
+            cursor.execute("SELECT id, label FROM credentials WHERE base_url_normalized = ? ORDER BY id ASC LIMIT 1", (norm_url,))
             row = cursor.fetchone()
-            cred_id = row["id"] if row else cursor.lastrowid
-            # Dual-write: update legacy column for all providers referencing this credential
-            cursor.execute(
-                "UPDATE providers SET api_key_encrypted = ? WHERE credential_id = ?",
-                (enc_key, cred_id)
-            )
-            self._conn.commit()
-            return cred_id
-
+            if row:
+                # Update the existing canonical credential (handles key rotation)
+                cursor.execute("""
+                    UPDATE credentials SET api_key_encrypted = ?, label = ?, updated_at = ? WHERE id = ?
+                """, (enc_key, label or row["label"], now, row["id"]))
+                self._conn.commit()
+                return row["id"]
+            else:
+                # No credential exists for this URL; create it
+                cursor.execute("""
+                    INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (norm_url, enc_key, label, now, now))
+                cred_id = cursor.lastrowid
+                self._conn.commit()
+                return cred_id
+        
     def delete_credential(self, cred_id: int) -> bool:
         """Delete a credential by ID. Referencing providers have credential_id set to NULL via ON DELETE SET NULL."""
         with self._lock:
@@ -543,132 +551,47 @@ def migrate_to_shared_credentials(db: DatabaseManager | None = None) -> dict:
                     if not raw_blob:
                         keyless_or_undecryptable.append(p)
                         continue
-                    key_groups.setdefault(raw_blob, []).append(p)
+                    try:
+                        dec_key = db._decrypt(raw_blob)
+                    except InvalidToken:
+                        keyless_or_undecryptable.append(p)
+                        continue
+                    key_groups.setdefault(dec_key, []).append((p, raw_blob))
 
-                # Create one credential per distinct key
-                for enc_blob, providers_with_this_key in key_groups.items():
-                    winner = min(providers_with_this_key, key=_precedence_key)
+                # Create one credential per distinct DECRYPTED key
+                for dec_key, providers_with_this_key in key_groups.items():
+                    winner = min([item[0] for item in providers_with_this_key], key=_precedence_key)
                     label = winner["name"]
+                    # Use the winner's encrypted blob for the canonical credential
+                    winner_blob = next(item[1] for item in providers_with_this_key if item[0] == winner)
                     
-                    cursor.execute("""
-                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (norm_url, enc_blob, label, now, now))
-                    cred_id = cursor.lastrowid
-                    credentials_created += 1
+                    # Idempotency: check if a credential with this exact decrypted key already exists
+                    existing_cred_id = None
+                    cursor.execute("SELECT id, api_key_encrypted FROM credentials WHERE base_url_normalized = ?", (norm_url,))
+                    for c_row in cursor.fetchall():
+                        try:
+                            if db._decrypt(c_row["api_key_encrypted"]) == dec_key:
+                                existing_cred_id = c_row["id"]
+                                break
+                        except InvalidToken:
+                            continue
                     
-                    for p in providers_with_this_key:
+                    if existing_cred_id is not None:
+                        cred_id = existing_cred_id
+                    else:
+                        cursor.execute("""
+                            INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (norm_url, winner_blob, label, now, now))
+                        cred_id = cursor.lastrowid
+                        credentials_created += 1
+                    
+                    for p, _ in providers_with_this_key:
                         cursor.execute("UPDATE providers SET credential_id = ? WHERE id = ?", (cred_id, p["id"]))
                         providers_linked += 1
 
                 for p in keyless_or_undecryptable:
                     cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
-                        c_row = cursor.fetchone()
-                        if c_row:
-                            raw_blob = c_row["api_key_encrypted"]
-
-                    if not raw_blob:
-                        keyless_or_undecryptable.append(p)
-                        continue
-                    try:
-                        decrypted = db._decrypt(raw_blob)
-                    except InvalidToken:
-                        cursor.execute("UPDATE providers SET credential_id = NULL WHERE id = ?", (p["id"],))
-                        continue
-
-                    if not decrypted.strip():
-                        keyless_or_undecryptable.append(p)
-                    else:
-                        valid_keyed.setdefault(decrypted, []).append(p)
-
-                if not valid_keyed:
-                    continue
-
-                distinct_keys = []
-                for dec_key, plist in valid_keyed.items():
-                    best_prov = min(plist, key=_precedence_key)
-                    distinct_keys.append((dec_key, best_prov, plist))
-
-                distinct_keys.sort(key=lambda item: _precedence_key(item[1]))
-
-                winning_key, winning_best_prov, winning_plist = distinct_keys[0]
-                winning_enc = db._encrypt(winning_key)
-
-                cursor.execute(
-                    "SELECT id FROM credentials WHERE base_url_normalized = ?",
-                    (norm_url,)
-                )
-                existing_cred = cursor.fetchone()
-                if existing_cred:
-                    canonical_cred_id = existing_cred["id"]
-                    cursor.execute("""
-                        UPDATE credentials SET
-                            api_key_encrypted = ?,
-                            updated_at = ?
-                        WHERE id = ?
-                    """, (winning_enc, now, canonical_cred_id))
-                else:
-                    cursor.execute("""
-                        INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (norm_url, winning_enc, winning_best_prov.get("name") or norm_url, now, now))
-                    canonical_cred_id = cursor.lastrowid
-                    credentials_created += 1
-
-                for p in winning_plist:
-                    cursor.execute("""
-                        UPDATE providers SET
-                            credential_id = ?,
-                            api_key_encrypted = ?
-                        WHERE id = ?
-                    """, (canonical_cred_id, winning_enc, p["id"]))
-                    providers_linked += 1
-
-                for p in keyless_or_undecryptable:
-                    cursor.execute("""
-                        UPDATE providers SET
-                            credential_id = ?,
-                            api_key_encrypted = ?
-                        WHERE id = ?
-                    """, (canonical_cred_id, winning_enc, p["id"]))
-                    providers_linked += 1
-
-                for dec_key, sec_best_prov, sec_plist in distinct_keys[1:]:
-                    sec_enc = db._encrypt(dec_key)
-                    sec_name = sec_best_prov.get("name") or "unknown"
-                    disambiguated_url = f"{norm_url}#legacy-{sec_name}"
-                    label = f"Legacy key from {sec_name}"
-
-                    cursor.execute(
-                        "SELECT id FROM credentials WHERE base_url_normalized = ?",
-                        (disambiguated_url,)
-                    )
-                    existing_sec = cursor.fetchone()
-                    if existing_sec:
-                        sec_cred_id = existing_sec["id"]
-                        cursor.execute("""
-                            UPDATE credentials SET
-                                api_key_encrypted = ?,
-                                label = ?,
-                                updated_at = ?
-                            WHERE id = ?
-                        """, (sec_enc, label, now, sec_cred_id))
-                    else:
-                        cursor.execute("""
-                            INSERT INTO credentials (base_url_normalized, api_key_encrypted, label, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (disambiguated_url, sec_enc, label, now, now))
-                        sec_cred_id = cursor.lastrowid
-                        credentials_created += 1
-
-                    for p in sec_plist:
-                        cursor.execute("""
-                            UPDATE providers SET
-                                credential_id = ?,
-                                api_key_encrypted = ?
-                            WHERE id = ?
-                        """, (sec_cred_id, sec_enc, p["id"]))
-                        providers_linked += 1
 
             cursor.execute("COMMIT")
             return {
