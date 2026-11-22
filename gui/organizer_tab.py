@@ -260,7 +260,6 @@ class OrganizerTab(ctk.CTkFrame):
             command=self._on_schedule_interval_changed,
             font=FONT_ROUNDED,
             fg_color="#4A4A5A",
-            hover_color="#5A5A6A",
             width=90,
         )
         self.schedule_interval_dropdown.pack(side="left", padx=(0, 16))

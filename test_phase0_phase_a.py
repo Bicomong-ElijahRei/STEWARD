@@ -3641,6 +3641,11 @@ class ScheduledScannerTests(unittest.TestCase):
         self.assertIn("schedule_interval_dropdown", source)
         self.assertIn("schedule_status_label", source)
 
+        dropdown_start = source.index("self.schedule_interval_dropdown =")
+        dropdown_end = source.index(".pack(", dropdown_start)
+        dropdown_source = source[dropdown_start:dropdown_end]
+        self.assertNotIn("hover_color", dropdown_source)
+
 
 
 if __name__ == "__main__":
