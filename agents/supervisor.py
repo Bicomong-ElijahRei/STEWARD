@@ -35,9 +35,10 @@ SUPERVISOR_SYSTEM_PROMPT = """You are the STEWARD Supervisor. Your job is to cla
 Available agents:
 - FILE_OP: File operations (move, rename, delete, read, list, create folder, organize, undo, redo)
 - PC_CONTROL: PC control / desktop automation (mouse, keyboard, screen, launch apps)
-- RAG: Semantic search / document Q&A over stored knowledge. Route requests
-  containing search, find, recall, or "what does my file say" here unless the
-  user explicitly requests a filesystem mutation or file listing.
+- RAG: Semantic search, document Q&A, and knowledge-base ingestion. Route requests
+  containing search, find, recall, ingest, index, learn, remember, scan, "read all",
+  "process folder", "add to knowledge base", or "what does my file say" here unless
+  the user explicitly requests a filesystem mutation or file listing.
 - CODING: Code generation, debugging, refactoring
 - GENERAL_CHAT: General conversation, greetings, casual chat, and questions that
   do not require a specialist agent. This includes questions about STEWARD's
@@ -62,6 +63,9 @@ Output: {"agent": "FILE_OP", "action": "organize Incoming folder"}
 
 User: "search for documents about project X"
 Output: {"agent": "RAG", "action": "semantic search for project X documents"}
+
+User: "ingest the Sorted folder"
+Output: {"agent": "RAG", "action": "ingest the Sorted folder"}
 
 User: "write a Python script to scrape a website"
 Output: {"agent": "CODING", "action": "write Python web scraper"}
@@ -192,7 +196,7 @@ class SupervisorAgent:
 
     @staticmethod
     def _is_rag_request(text):
-        """Return whether text explicitly requests knowledge retrieval."""
+        """Return whether text explicitly requests retrieval or ingestion."""
         stripped = text.strip().lower()
         if not stripped:
             return False
@@ -204,12 +208,24 @@ class SupervisorAgent:
         )
         if any(phrase in stripped for phrase in file_op_phrases):
             return False
+
+        ingestion_keywords = (
+            "ingest", "index", "learn", "remember", "scan",
+        )
+        ingestion_phrases = (
+            "read all", "process folder", "add to knowledge base",
+        )
         tokens = set(re.findall(r"[a-z]+", stripped))
+        if any(keyword in stripped for keyword in ingestion_keywords):
+            return True
+        if any(phrase in stripped for phrase in ingestion_phrases):
+            return True
+
         if tokens.intersection({"search", "find", "recall"}):
             return True
         rag_phrases = (
             "what does my file say", "what does the file say",
-            "what do my files say",
+            "what do my files say", "what is in", "what's in",
         )
         return any(phrase in stripped for phrase in rag_phrases)
 

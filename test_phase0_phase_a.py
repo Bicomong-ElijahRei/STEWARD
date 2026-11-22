@@ -2690,7 +2690,6 @@ class RAGTests(unittest.TestCase):
             persist_directory=self.index_path,
             collection_name="steward_docs",
             embedding_function=self.LexicalEmbeddingFunction(),
-            max_search_distance=1.0,
         )
         self.addCleanup(self.temp_dir.cleanup)
         self.addCleanup(self.agent.close)
@@ -2722,6 +2721,17 @@ class RAGTests(unittest.TestCase):
         results = self.agent.search("zzzqqxyv unrelated gibberish")
 
         self.assertTrue(not results or results[0]["distance"] >= 1.0)
+
+    def test_natural_language_search_returns_matching_document(self):
+        source = os.path.join(self.temp_dir.name, "custom_report.txt")
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write("CUSTOM_REPORT_E2E_TOKEN confirms semantic retrieval works.")
+        self.agent.ingest_file(source)
+
+        results = self.agent.search("what is in the custom report", n_results=5)
+
+        self.assertTrue(results)
+        self.assertIn("CUSTOM_REPORT_E2E_TOKEN", results[0]["content"])
 
     def test_emptying_file_removes_stale_chunks(self):
         source = os.path.join(self.temp_dir.name, "emptied.txt")
@@ -2812,14 +2822,46 @@ class RAGTests(unittest.TestCase):
         with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
             chat.send_chat()
 
-        chat.rag_agent.search.assert_called_once_with("STEWARD RAG TEST")
+        chat.rag_agent.search.assert_called_once_with("semantic search", n_results=5)
         for callback in callbacks:
             callback()
         rendered = [
             call.args[1] for call in chat._add_bubble.call_args_list
             if call.args and call.args[0] == "STEWARD"
         ]
-        self.assertTrue(any("STEWARD_RAG_TEST_TOKEN_123" in message for message in rendered))
+        self.assertIn("Scout is searching the archives...", rendered)
+        scout_bubble = chat._add_bubble.return_value
+        scout_bubble.set_message.assert_called_once()
+        self.assertIn(
+            "STEWARD_RAG_TEST_TOKEN_123",
+            scout_bubble.set_message.call_args.args[0],
+        )
+
+    def test_chat_scout_ingests_sorted_folder(self):
+        with tempfile.TemporaryDirectory(prefix="steward_chat_rag_") as tmp:
+            chat, callbacks = ChatWorkflowTests().make_chat(
+                routing={"agent": AGENT_RAG, "action": "ingest the Sorted folder"}
+            )
+            chat.file_agent.root_path = tmp
+            chat.rag_agent = Mock()
+            chat.rag_agent.ingest_directory.return_value = {
+                "files_processed": 2,
+                "chunks_created": 7,
+            }
+
+            with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+                chat.send_chat()
+
+            chat.rag_agent.ingest_directory.assert_called_once_with(
+                os.path.join(tmp, "Sorted")
+            )
+            for callback in callbacks:
+                callback()
+            scout_bubble = chat._add_bubble.return_value
+            self.assertIn(
+                "Ingested 2 files, created 7 chunks.",
+                scout_bubble.set_message.call_args.args[0],
+            )
 
     def test_default_rag_index_is_created_on_first_scout_query(self):
         with tempfile.TemporaryDirectory(prefix="steward_rag_default_") as tmp:
@@ -2840,6 +2882,7 @@ class RAGTests(unittest.TestCase):
             "find information about taxes",
             "recall the project decision",
             "what does my file say about launch dates",
+            "what is in the custom report",
         ):
             with self.subTest(phrase=phrase):
                 manager = Mock()
@@ -2852,6 +2895,25 @@ class RAGTests(unittest.TestCase):
                 supervisor = SupervisorAgent(manager)
                 result = supervisor.route(phrase)
                 self.assertEqual(result["agent"], AGENT_RAG)
+
+    def test_supervisor_routes_ingestion_phrases_to_rag(self):
+        for phrase in (
+            "ingest the Sorted folder",
+            "index the Sorted folder",
+            "learn these documents",
+            "remember this document",
+            "scan the documents",
+            "read all documents",
+            "process folder documents",
+            "add to knowledge base",
+        ):
+            with self.subTest(phrase=phrase):
+                manager = Mock()
+                supervisor = SupervisorAgent(manager)
+                result = supervisor.route(phrase)
+                self.assertEqual(result["agent"], AGENT_RAG)
+                self.assertEqual(result["action"], phrase)
+                manager.route_request.assert_not_called()
 
 
 class MigrationCLITests(unittest.TestCase):

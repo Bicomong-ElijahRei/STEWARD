@@ -11,6 +11,7 @@ import json
 import threading
 import logging
 import math
+import os
 import re
 
 from agents.supervisor import (
@@ -488,17 +489,69 @@ class ChatTab(ctk.CTkFrame):
                     if self.live_feed:
                         self._safe_after(lambda: self.live_feed.agent_done("Click"))
                 elif agent_type == AGENT_RAG:
-                    try:
-                        results = self._get_rag_agent().search(user_msg)
-                        rag_message = self._format_rag_results(user_msg, results)
-                    except Exception as exc:
-                        logger.error("[Chat] Scout search failed: %s", exc)
-                        rag_message = f"Scout could not search the knowledge base: {exc}"
-                    self._safe_after(lambda: self._add_bubble(
-                        "STEWARD", rag_message, NEON_BLUE, align="left",
+                    action_lower = action.lower()
+                    is_ingest = any(kw in action_lower for kw in (
+                        "ingest", "index", "learn", "remember", "scan",
+                        "process", "read all", "add to knowledge base",
                     ))
+
+                    scout_bubble = [None]
+                    if is_ingest:
+                        self._safe_after(lambda: scout_bubble.__setitem__(0, self._add_bubble(
+                            "STEWARD", "Scout is ingesting documents...", NEON_BLUE,
+                            align="left", state="THINKING",
+                        )))
+                    else:
+                        self._safe_after(lambda: scout_bubble.__setitem__(0, self._add_bubble(
+                            "STEWARD", "Scout is searching the archives...", NEON_BLUE,
+                            align="left", state="THINKING",
+                        )))
+
+                    def finish_scout(message, state="DONE"):
+                        bubble = scout_bubble[0]
+                        if bubble:
+                            bubble.set_message(message)
+                            bubble.update_state(state)
+                        else:
+                            self._add_bubble(
+                                "STEWARD", message, NEON_BLUE, align="left", state=state,
+                            )
+
+                    try:
+                        rag_agent = self._get_rag_agent()
+                        if is_ingest:
+                            folder_name = "Incoming" if "incoming" in action_lower else "Sorted"
+                            folder_path = os.path.join(self.file_agent.root_path, folder_name)
+                            result = rag_agent.ingest_directory(folder_path)
+                            msg = (
+                                f"Ingested {result.get('files_processed', 0)} files, "
+                                f"created {result.get('chunks_created', 0)} chunks."
+                            )
+                            self._safe_after(lambda: finish_scout(msg))
+                        else:
+                            results = rag_agent.search(action, n_results=5)
+                            if results:
+                                formatted = "🔍 **Search Results:**\n\n"
+                                for index, result in enumerate(results, 1):
+                                    source = str(result.get("source", "Unknown"))
+                                    source = source.replace("\\", "/").rsplit("/", 1)[-1]
+                                    content = str(result.get("content", ""))[:200]
+                                    formatted += (
+                                        f"{index}. **{source}**\n{content}...\n\n"
+                                    )
+                                self._safe_after(lambda: finish_scout(formatted))
+                            else:
+                                self._safe_after(lambda: finish_scout(
+                                    "No relevant documents found in the knowledge base."
+                                ))
+                    except Exception as exc:
+                        logger.error("RAG error: %s", exc)
+                        self._safe_after(lambda: finish_scout(f"RAG Error: {exc}", "ERROR"))
+
                     if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done("Scout"))
+                        self._safe_after(lambda: self.live_feed.agent_done(
+                            "Scout", "Ingestion/Search complete"
+                        ))
                 elif agent_type == AGENT_CODING:
                     self._safe_after(lambda: self._add_bubble(
                         "STEWARD",

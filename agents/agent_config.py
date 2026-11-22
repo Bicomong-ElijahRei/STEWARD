@@ -39,7 +39,7 @@ AGENT_CONFIG = {
         "role": "Browser / RAG",
         "color": NEON_BLUE,
         "emoji": "🔍",
-        "description": "Semantic search over documents and knowledge base.",
+        "description": "Document ingestion and semantic search over the knowledge base.",
         "status_idle": "Indexing knowledge…",
         "status_working": "Searching the archives…",
         "status_done": "Search complete.",

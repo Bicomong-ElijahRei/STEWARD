@@ -20,7 +20,9 @@ class RAGAgent:
     COLLECTION_NAME = "steward_docs"
     CHUNK_SIZE = 500
     CHUNK_OVERLAP = 50
-    MAX_SEARCH_DISTANCE = 1.0
+    # Natural-language questions can have a cosine distance above 1.0 even
+    # when they contain the document's distinguishing terms.
+    MAX_SEARCH_DISTANCE = 1.5
     SUPPORTED_EXTENSIONS = frozenset({".txt", ".pdf", ".docx"})
     MAX_ADD_BATCH = 1000
 
@@ -265,6 +267,9 @@ class RAGAgent:
                     errors.append({"source": path, "error": str(exc)})
                     logger.warning("RAGAgent: Failed to ingest %s: %s", path, exc)
         return {
+            "files_processed": ingested_files,
+            "chunks_created": ingested_chunks,
+            # Keep the original keys as aliases for existing callers.
             "ingested_files": ingested_files,
             "ingested_chunks": ingested_chunks,
             "errors": errors,
