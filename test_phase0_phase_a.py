@@ -1023,6 +1023,7 @@ class ChatWorkflowTests(unittest.TestCase):
             chat.supervisor.route.side_effect = route_error
         chat.file_agent = Mock()
         chat._report_provider = Mock(return_value="")
+        chat.handoff_canvas = Mock()  # Added for B2 handoff animation
         callbacks = []
         chat.after = Mock(
             side_effect=lambda delay, callback: callbacks.append(callback)
@@ -1877,6 +1878,6 @@ class PhaseBAnimTests(unittest.TestCase):
         self.assertEqual(lerp_color("#000000", "#FFFFFF", 0.0), "#000000")
         self.assertEqual(lerp_color("#000000", "#FFFFFF", 1.0), "#FFFFFF")
         self.assertEqual(lerp_color("#2A2A35", "#2A2A35", 0.5), "#2A2A35")
-        
+
 if __name__ == "__main__":
     unittest.main()
