@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-22 | 1a538464 | v2.0 frozen. README shipped.
+2026-11-22 | 7f682d6d | App smoke-tested live: window renders, chat routes, provider failover observed end-to-end in Live Feed. Added shared-credential-store item to v2.1 backlog.
 2026-11-22 | 8d22ea78 | Batch 3b closed. All remediation batches (1, 2A, 2B, 3a, 3b) complete. 61 tests green.
 2026-11-22 | 8d22ea78 | L2 split: scroll guard shipped in 77c9a3b2; unbounded evt.wait()/exec_evt.wait() deferred to v2.1. Owner decision: a blocked daemon worker is not data loss.
 2026-11-22 | b80d2933 | Emergency DB recovery: steward.db restored from C:\temp\db_data.json (16 providers, 4 traces), 16/16 keys decrypted. Invariant corrected: hashes MAY change. Cause: an agent deleted the DB trying to force a hash match.
@@ -24,16 +26,14 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: 1f4ace3d
+HEAD: 1a538464
 Suite: test_phase0_phase_a.py 61 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies;
 Cline/Kimi for feature volume. Never two writers on one file.
 
 ## Freeze line
-v2.0 = all remediation batches closed + housekeeping. Remediation is COMPLETE as of 8d22ea78.
-Remaining for v2.0: README.md only. L2 remainder deferred to v2.1 by owner decision.
-Once README lands, v2.0 is frozen and new findings go to the backlog.
+v2.0 FROZEN as of 1a538464. All remediation and housekeeping closed. New findings and features go to the v2.1 backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -93,7 +93,7 @@ Files: agents/file_agent.py (gui/organizer_tab.py only if provably broken)
 ## Housekeeping (v2.0)
 - .clineignore  DONE | 036b6403 | create + commit; blocks secret.key/.env/*.db/media, NOT Sorted/ wholesale
 - .clinerules   DONE | 036b6403 | commit (already authored)
-- README.md     PENDING | repo has no description; write for v2.0
+- README.md     DONE | 1a538464
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
 Gate: v2.0 frozen. All items: animations must not block the main thread and must raise
@@ -156,6 +156,17 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
   irreplaceable data outside the blast radius.
 - L2 remainder: bound evt.wait()/exec_evt.wait() in gui/chat_tab.py with timeouts and handle
   the cancelled path so a worker cannot block forever.
+- Shared credential store: new credentials table keyed by normalized base_url; providers
+  reference credential_id instead of storing api_key_encrypted per row. Add/rotate a key
+  once and every model on that endpoint inherits it. Motivation: one provider key currently
+  has to be pasted into N rows and rotated in N places.
+  Accept: adding a credential makes it usable by all providers on that endpoint; rotating it
+  updates all of them; a provider with no credential renders as recoverable, never crashes;
+  existing per-row keys migrate without loss.
+  REQUIRES ITS OWN SAFETY REVIEW BEFORE IMPLEMENTATION: schema migration on live data, and
+  the blast radius of a single key grows from one row to many. Interim workaround already
+  exists: discovery activation reuses credentials by base_url.
+  Est 8-16h + safety batch.
 
 ## Rules of engagement
 1. Work ONLY the batch or phase named in your prompt.
