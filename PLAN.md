@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 7d9d25c6 | v2.4 compatibility gate: removed unsupported CTkOptionMenu hover_color for CustomTkinter 5.2.2, strengthened the scheduled-scan UI regression check, and verified a clean bounded GUI startup; 175/175 unit tests green.
 2026-11-23 | 37f03ba2 | v2.4 Hierarchical Swarm & Scheduling: added readable plain-text Markdown chat rendering, bounded Cortex-to-specialist delegation with failure isolation and Live Feed observability, and restart-persistent recurring file scans with Organizer controls; 175/175 unit tests green.
 2026-11-23 | f1d98141 | P2 Learning Module: added deterministic priority-ordered rules.yaml categorization, pre-LLM Foldy bypass, manual override learning, Organizer rule display, and `[Rule]` chat labeling; 153/153 unit tests green.
 2026-11-23 | e3ae8871 | Phase C5 RAG integration: persistent ChromaDB ingestion/chunking/embedding/retrieval, source-change replacement, recursive document ingestion, deterministic Scout routing, and Chat search results; 138/138 unit tests green.
@@ -41,16 +42,16 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 37f03ba2 (v2.4 Hierarchical Swarm & Scheduling)
+Implementation baseline: 7d9d25c6 (v2.4 Hierarchical Swarm & Scheduling)
 Suite: 175/175 unit tests green
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
-- v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2 | Markdown chat rendering,
-  bounded observable Cortex delegation, and persistent recurring file scans. Proof:
-  MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests; 175/175
-  unit tests green.
+- v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2, 7d9d25c6 | Markdown chat
+  rendering, bounded observable Cortex delegation, and persistent recurring file scans.
+  Proof: MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests;
+  175/175 unit tests green; compile and bounded GUI startup gates passed.
 - P2 Learning Module (rules.yaml) — DONE | f1d98141 | deterministic
   priority-ordered filename rules load from and persist to YAML; known patterns bypass
   the Foldy LLM categorization request; rule targets are sanitized before folder
@@ -202,7 +203,7 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - D2  BACKLOG | Screen-aware automation: screenshot -> vision analysis -> action.
       Accept: correct action on a controlled target; refuses ambiguous targets.
       Est 15-30h + safety batch.
-- D3  DONE | 37f03ba2 | Scheduled agents: an instance-local background scanner runs the
+- D3  DONE | 37f03ba2, 7d9d25c6 | Scheduled agents: an instance-local background scanner runs the
       real file categorization/move path at configurable 15-minute, 30-minute, 1-hour,
       or 6-hour intervals. Accept: task runs on schedule, preference and last-run state
       survive restart in AppData, cancellation is clean, and shutdown stops the worker.
