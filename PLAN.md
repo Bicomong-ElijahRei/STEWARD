@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 2b9e5031 | Snoop & Fix pass 5: closed credential/provider lifecycle gaps, marked bounded file previews, hardened category sanitization, added bounded supervisor FILE_OP follow-up context, invalidated stale organizer previews, exposed live-feed clearing, and widened responsive constellation bounds; 127/127 unit tests green.
 2026-11-23 | 58ac00f4 | Snoop & Fix pass 4: daemon now has identity-aware dedup, 4 workers/32 outstanding files, stop-responsive backpressure, and daemon-thread lifecycle; migration preserves valid shared links and bounds confirmation; 115/115 unit tests green.
 2026-11-23 | 049891af | Snoop & Fix pass 3: bounded daemon concurrency, hardened migration wrapper/workflow, and regression coverage; 113/113 unit tests green.
 2026-11-23 | 24da229e | Snoop & Fix pass 2: GUI rendering/lifecycle hardening and organizer flow fixes; 106/106 unit tests green.
@@ -37,8 +38,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 58ac00f4 (Snoop & Fix pass 4)
-Suite: test_phase0_phase_a.py 115 green; test_validator.py 5/5
+Implementation baseline: 2b9e5031 (Snoop & Fix pass 5)
+Suite: test_phase0_phase_a.py 127 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
@@ -134,7 +135,7 @@ CLI coverage are committed. Snoop & Fix pass 4 preserves already-valid shared cr
 links during idempotent migration and bounds live terminal confirmation to 300 seconds;
 115/115 unit tests and 5/5 validator checks green.
 
-## SNOOP & FIX — four-pass quality sweep (CLOSED)
+## SNOOP & FIX — five-pass quality sweep (CLOSED)
 - Pass 1 DONE | a11d14f5 | Core routing, sandbox, credential recovery, and helper hardening; 99/99 green.
 - Pass 2 DONE | 24da229e | GUI rendering/lifecycle and organizer flow hardening; 106/106 green.
 - Pass 3 DONE | 049891af | Bounded daemon workers/pending files, explicit daemon stop, guarded migration
@@ -142,6 +143,9 @@ links during idempotent migration and bounds live terminal confirmation to 300 s
 - Pass 4 DONE | 58ac00f4 | Identity-aware recreated-path processing, daemon-thread lifecycle that cannot
   hold process exit, total outstanding-file invariant, shared-link preservation, bounded migration
   confirmation, and documentation reconciliation; 115/115 green.
+- Pass 5 DONE | 2b9e5031 | Credential/provider deletion lifecycle, explicit bounded-preview markers,
+  robust category sanitization, bounded supervisor FILE_OP follow-up context, organizer preview
+  invalidation, visible live-feed clearing, and responsive constellation bounds; 127/127 green.
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
 Gate: v2.0 frozen. All items: animations must not block the main thread and must raise
@@ -186,8 +190,8 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       Est 10-20h + safety batch.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
-- Conversation memory: supervisor must retain last unresolved FILE_OP intent so short
-  follow-ups ("incoming", "by type") continue the task. Est 6-12h.
+- Conversation memory DONE | 2b9e5031 | Supervisor retains bounded instance-local context and the
+  latest FILE_OP intent, merging only short noun-like follow-ups ("incoming", "by type").
 - pytest migration of the suite
 - rules.yaml override learner (learn from user corrections)
 - Windows installer / packaging
