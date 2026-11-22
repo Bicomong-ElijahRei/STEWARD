@@ -17,7 +17,7 @@ stores providers/usage/traces. A watchdog daemon (`agent/daemon.py`) watches a f
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
-- `agent/daemon.py`      watchdog handler; calls FileAgent.categorise_file
+- `agent/daemon.py`      watchdog handler; identity-aware dedup + bounded daemon workers; calls FileAgent.categorise_file
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent, passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring
 - `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop
@@ -44,6 +44,16 @@ File op approval: run() stores deep-copied parsed plan + uuid4 plan id under _pl
 - 429 -> cooldown_until from Retry-After, record_usage, prefer another key on SAME endpoint
 - 401/403 -> is_active=0. 5xx -> failure_count++, >3 -> 5 min cooldown
 - Success resets failure_count/cooldown; injects `_steward` {provider, model, agent_name, failovers}
+- Provider HTTP calls have a 30-second default timeout, so an in-flight daemon request cannot
+  hold process exit indefinitely.
+
+## Daemon lifecycle
+- `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
+  a deleted/recreated path is eligible for processing again.
+- Four daemon worker threads consume a bounded queue; at most 32 files are outstanding
+  (queued or active). Queue admission uses timed, stop-responsive backpressure.
+- `stop()` prevents new work, discards queued files, and joins workers briefly. Workers are
+  daemon threads, so an active provider call cannot delay interpreter exit.
 
 ## Known-open issues (ledger)
 Batch 2A: H5 router skips a candidate + double-hits the promoted one (total failure possible
@@ -57,7 +67,8 @@ Batch 2B: H6 undo marks delete/non-empty/unknown as undone + redo is FIFO; M6 lo
 Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file hash,
   M8 organizer builds widgets on worker thread, N6 daemon dest_base vs hardcoded roots,
   L2 unguarded scroll + unbounded waits, L3 shutdown cross-thread, L4 tracked pycache/.vscode/
-  Sorted media incl. large .mkv, L5 init_db key_path + close() singleton.
+  Sorted media incl. large .mkv, L5 init_db key_path + close() singleton. The later Snoop & Fix
+  passes closed the daemon concurrency/lifecycle gaps and bounded GUI approval waits.
 
 ## Environment gotchas (cost a whole session once — do not repeat)
 - PowerShell 5.1: `&&` invalid; `rg` and `tail` do not exist; pytest NOT installed (use unittest)
@@ -69,10 +80,19 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_validator.py is standalone: `python test_validator.py`
 
 ## Tests
-- test_phase0_phase_a.py — 34 tests. Run: `python -m unittest discover -v`
+- test_phase0_phase_a.py — 115 tests. Run: `python -m unittest discover -v`
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
+
+## Shared-credential migration
+- Preferred CLI: `tools/migrate_live.py`; dry-run is the default and operates only on a
+  temporary SQLite copy.
+- Live execute/rollback requires explicit confirmation (300-second timeout), then creates and
+  verifies a persistent database/key/operation-log backup set with a SHA-256 manifest.
+- Post-flight validation checks integrity, provider count, and decryptability of every linked
+  provider; validation failure triggers logical rollback. `tools/run_migration.py` is only a
+  compatibility wrapper around this guarded workflow.
 
 ## Gates (each as its own command)
 python -m unittest discover -v

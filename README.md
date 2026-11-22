@@ -8,6 +8,8 @@ preview, explicit approval, and undo/redo.
 - File operations: preview a plan, approve it by ID, execute exactly the approved plan.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
+  Deduplication is filesystem-identity-aware, concurrency is capped at 4 workers and 32
+  outstanding files, and stopping the daemon cancels queued work without holding process exit.
 - API Hub: add/verify/discover providers, bind them to agent roles, enable/disable.
 - Multi-provider routing with latency-based selection, 429 key failover on the same
   endpoint, 401/403 deactivation, 5xx cooldowns, and live failover visualization.
@@ -39,18 +41,22 @@ run. Both are gitignored — back them up, they are not recoverable from the rep
 python -m unittest discover -v
 python test_validator.py
 ```
-61 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo
-semantics, credential recovery, and GUI threading/lifecycle.
+115 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo
+semantics, credential recovery, migration safety, daemon concurrency, and GUI threading/lifecycle.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and the two critical request paths.
 See PLAN.md for scope, status, and the roadmap.
+See docs/MIGRATION_GUIDE.md for the guarded shared-credential migration workflow.
+Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires explicit
+confirmation and a verified database/key/operation-log backup set.
 
 ## Known limitations
 - Chat handles file-operation intents. Click (PC control), Scout (RAG), and Syntax (coding)
   are registered personas but not implemented; general conversation falls through to a
   canned response.
-- Confirmation dialog waits are unbounded; an unanswered dialog blocks that worker thread.
+- GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
+  is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
 - Production data lives in the repo working directory; relocating it to %APPDATA% is planned.
 - No packaging/installer yet.

@@ -17,6 +17,10 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 58ac00f4 | Snoop & Fix pass 4: daemon now has identity-aware dedup, 4 workers/32 outstanding files, stop-responsive backpressure, and daemon-thread lifecycle; migration preserves valid shared links and bounds confirmation; 115/115 unit tests green.
+2026-11-23 | 049891af | Snoop & Fix pass 3: bounded daemon concurrency, hardened migration wrapper/workflow, and regression coverage; 113/113 unit tests green.
+2026-11-23 | 24da229e | Snoop & Fix pass 2: GUI rendering/lifecycle hardening and organizer flow fixes; 106/106 unit tests green.
+2026-11-23 | a11d14f5 | Snoop & Fix pass 1: routing, sandbox, credential recovery, and helper hardening; 99/99 unit tests green.
 2026-11-22 | 016d336d | Reconciled state: fixed helpers.py imports, confirmed the single categorise_file and test class definitions, added duplicate-definition regression guards, and verified 90/90 unit tests green; Phase B 5/5 items done.
 2026-11-22 | d2687aec | B3 Live Constellation View implemented with stable responsive layout, live agent states, SafeTick cleanup, and 88/88 unit tests green.
 2026-11-22 | 2df98d09 | tools/migrate_live.py added; guarded live dry-run/execute/rollback with verified backups; 4/4 CLI tests green.
@@ -33,8 +37,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-HEAD: 016d336d (reconciled source and test state)
-Suite: test_phase0_phase_a.py 90 green; test_validator.py 5/5
+Implementation baseline: 58ac00f4 (Snoop & Fix pass 4)
+Suite: test_phase0_phase_a.py 115 green; test_validator.py 5/5
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
@@ -126,7 +130,18 @@ key (Fernet nonces make raw blobs distinct) and is idempotent; get_credential_by
 credentials linked to active providers ordered by speed_score_ms; fail-fast when DB exists
 without secret.key is permanent policy.
 Closure: shared credential store, operator migration tools, migration guide, and isolated
-CLI coverage are committed; 85/85 unit tests and 5/5 validator checks green.
+CLI coverage are committed. Snoop & Fix pass 4 preserves already-valid shared credential
+links during idempotent migration and bounds live terminal confirmation to 300 seconds;
+115/115 unit tests and 5/5 validator checks green.
+
+## SNOOP & FIX — four-pass quality sweep (CLOSED)
+- Pass 1 DONE | a11d14f5 | Core routing, sandbox, credential recovery, and helper hardening; 99/99 green.
+- Pass 2 DONE | 24da229e | GUI rendering/lifecycle and organizer flow hardening; 106/106 green.
+- Pass 3 DONE | 049891af | Bounded daemon workers/pending files, explicit daemon stop, guarded migration
+  workflow, and migration safety regressions; 113/113 green.
+- Pass 4 DONE | 58ac00f4 | Identity-aware recreated-path processing, daemon-thread lifecycle that cannot
+  hold process exit, total outstanding-file invariant, shared-link preservation, bounded migration
+  confirmation, and documentation reconciliation; 115/115 green.
 
 ## PHASE B — Cyber-Kawaii Experience (WHAT only; visual, needs your eyes)
 Gate: v2.0 frozen. All items: animations must not block the main thread and must raise

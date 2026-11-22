@@ -7,7 +7,8 @@ credential migration groups non-local providers by normalized endpoint and by
 their decrypted key, creates canonical rows in `credentials`, and links each
 provider through `credential_id`. Providers sharing an endpoint and key share a
 credential; different keys remain separate. Local, keyless, and undecryptable
-providers are not linked.
+providers are not linked. Providers already linked to a valid shared credential keep
+that link, including when their legacy encrypted column is empty.
 
 Legacy encrypted provider keys remain in place. Logical rollback copies the
 linked credential ciphertext back to each legacy provider column and clears all
@@ -50,7 +51,8 @@ ends with `DRY RUN complete; live steward.db was not modified.`
 python tools/migrate_live.py --execute
 ```
 
-At an interactive terminal, type `MIGRATE` exactly when prompted. In a recognized
+At an interactive terminal, type `MIGRATE` exactly when prompted. Confirmation is
+bounded to 300 seconds; a timeout aborts before backup or mutation. In a recognized
 CI environment (`CI` or another common CI variable), the prompt is skipped;
 non-interactive non-CI execution is refused.
 
@@ -65,9 +67,9 @@ empty alternate directory:
 python tools/migrate_live.py --execute --backup-dir "D:\STEWARD-backups"
 ```
 
-After migration the tool checks SQLite integrity, unchanged provider count,
-credential existence for a non-empty database, and successful decryption for
-every linked provider. Validation failure triggers automatic logical rollback,
+After migration the tool checks SQLite integrity, unchanged provider count, and
+successful decryption for every linked provider. The migration itself preserves
+existing valid shared links. Validation failure triggers automatic logical rollback,
 returns a non-zero exit code, and preserves the backup set.
 
 ### 3. Roll back logically (optional)
@@ -76,8 +78,9 @@ returns a non-zero exit code, and preserves the backup set.
 python tools/migrate_live.py --rollback
 ```
 
-Type `ROLLBACK` when prompted. Rollback is also a live mutation, so it creates a
-new backup set first and applies the same CI/interactive rules. Use a different
+Type `ROLLBACK` when prompted. Rollback confirmation is also bounded to 300
+seconds. Rollback is a live mutation, so it creates a new backup set first and
+applies the same CI/interactive rules. Use a different
 `--backup-dir` if a same-second backup name would collide. Successful rollback
 checks integrity, provider count, NULL `credential_id` values, and legacy-key
 decryption.
@@ -94,6 +97,9 @@ decryption.
 
 The three mode flags are mutually exclusive. Success returns exit code 0;
 pre-flight, confirmation, backup, migration, or validation failures return 1.
+`tools/run_migration.py` is retained as a compatibility wrapper: its `--dry-run`
+mode delegates to the same guarded dry-run, while `--live` delegates to the same
+confirmed, backed-up execute workflow.
 
 ## Restore a physical backup after a failure
 
