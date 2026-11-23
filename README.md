@@ -93,7 +93,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-306 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+307 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval, GUI lifecycle, no-overwrite filesystem publication,

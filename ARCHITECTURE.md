@@ -108,9 +108,10 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
   document RAG and clearing document RAG does not clear code context.
 - A root is explicit. Traversal uses realpath/abspath/commonpath/normcase and refuses
-  symlink/junction targets outside the selected root. `.git`, caches, `venv`,
-  `node_modules`, `rag_index`, `media`, `.env*`, `*.key`, `*.db`, `secret.key`, and
-  `steward_operations.json` are denied.
+  symlink/junction targets outside the selected root. The selected root's own basename is
+  also denied when it is `.git`, a cache directory, `venv`, `node_modules`, `rag_index`, or
+  `media`. `.env*`, `*.key`, `*.db`, `secret.key`, and `steward_operations.json` remain
+  denied by filename rules.
 - Default bounds are 2,000 files, 256 KiB per file, 2,400-character chunks, and 240-character
   overlap. The report states truncation and file-limit conditions deterministically.
 - Python is chunked by top-level AST function/class boundaries with overlapping-window
@@ -189,7 +190,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
 - test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
 - test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
-- Total discovery count is 306
+- Total discovery count is 307
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

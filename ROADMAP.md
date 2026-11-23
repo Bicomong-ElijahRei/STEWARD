@@ -113,7 +113,8 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   - **Memory:** `Scout` uses persistent ChromaDB ingestion and semantic retrieval over indexed documents with bounded results and source citations.
 - [x] **Codebase-scale Semantic Context (symbol retrieval):**
   - **Memory:** A separate persistent `steward_code` collection indexes an explicitly selected project root with bounded, read-only symbol chunks and supplies path/line-aware context to Syntax.
-  - **Safety:** Indexing denies secrets and dependency caches, refuses escaping symlinks/junctions, enforces file/byte limits, and never executes or modifies source.
+  - **Safety:** Indexing denies secrets and dependency caches, refuses a selected root whose own basename is in `DENIED_DIRECTORIES`, refuses escaping symlinks/junctions, enforces file/byte limits, and never executes or modifies source.
+  - **Implementation:** Local commit `8e8d4f34`; not pushed by this change.
 - [ ] **Dependency-graph Context:**
   - **Memory:** Model imports and calls to expand or rerank repository-wide context. This remains explicit Phase C7 backlog rather than an implied feature of symbol retrieval.
 

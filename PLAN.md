@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-24 | 8e8d4f34 | C6 code-index review hardening: deny selected roots whose own basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules. | Close the C6 review finding without weakening existing secret-path exclusions.
 2026-11-24 | a96eb888 | Phase C6 code context: added a bounded, read-only persistent CODE collection with explicit-root traversal, denylisting, symbol-aware chunks, hash-based incremental replacement, scoped retrieval, GUI lifecycle controls, bounded Syntax prompt context, and 281/281 unit tests green. | Ground Syntax in repository code without granting code execution or mutation capability.
 2026-11-24 | 1c66ecb9 | Phase C2 meta-prompting: added schema-validated Cortex plan artifacts, explicit ID-bound approval, and a separate text-only Syntax request; architect and builder remain text-only and automated application remains C3. | Keep plan creation reviewable without implying file mutation capability.
 2026-11-23 | eaee322b | FS-S5 closure: journal serialization is implemented and pushed; closure state, implemented SHAs, freeze line, and push metadata are reconciled. | Keep the tracked plan aligned with the verified Git closure baseline and prevent stale local/not-pushed claims.
@@ -58,9 +59,9 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: Phase C2 meta-prompting commit 1c66ecb9
-Suite: 306/306 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation and this documentation reconciliation are local and await human push; no push is claimed.
+Implementation baseline: Phase C2 meta-prompting commit 1c66ecb9; C6 root hardening commit 8e8d4f34
+Suite: 307/307 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation, C6 root hardening, and documentation reconciliation are local and await human push; the human push updates origin, and the next batch reconciles HEAD. No push is claimed.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -84,11 +85,13 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
   request. Targets are informational and never reach FileAgent; no file changes are
   applied by either step. Proof: BlueprintValidationTests, PlanPersistenceTests,
   PlanReviewGateTests, PlanGuiLifecycleTests; 306/306 unit tests green.
-- Phase C6 Codebase-scale semantic context — DONE | a96eb888 | Separate persistent
-  `steward_code` collection provides explicit-root, bounded, read-only symbol retrieval for
-  Syntax, with denylisting, containment, incremental replacement, GUI lifecycle controls,
-  and provider disclosure. Proof: CodeIndexAgentTests, SyntaxCodeContextTests,
-  ChatCodeIndexLifecycleTests; 281/281 unit tests green.
+- Phase C6 Codebase-scale semantic context — DONE | a96eb888, 8e8d4f34 | Separate
+  persistent `steward_code` collection provides explicit-root, bounded, read-only symbol
+  retrieval for Syntax, with denylisting, containment, incremental replacement, GUI lifecycle
+  controls, and provider disclosure. Review hardening refuses a selected root whose own
+  basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules.
+  Proof: CodeIndexAgentTests, SyntaxCodeContextTests, and ChatCodeIndexLifecycleTests;
+  307/307 unit tests green.
 - v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2, 7d9d25c6 | Markdown chat
   rendering, bounded observable Cortex delegation, and persistent recurring file scans.
   Proof: MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests;
@@ -309,8 +312,10 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       file-write, or code-execution capability is added. Accept: a known symbol retrieves
       with path/lines, unchanged files are idempotent, changed/deleted files replace prior
       chunks, denied/escaping paths are never opened, clear-chat rejects stale index UI, and
-      provider/tool safety remains intact. Proof: CodeIndexAgentTests,
-      SyntaxCodeContextTests, and ChatCodeIndexLifecycleTests; 281/281 unit tests green.
+      provider/tool safety remains intact. Review hardening also refuses a selected root
+      whose own basename is in `DENIED_DIRECTORIES` before traversal; filename secret
+      rules remain active. Proof: CodeIndexAgentTests, SyntaxCodeContextTests, and
+      ChatCodeIndexLifecycleTests; 307/307 unit tests green.
 - C7  BACKLOG | Dependency-graph modeling: build an explicit import/call graph and use it
       to expand or rerank repository-wide context. Accept: graph edges are derived without
       executing code, bounded traversal has deterministic limits, and retrieval tests prove
