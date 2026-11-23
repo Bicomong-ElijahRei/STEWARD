@@ -19,6 +19,7 @@ file categorization.
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
+- `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
@@ -120,10 +121,15 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
   source is removed only after destination publication succeeds. Rename and undo/redo use the
   same primitive rather than `os.rename`/`shutil.move` overwrite behavior.
 - Operation-history writes use a unique same-directory temporary file, flush, `fsync`, and
-  atomic replacement; non-Windows hosts also fsync the containing directory. A process-local
-  lock and per-entry revisions serialize threads/agents sharing a log in one process and reject
-  stale writers. They do not synchronize separate processes; no single-instance guarantee
-  currently prevents two STEWARD processes from sharing the AppData operation log.
+  atomic replacement; non-Windows hosts also fsync the containing directory. A persistent
+  `<operation-log>.lock` sidecar provides an OS-managed exclusive lock (`msvcrt.locking` on
+  Windows, `fcntl.flock` on POSIX), while a keyed in-process `RLock` preserves thread safety.
+  The default acquisition timeout is 10 seconds; timeout or lock API failure fails closed before
+  mutation. The sidecar is never deleted, and the OS releases its lock on normal exit or process
+  termination. The cross-process lock covers the complete read/merge/revision-check/atomic-replace
+  section and the complete write-ahead mutation / undo-redo claim, filesystem action, and completion
+  lifecycle. Windows behavior is locally tested; the POSIX implementation is documented but not
+  locally tested on this Windows host.
 - Mutation intent is persisted before disk mutation and completion afterward. Interrupted
   intents/transitions reload as `uncertain` and block blind undo/redo. A published move/rename
   whose source removal fails records `failed` only after destination rollback is verified; if
@@ -141,7 +147,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_lifecycle_hardening.py — generation/epoch ownership regressions
 - test_appdata_migration.py — copy-only migration tests
 - test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
-- Total discovery count is 259
+- test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
+- Total discovery count is 266
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

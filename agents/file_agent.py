@@ -41,6 +41,10 @@ try:
 except ImportError:
     openpyxl = None
 
+from agent.journal_lock import (
+    JournalLockError,
+    operation_journal_lock,
+)
 from agent.tools import (
     move_file as _move_file,
     delete_file as _delete_file,
@@ -53,10 +57,6 @@ from agent.tools import (
 from core.router import APIManager
 
 logger = logging.getLogger(__name__)
-
-_JOURNAL_LOCKS_GUARD = threading.Lock()
-_JOURNAL_LOCKS = {}
-
 
 def migrate_legacy_operation_log(
     operation_log_path: str,
@@ -77,6 +77,7 @@ class FileAgent:
         get_app_data_dir(), "steward_operations.json"
     )
     OPERATION_LOG_PATH = DEFAULT_OPERATION_LOG_PATH
+    JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
 
     def __init__(
         self,
@@ -249,15 +250,47 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
     @contextmanager
     def _journal_process_lock(self):
-        """Serialize writers that share the same operation-log path."""
-        key = os.path.normcase(os.path.abspath(self.OPERATION_LOG_PATH))
-        with _JOURNAL_LOCKS_GUARD:
-            process_lock = _JOURNAL_LOCKS.setdefault(key, threading.RLock())
-        with process_lock:
+        """Serialize journal users across threads and processes."""
+        with operation_journal_lock(
+            self.OPERATION_LOG_PATH,
+            timeout=self.JOURNAL_LOCK_TIMEOUT_SECONDS,
+        ):
             yield
 
+    def _refresh_operation_log_from_disk(self) -> bool:
+        """Refresh durable history while the journal lock is held.
+
+        Returns ``True`` when an entry known to this agent changed on disk,
+        which makes a pending undo/redo claim stale. Local-only entries are
+        retained for compatibility with callers that supply in-memory history.
+        """
+        if not os.path.exists(self.OPERATION_LOG_PATH):
+            return False
+        previous = self._operation_log
+        disk_entries = self._load_operation_log()
+        local_by_id = {
+            entry.get("id"): entry
+            for entry in previous
+            if isinstance(entry, dict)
+        }
+        disk_by_id = {
+            entry.get("id"): entry
+            for entry in disk_entries
+            if isinstance(entry, dict)
+        }
+        changed = any(
+            entry_id in local_by_id and local_by_id[entry_id] != disk_entry
+            for entry_id, disk_entry in disk_by_id.items()
+        )
+        local_only = [
+            entry for entry in previous
+            if isinstance(entry, dict) and entry.get("id") not in disk_by_id
+        ]
+        self._operation_log = disk_entries + local_only
+        return changed
+
     def _merge_disk_log(self) -> List[Dict[str, Any]]:
-        """Merge entries written by another agent sharing this journal."""
+        """Return durable history, rejecting stale revisions of known entries."""
         if not os.path.exists(self.OPERATION_LOG_PATH):
             return list(self._operation_log)
         try:
@@ -270,19 +303,41 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         disk_by_id = {
             e.get("id"): e for e in disk_entries if isinstance(e, dict)
         }
-        for entry in self._operation_log:
-            disk_entry = disk_by_id.get(entry.get("id"))
-            if disk_entry and disk_entry.get("revision", 0) > entry.get("revision", 0):
-                raise RuntimeError(
-                    "Operation history was concurrently updated; refusing stale write."
-                )
         merged = dict(disk_by_id)
         for entry in self._operation_log:
-            merged[entry.get("id")] = entry
+            entry_id = entry.get("id")
+            disk_entry = disk_by_id.get(entry_id)
+            if disk_entry is None or entry.get("revision", 0) > disk_entry.get(
+                "revision", 0
+            ):
+                merged[entry_id] = entry
+            elif disk_entry.get("revision", 0) == entry.get("revision", 0):
+                disk_transition = disk_entry.get("transition")
+                disk_was_intent = (
+                    disk_entry.get("state") == "intent"
+                    or (
+                        isinstance(disk_transition, dict)
+                        and disk_transition.get("state") == "intent"
+                    )
+                )
+                local_is_recovered = entry.get("state") == "uncertain"
+                if disk_entry != entry and not (disk_was_intent and local_is_recovered):
+                    raise RuntimeError(
+                        "Operation history was concurrently updated; refusing "
+                        "a conflicting write."
+                    )
+                if disk_entry != entry:
+                    merged[entry_id] = entry
         return list(merged.values())
 
     def _save_operation_log(self):
         """Atomically persist the operation log, surfacing every failure."""
+        with self._journal_process_lock():
+            with self._lock:
+                self._save_operation_log_locked()
+
+    def _save_operation_log_locked(self):
+        """Persist the log while the caller holds both required locks."""
         directory = os.path.dirname(os.path.abspath(self.OPERATION_LOG_PATH))
         os.makedirs(directory, exist_ok=True)
         tmp_path = os.path.join(
@@ -290,20 +345,19 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             f".{os.path.basename(self.OPERATION_LOG_PATH)}.{os.getpid()}.{uuid.uuid4().hex}.tmp",
         )
         try:
-            with self._journal_process_lock():
-                merged = self._merge_disk_log()
-                with open(tmp_path, "x", encoding="utf-8") as f:
-                    json.dump(merged, f, indent=2, default=str)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, self.OPERATION_LOG_PATH)
-                self._operation_log = merged
-                if os.name != "nt":
-                    directory_fd = os.open(directory, os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+            merged = self._merge_disk_log()
+            with open(tmp_path, "x", encoding="utf-8") as f:
+                json.dump(merged, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.OPERATION_LOG_PATH)
+            self._operation_log = merged
+            if os.name != "nt":
+                directory_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         except Exception:
             try:
                 os.remove(tmp_path)
@@ -311,6 +365,27 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 pass
             logger.exception("Could not save operation log")
             raise
+
+    def _record_operation(
+        self,
+        operation: str,
+        source: str,
+        destination: Optional[str] = None,
+        result: str = "",
+        success: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Record a standalone operation without overwriting peer updates."""
+        with self._journal_process_lock():
+            self._refresh_operation_log_from_disk()
+            entry = self._new_operation_entry(
+                operation, source, destination, result, success
+            )
+            if metadata:
+                entry.update(metadata)
+            with self._lock:
+                self._operation_log.append(entry)
+            self._save_operation_log()
 
     def _new_operation_entry(
         self,
@@ -334,24 +409,6 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             "revision": 1,
         }
 
-    def _record_operation(
-        self,
-        operation: str,
-        source: str,
-        destination: Optional[str] = None,
-        result: str = "",
-        success: bool = True,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        entry = self._new_operation_entry(
-            operation, source, destination, result, success
-        )
-        if metadata:
-            entry.update(metadata)
-        with self._lock:
-            self._operation_log.append(entry)
-            self._save_operation_log()
-
     def _begin_mutation(
         self,
         operation: str,
@@ -365,12 +422,13 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             )
             entry["state"] = "intent"
             self._operation_log.append(entry)
-            try:
-                self._save_operation_log()
-            except Exception:
+        try:
+            self._save_operation_log()
+        except Exception:
+            with self._lock:
                 self._operation_log.pop()
-                raise
-            return entry
+            raise
+        return entry
 
     def _complete_mutation(
         self,
@@ -385,7 +443,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             entry["revision"] = entry.get("revision", 0) + 1
             if metadata:
                 entry.update(metadata)
-            self._save_operation_log()
+        self._save_operation_log()
 
     @staticmethod
     def _folder_ownership(paths: List[str]) -> List[Dict[str, Any]]:
@@ -410,6 +468,28 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         return ownership
 
     def _execute_mutation(
+        self,
+        func_name: str,
+        safe_args: Dict[str, Any],
+        operation: str,
+        source: str,
+        destination: Optional[str],
+        callback: Optional[Callable[..., str]] = None,
+    ) -> str:
+        """Run one mutation while holding the cross-process journal lock."""
+        try:
+            with self._journal_process_lock():
+                self._refresh_operation_log_from_disk()
+                return self._execute_mutation_locked(
+                    func_name, safe_args, operation, source, destination, callback
+                )
+        except JournalLockError as exc:
+            return (
+                "Error: operation was not started because the journal lock could "
+                f"not be acquired: {exc}"
+            )
+
+    def _execute_mutation_locked(
         self,
         func_name: str,
         safe_args: Dict[str, Any],
@@ -503,39 +583,40 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             previous = entry.get("transition")
             entry["transition"] = {"kind": kind, "state": "intent"}
             entry["revision"] = entry.get("revision", 0) + 1
-            try:
-                self._save_operation_log()
-            except Exception:
+        try:
+            self._save_operation_log()
+        except Exception:
+            with self._lock:
                 if previous is None:
                     entry.pop("transition", None)
                 else:
                     entry["transition"] = previous
-                raise
+            raise
 
     def _complete_transition(self, entry: Dict[str, Any], kind: str) -> None:
         with self._lock:
             entry["transition"] = {"kind": kind, "state": "committed"}
             entry["revision"] = entry.get("revision", 0) + 1
-            self._save_operation_log()
+        self._save_operation_log()
 
     def _mark_transition_uncertain(self, entry: Dict[str, Any], kind: str) -> None:
         with self._lock:
             entry["transition"] = {"kind": kind, "state": "uncertain"}
             entry["state"] = "uncertain"
             entry["revision"] = entry.get("revision", 0) + 1
-            try:
-                self._save_operation_log()
-            except Exception:
-                pass
+        try:
+            self._save_operation_log()
+        except Exception:
+            pass
 
     def _mark_transition_failed(self, entry: Dict[str, Any], kind: str) -> None:
         with self._lock:
             entry["transition"] = {"kind": kind, "state": "failed"}
             entry["revision"] = entry.get("revision", 0) + 1
-            try:
-                self._save_operation_log()
-            except Exception:
-                pass
+        try:
+            self._save_operation_log()
+        except Exception:
+            pass
 
     @staticmethod
     def _same_owned_folder(path: str, ownership: Dict[str, Any]) -> bool:
@@ -549,6 +630,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         )
 
     def undo_last(self) -> str:
+        """Undo one operation while holding the cross-process journal lock."""
+        try:
+            with self._journal_process_lock():
+                changed = self._refresh_operation_log_from_disk()
+                if changed:
+                    return (
+                        "Undo failed: operation history was concurrently updated; "
+                        "refusing a stale transition."
+                    )
+                return self._undo_last_locked()
+        except JournalLockError as exc:
+            return f"Undo failed: journal lock could not be acquired: {exc}"
+
+    def _undo_last_locked(self) -> str:
         with self._lock:
             saw_delete = False
             for entry in reversed(self._operation_log):
@@ -585,7 +680,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         undo_result = _move_file(dst, src)
                         if undo_result.startswith("Error"):
                             raise RuntimeError(undo_result)
-                        result = f"Undid move: '{destination}' → '{source}'"
+                        result = f"Undid move: '{destination}' Ã¢â€ â€™ '{source}'"
                     elif operation == "rename":
                         if not destination:
                             raise ValueError("rename history has no destination")
@@ -607,7 +702,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         )
                         if undo_result.startswith("Error"):
                             raise RuntimeError(undo_result)
-                        result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
+                        result = f"Undid rename: '{destination}' Ã¢â€ â€™ '{os.path.basename(source)}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
                         ownership = entry.get("folder_ownership")
@@ -646,6 +741,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             return "No operations to undo."
 
     def redo_last(self) -> str:
+        """Redo one operation while holding the cross-process journal lock."""
+        try:
+            with self._journal_process_lock():
+                changed = self._refresh_operation_log_from_disk()
+                if changed:
+                    return (
+                        "Redo failed: operation history was concurrently updated; "
+                        "refusing a stale transition."
+                    )
+                return self._redo_last_locked()
+        except JournalLockError as exc:
+            return f"Redo failed: journal lock could not be acquired: {exc}"
+
+    def _redo_last_locked(self) -> str:
         with self._lock:
             for entry in self._operation_log:
                 if entry.get("state") == "uncertain":
@@ -678,7 +787,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         redo_result = _move_file(src, dst)
                         if redo_result.startswith("Error"):
                             raise RuntimeError(redo_result)
-                        result = f"Redid move: '{source}' → '{destination}'"
+                        result = f"Redid move: '{source}' Ã¢â€ â€™ '{destination}'"
                     elif operation == "rename":
                         if not destination:
                             raise ValueError("rename history has no destination")
@@ -698,7 +807,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         redo_result = _rename_file(safe["old_path"], safe["new_name"])
                         if redo_result.startswith("Error"):
                             raise RuntimeError(redo_result)
-                        result = f"Redid rename: '{source}' → '{destination}'"
+                        result = f"Redid rename: '{source}' Ã¢â€ â€™ '{destination}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
                         ownership = entry.get("folder_ownership")
@@ -1192,17 +1301,17 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             if dry_run:
                 rejection = self._preview_rejection(func_name, args)
                 if rejection:
-                    results.append(f"  → (preview only) WILL BE REJECTED: {rejection}")
+                    results.append(f"  Ã¢â€ â€™ (preview only) WILL BE REJECTED: {rejection}")
                 else:
-                    results.append("  → (preview only, not executed)")
+                    results.append("  Ã¢â€ â€™ (preview only, not executed)")
                 continue
 
             if confirm_callback and not confirm_callback(func_name, args):
-                results.append("  → (cancelled by user)")
+                results.append("  Ã¢â€ â€™ (cancelled by user)")
                 continue
 
             if func_name not in _legacy_tool_functions:
-                results.append(f"  → Unknown tool: {func_name}")
+                results.append(f"  Ã¢â€ â€™ Unknown tool: {func_name}")
                 continue
 
             try:
@@ -1230,9 +1339,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     )
                 else:
                     result = _legacy_tool_functions[func_name](**safe_args)
-                results.append(f"  → {result}")
+                results.append(f"  Ã¢â€ â€™ {result}")
             except Exception as e:
-                results.append(f"  → Error: {e}")
+                results.append(f"  Ã¢â€ â€™ Error: {e}")
 
         return results
 
@@ -1387,7 +1496,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         effective_dry_run = self.dry_run if dry_run is None else dry_run
         if effective_dry_run:
             marker = "[Rule] " if used_rule else ""
-            return f"{marker}[Dry Run] Would categorise '{filepath}' as '{category}' → move to '{dest_path}'"
+            return f"{marker}[Dry Run] Would categorise '{filepath}' as '{category}' Ã¢â€ â€™ move to '{dest_path}'"
         self.create_folder(dest_folder)
         result = self.move_file(filepath, dest_path)
         if used_rule and not result.startswith("Error"):

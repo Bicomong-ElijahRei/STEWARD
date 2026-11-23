@@ -17,7 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
-2026-11-23 | e1a37c30 | Documentation reconciliation: updated README and architecture safety guidance for truthful mutation outcomes, folder-target preflight, and the process-local journal-lock limitation; 259/259 unit tests green. | Keep user-facing safety claims aligned with the implemented and deferred behavior.
+2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
 2026-11-23 | e1a37c30 | Filesystem journal truthfulness: distinguish no-op, failed, and uncertain outcomes; preserve partial-folder ownership evidence; detect file/directory plan conflicts in either order; 259/259 unit tests green. | Make durable history reflect unresolved filesystem state and prevent conflicting whole plans from mutating disk.
 2026-11-23 | 9d092fd7 | Added Batch FS-SAFETY-1: reproduce and repair no-op, partial-mutation, partial-folder, and folder-target preflight journal truthfulness; defer cross-process journal locking pending reviewed design. | Reproduce the handoff leads against the current checkout before changing safety behavior.
 2026-11-23 | 7907ebb1 | Filesystem mutation safety: added no-overwrite publication, write-ahead atomic operation history, exact folder ownership, whole-plan destination conflict preflight, uncertain-state recovery, and 247/247 unit tests green.
@@ -54,8 +54,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: e1a37c30 (v3.0 filesystem journal truthfulness and whole-plan conflict hardening)
-Suite: 259/259 unit tests green
+Implementation baseline: FS-S5 implementation commit pending local closure
+Suite: 266/266 unit tests green; validator 5/5; compileall and diff checks green
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -68,7 +68,7 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
   epoch-guarded approval/execution/provider/specialist continuations; no-overwrite
   filesystem publication with durable write-ahead operation history; truthful no-op/failed/
   uncertain journal outcomes; and whole-plan file/directory conflict detection.
-  Proof: 259/259 unit tests green.
+  Proof: 266/266 unit tests green, including cross-process journal serialization.
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.
@@ -104,11 +104,29 @@ Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.p
 - FS-S4  DONE | e1a37c30 | Whole-plan preflight omitted `create_folder` targets. Accept:
       folder/move and folder/rename target conflicts are rejected in either plan order before
       any mutation; valid non-conflicting parent/child plans remain accepted.
-- FS-S5  DEFERRED | 9d092fd7 | The operation journal uses process-local `threading.RLock`
-      objects, and the application does not enforce one running instance. Do not describe this as
-      inter-process protection. Follow-up: design and review a portable cross-process journal
-      ownership/lock protocol with stale-writer, crash, timeout, and multi-platform tests before
-      introducing platform-specific locking.
+- FS-S5  DONE | cc4800de | The operation journal uses process-local `threading.RLock`
+      objects, and the application does not enforce one running instance, so separate STEWARD
+      processes can plausibly update the same `%APPDATA%\STEWARD\steward_operations.json`.
+      Implemented design: a stable persistent `<operation-log>.lock` sidecar with an OS-managed
+      exclusive lock (`msvcrt.locking` on Windows, `fcntl.flock` on POSIX), plus the keyed
+      in-process `RLock`; bounded 10-second timeout; sidecar never deleted. The cross-process lock
+      covers the complete journal read/merge/revision-check/atomic-replace section and the complete
+      write-ahead mutation / undo-redo claim, filesystem action, and completion sequence. The OS
+      releases the lock on normal exit and process termination; acquisition timeout or lock API
+      failure fails closed before mutation. Alternatives rejected: PID/stale-owner files need
+      unsafe stale-lock recovery, directory locks do not provide ownership, and third-party locking
+      packages add an unnecessary dependency.
+      Accept: deterministic separate-process contention preserves every independently recorded
+      operation; competing undo/redo claims cannot both mutate the filesystem; a held lock times
+      out without mutation; process death releases the lock while the persistent sidecar remains
+      reusable; journal write/replace failures preserve truthful recoverable state.
+      Test plan: subprocess-based tests using temporary directories and one temporary operation-log
+      path, with bounded waits and visible exit codes/timeouts; cover concurrent operations,
+      exclusive undo/redo claims, timeout, crash release, and journal replace failure. Validate on
+      the current Windows host; POSIX implementation is documented but not claimed as locally tested.
+      Proof: Windows subprocess regressions pass; 266/266 discovery tests, 5/5 validator checks,
+      compileall, and diff checks are green. The final implementation SHA is recorded in the
+      changelog and closure entry below.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
