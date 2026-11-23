@@ -3,6 +3,7 @@ import shutil
 import send2trash
 import hashlib
 import glob
+import uuid
 import PyPDF2
 from datetime import datetime
 from utils.helpers import FILE_PREVIEW_LIMIT, truncate_file_preview
@@ -18,13 +19,101 @@ except ImportError:
     openpyxl = None
 
 # ----- Basic tools (lightweight) -----
+class ToolResult(str):
+    """String-compatible tool result carrying verified mutation metadata."""
+    def __new__(cls, value, **metadata):
+        result = super().__new__(cls, value)
+        result.metadata = metadata
+        return result
+
+
+def resolve_move_destination(source, destination):
+    """Return the concrete final path used by move semantics."""
+    destination = os.path.normpath(destination)
+    if os.path.isdir(destination):
+        return os.path.join(destination, os.path.basename(os.path.normpath(source)))
+    return destination
+
+
+def _same_effective_path(first, second):
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _publish_without_overwrite(source, destination):
+    """Publish a regular file without replacing an existing destination."""
+    if os.path.lexists(destination):
+        raise FileExistsError(f"Destination already exists: '{destination}'")
+
+    parent = os.path.dirname(os.path.abspath(destination))
+    os.makedirs(parent, exist_ok=True)
+    temporary = os.path.join(
+        parent, f".steward-move-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        shutil.copy2(source, temporary)
+        try:
+            with open(temporary, "rb") as handle:
+                os.fsync(handle.fileno())
+        except (AttributeError, OSError):
+            pass
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            raise
+        except (AttributeError, OSError):
+            # O_EXCL reserves the name; copying through that handle cannot
+            # replace a destination that appeared after reservation.
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            try:
+                with open(source, "rb") as source_handle:
+                    with os.fdopen(fd, "wb") as destination_handle:
+                        shutil.copyfileobj(source_handle, destination_handle)
+            except Exception:
+                try:
+                    os.remove(destination)
+                except OSError:
+                    pass
+                raise
+        os.remove(temporary)
+        return destination
+    finally:
+        try:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        except OSError:
+            pass
+
+
+def _move_without_overwrite(source, destination):
+    """Move one regular file while refusing every occupied final destination."""
+    source = os.path.normpath(source)
+    destination = os.path.normpath(destination)
+    if not os.path.isfile(source):
+        raise ValueError(f"Source is not a regular file: '{source}'")
+    final_destination = resolve_move_destination(source, destination)
+    if _same_effective_path(source, final_destination):
+        raise FileExistsError(f"Source and destination are the same path: '{source}'")
+    _publish_without_overwrite(source, final_destination)
+    try:
+        os.remove(source)
+    except Exception:
+        try:
+            os.remove(final_destination)
+        except OSError:
+            pass
+        raise
+    return final_destination
+
+
 def move_file(source, destination):
     try:
         source = os.path.normpath(source)
         destination = os.path.normpath(destination)
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        shutil.move(source, destination)
-        return f"Moved '{source}' → '{destination}'"
+        actual_destination = _move_without_overwrite(source, destination)
+        return ToolResult(
+            f"Moved '{source}' → '{actual_destination}'",
+            actual_destination=actual_destination,
+        )
     except Exception as e:
         return f"Error: {e}"
 
@@ -41,16 +130,65 @@ def rename_file(old_path, new_name):
         old_path = os.path.normpath(old_path)
         new_path = os.path.join(os.path.dirname(old_path), new_name)
         new_path = os.path.normpath(new_path)
-        os.rename(old_path, new_path)
-        return f"Renamed '{old_path}' → '{new_path}'"
+        if _same_effective_path(old_path, new_path):
+            return ToolResult(
+                f"No-op rename: '{old_path}' already has that name",
+                actual_destination=new_path,
+                no_op=True,
+            )
+        if os.path.lexists(new_path):
+            raise FileExistsError(f"Destination already exists: '{new_path}'")
+        _publish_without_overwrite(old_path, new_path)
+        try:
+            os.remove(old_path)
+        except Exception:
+            try:
+                os.remove(new_path)
+            except OSError:
+                pass
+            raise
+        return ToolResult(
+            f"Renamed '{old_path}' → '{new_path}'",
+            actual_destination=new_path,
+        )
     except Exception as e:
         return f"Error: {e}"
 
 def create_folder(path):
     try:
         path = os.path.normpath(path)
-        os.makedirs(path, exist_ok=True)
-        return f"Created folder '{path}'"
+        if os.path.exists(path):
+            if not os.path.isdir(path):
+                raise FileExistsError(f"Path exists and is not a folder: '{path}'")
+            return ToolResult(
+                f"Folder already exists: '{path}'",
+                created_paths=[],
+                no_op=True,
+            )
+
+        # os.mkdir is atomic, so only components actually created by this
+        # invocation are attributed to STEWARD.
+        absolute = os.path.abspath(path)
+        missing = []
+        cursor = absolute
+        while not os.path.exists(cursor):
+            missing.append(cursor)
+            parent = os.path.dirname(cursor)
+            if parent == cursor:
+                break
+            cursor = parent
+        created_paths = []
+        for directory in reversed(missing):
+            try:
+                os.mkdir(directory)
+                created_paths.append(directory)
+            except FileExistsError:
+                if not os.path.isdir(directory):
+                    raise
+        return ToolResult(
+            f"Created folder '{path}'",
+            created_paths=created_paths,
+        )
     except Exception as e:
         return f"Error: {e}"
 
