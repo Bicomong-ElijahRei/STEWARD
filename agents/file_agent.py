@@ -680,7 +680,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         undo_result = _move_file(dst, src)
                         if undo_result.startswith("Error"):
                             raise RuntimeError(undo_result)
-                        result = f"Undid move: '{destination}' Ã¢â€ â€™ '{source}'"
+                        result = f"Undid move: '{destination}' → '{source}'"
                     elif operation == "rename":
                         if not destination:
                             raise ValueError("rename history has no destination")
@@ -702,7 +702,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         )
                         if undo_result.startswith("Error"):
                             raise RuntimeError(undo_result)
-                        result = f"Undid rename: '{destination}' Ã¢â€ â€™ '{os.path.basename(source)}'"
+                        result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
                         ownership = entry.get("folder_ownership")
@@ -787,7 +787,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         redo_result = _move_file(src, dst)
                         if redo_result.startswith("Error"):
                             raise RuntimeError(redo_result)
-                        result = f"Redid move: '{source}' Ã¢â€ â€™ '{destination}'"
+                        result = f"Redid move: '{source}' → '{destination}'"
                     elif operation == "rename":
                         if not destination:
                             raise ValueError("rename history has no destination")
@@ -807,7 +807,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         redo_result = _rename_file(safe["old_path"], safe["new_name"])
                         if redo_result.startswith("Error"):
                             raise RuntimeError(redo_result)
-                        result = f"Redid rename: '{source}' Ã¢â€ â€™ '{destination}'"
+                        result = f"Redid rename: '{source}' → '{destination}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
                         ownership = entry.get("folder_ownership")
@@ -1301,17 +1301,17 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             if dry_run:
                 rejection = self._preview_rejection(func_name, args)
                 if rejection:
-                    results.append(f"  Ã¢â€ â€™ (preview only) WILL BE REJECTED: {rejection}")
+                    results.append(f"  → (preview only) WILL BE REJECTED: {rejection}")
                 else:
-                    results.append("  Ã¢â€ â€™ (preview only, not executed)")
+                    results.append("  → (preview only, not executed)")
                 continue
 
             if confirm_callback and not confirm_callback(func_name, args):
-                results.append("  Ã¢â€ â€™ (cancelled by user)")
+                results.append("  → (cancelled by user)")
                 continue
 
             if func_name not in _legacy_tool_functions:
-                results.append(f"  Ã¢â€ â€™ Unknown tool: {func_name}")
+                results.append(f"  → Unknown tool: {func_name}")
                 continue
 
             try:
@@ -1339,9 +1339,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     )
                 else:
                     result = _legacy_tool_functions[func_name](**safe_args)
-                results.append(f"  Ã¢â€ â€™ {result}")
+                results.append(f"  → {result}")
             except Exception as e:
-                results.append(f"  Ã¢â€ â€™ Error: {e}")
+                results.append(f"  → Error: {e}")
 
         return results
 
@@ -1496,7 +1496,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         effective_dry_run = self.dry_run if dry_run is None else dry_run
         if effective_dry_run:
             marker = "[Rule] " if used_rule else ""
-            return f"{marker}[Dry Run] Would categorise '{filepath}' as '{category}' Ã¢â€ â€™ move to '{dest_path}'"
+            return f"{marker}[Dry Run] Would categorise '{filepath}' as '{category}' → move to '{dest_path}'"
         self.create_folder(dest_folder)
         result = self.move_file(filepath, dest_path)
         if used_rule and not result.startswith("Error"):

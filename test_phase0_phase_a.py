@@ -2806,6 +2806,38 @@ class SnoopAndFixRegressionTests(unittest.TestCase):
 class SourceIntegrityTests(unittest.TestCase):
     """Guard against accidental duplicate definitions during hand edits."""
 
+    def test_tracked_python_sources_have_no_mojibake_signatures(self):
+        root = Path(__file__).resolve().parent
+        max_files = 1000
+        max_file_bytes = 5_000_000
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z", "--", "*.py"], cwd=root
+        ).decode("utf-8").split("\0")
+        self.assertLessEqual(len(tracked), max_files)
+
+        signatures = ("\u00c3\u00a2", "\u00e2\u20ac", "\u00e2\u2020")
+        findings = []
+        for relative in tracked:
+            if not relative or "venv" in Path(relative).parts:
+                continue
+            path = root / relative
+            raw = path.read_bytes()
+            self.assertLessEqual(
+                len(raw), max_file_bytes, f"Python source exceeds scan bound: {relative}"
+            )
+            source = raw.decode("utf-8-sig")
+            for line_number, line in enumerate(source.splitlines(), 1):
+                for signature in signatures:
+                    if signature in line:
+                        findings.append(f"{relative}:{line_number}: {signature!r}")
+
+        self.assertEqual(
+            findings,
+            [],
+            "Mojibake signatures found in tracked Python sources:\n"
+            + "\n".join(findings),
+        )
+
     def test_regression_test_classes_are_defined_once(self):
         source = Path(__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
