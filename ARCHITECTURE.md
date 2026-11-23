@@ -7,7 +7,8 @@ Desktop AI file organizer. CustomTkinter GUI (`main.py` -> `gui/main_window.py`)
 Supervisor (`agents/supervisor.py`) that classifies intent, a Router (`core/router.py`) that
 picks a provider, a FileAgent (`agents/file_agent.py`) that previews, gets approval for, and
 executes sandboxed file operations with undo/redo, and a text-only CodingAgent
-(`agents/coding_agent.py`) for provider-backed coding suggestions. SQLite + Fernet
+(`agents/coding_agent.py`) for provider-backed coding suggestions, grounded by a bounded
+read-only CodeIndexAgent (`agents/code_index_agent.py`). SQLite + Fernet
 (`core/database.py`) stores providers/usage/traces in `%APPDATA%\STEWARD`. A watchdog daemon
 (`agent/daemon.py`) watches a folder, and a restart-safe scheduled scanner handles recurring
 file categorization.
@@ -21,6 +22,7 @@ file categorization.
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
+- `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, incremental replacement, scoped retrieval
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
@@ -42,9 +44,14 @@ Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy .
   -> RAGAgent.search -> ChromaDB query -> source/content/distance results -> formatted Chat bubble
 General conversation: supervisor.route -> AGENT_GENERAL_CHAT -> bounded in-memory history
   -> APIManager.route_request(agent_name="Cortex", require_tools=False) -> epoch check -> chat bubble
-Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
+Syntax coding: supervisor.route -> AGENT_CODING -> CodeIndexAgent.search (only when an
+  explicit root has been indexed) -> CodingAgent.handle_request with <=5 path/line snippets
   -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
   -> one of five intent instructions: generation, debugging, refactoring, review, explanation
+Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
+  -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
+  -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
+  reject stale worker results
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -81,6 +88,27 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
 - Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
   and no tool definitions, and has no filesystem or process-execution API. Empty, malformed,
   and tool-bearing provider responses are rejected.
+- Code context changes only the user message: at most five snippets and 8,000 characters are
+  formatted with relative path, line range, and symbol. With no index, the existing Syntax
+  prompt is unchanged. Indexing never imports, executes, or modifies source.
+
+## Code-index safety rules
+- `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
+  document RAG and clearing document RAG does not clear code context.
+- A root is explicit. Traversal uses realpath/abspath/commonpath/normcase and refuses
+  symlink/junction targets outside the selected root. `.git`, caches, `venv`,
+  `node_modules`, `rag_index`, `media`, `.env*`, `*.key`, `*.db`, `secret.key`, and
+  `steward_operations.json` are denied.
+- Default bounds are 2,000 files, 256 KiB per file, 2,400-character chunks, and 240-character
+  overlap. The report states truncation and file-limit conditions deterministically.
+- Python is chunked by top-level AST function/class boundaries with overlapping-window
+  fallback. Non-Python and invalid Python use bounded overlapping windows.
+- Chunk IDs and metadata are root-scoped. A content hash replaces changed chunks and removes
+  chunks for deleted files; the most recently indexed root is persisted in collection
+  metadata so retrieval does not mix projects.
+- The local collection stores plaintext excerpts. Retrieved excerpts are sent to the
+  configured Syntax provider (cloud-first unless explicitly configured otherwise); the GUI
+  discloses this before indexing.
 
 ## Daemon lifecycle
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
@@ -148,7 +176,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_appdata_migration.py — copy-only migration tests
 - test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
 - test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
-- Total discovery count is 266
+- test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
+- Total discovery count is 281
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

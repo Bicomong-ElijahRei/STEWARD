@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-24 | a96eb888 | Phase C6 code context: added a bounded, read-only persistent CODE collection with explicit-root traversal, denylisting, symbol-aware chunks, hash-based incremental replacement, scoped retrieval, GUI lifecycle controls, bounded Syntax prompt context, and 281/281 unit tests green. | Ground Syntax in repository code without granting code execution or mutation capability.
 2026-11-23 | eaee322b | FS-S5 closure: journal serialization is implemented and pushed; closure state, implemented SHAs, freeze line, and push metadata are reconciled. | Keep the tracked plan aligned with the verified Git closure baseline and prevent stale local/not-pushed claims.
 2026-11-23 | 935a6236 | FS-S5 DONE: implemented persistent sidecar OS locking, bounded timeout, crash release, stale-transition protection, write-ahead/atomic journal guarantees, cross-process regressions, and 266/266 discovery tests green. | Prevent lost journal updates and conflicting undo/redo transitions when separate STEWARD processes share the AppData operation log.
 2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
@@ -56,9 +57,9 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: FS-S5 closing commit eaee322b
-Suite: 267/267 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: origin/main contains 935a6236 and eaee322b; encoding repair fc3cc0ee and this plan reconciliation are local and await human push.
+Implementation baseline: Phase C6 code-context commit a96eb888
+Suite: 281/281 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C6 implementation and this documentation reconciliation are local and await human push; no push is claimed.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -71,10 +72,15 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
   epoch-guarded approval/execution/provider/specialist continuations; no-overwrite
   filesystem publication with durable write-ahead operation history; truthful no-op/failed/
   uncertain journal outcomes; and whole-plan file/directory conflict detection.
-  Proof: 267/267 unit tests green, including cross-process journal serialization and bounded source-integrity encoding coverage.
+  Proof: 281/281 unit tests green, including cross-process journal serialization and bounded source-integrity encoding coverage.
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.
+- Phase C6 Codebase-scale semantic context — DONE | a96eb888 | Separate persistent
+  `steward_code` collection provides explicit-root, bounded, read-only symbol retrieval for
+  Syntax, with denylisting, containment, incremental replacement, GUI lifecycle controls,
+  and provider disclosure. Proof: CodeIndexAgentTests, SyntaxCodeContextTests,
+  ChatCodeIndexLifecycleTests; 281/281 unit tests green.
 - v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2, 7d9d25c6 | Markdown chat
   rendering, bounded observable Cortex delegation, and persistent recurring file scans.
   Proof: MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests;
@@ -282,6 +288,23 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       50-character overlap, default MiniLM embeddings, bounded retrieval, source-change
       replacement, recursive TXT/PDF/DOCX ingestion, and Scout Chat results. Proof:
       known-token retrieval and changed-file replacement covered by RAGTests; 138/138 green.
+- C6  DONE | a96eb888 | Codebase-scale semantic context: a separate persistent `steward_code`
+      Chroma collection indexes an explicitly selected project root without executing or
+      modifying source. Python AST symbols, bounded overlapping fallback chunks,
+      denylisted/secret paths, symlink/junction containment, per-file byte and file-count
+      limits, content-hash replacement/deletion, root-scoped retrieval, status, and clear are
+      implemented. GUI indexing runs in a cancellable background worker with main-thread
+      result marshaling and generation guards. Syntax receives at most five path/line-aware
+      snippets (8,000 total characters) in its existing text-only provider prompt; no tool,
+      file-write, or code-execution capability is added. Accept: a known symbol retrieves
+      with path/lines, unchanged files are idempotent, changed/deleted files replace prior
+      chunks, denied/escaping paths are never opened, clear-chat rejects stale index UI, and
+      provider/tool safety remains intact. Proof: CodeIndexAgentTests,
+      SyntaxCodeContextTests, and ChatCodeIndexLifecycleTests; 281/281 unit tests green.
+- C7  BACKLOG | Dependency-graph modeling: build an explicit import/call graph and use it
+      to expand or rerank repository-wide context. Accept: graph edges are derived without
+      executing code, bounded traversal has deterministic limits, and retrieval tests prove
+      relevant cross-file dependencies are found without leaking denied paths. Est 15-25h.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server

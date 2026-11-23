@@ -12,6 +12,11 @@ preview, explicit approval, and undo/redo.
   bound to the Syntax role. Syntax is text-only: it has no file, process, or tool-execution surface.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
+- Code context: an explicitly selected project root can be indexed in a separate persistent
+  `steward_code` collection. Python AST symbols, bounded overlapping fallback chunks,
+  path/line-aware retrieval, incremental replacement, status, and clear are available from
+  the Chat header's **Code Index** control. Retrieved snippets are included in Syntax's
+  existing text-only provider prompt.
 - File operations: preview a plan, approve it by ID, and execute exactly the approved plan.
   Preview generations own plan publication and provider metadata, so discarded or superseded
   previews cannot become executable or overwrite newer results.
@@ -61,6 +66,11 @@ preview, explicit approval, and undo/redo.
   operations, and restarting creates an isolated generation whose old worker cannot commit
   state or notifications into the replacement.
 - Syntax receives text-only provider requests and cannot mutate files or execute code.
+- Code indexing is read-only: it never imports or runs indexed source, denies secret/key/
+  database/state paths and dependency caches, refuses symlink/junction targets outside the
+  selected root, and bounds traversal to 2,000 files and 256 KiB per file. The local index
+  stores plaintext chunks; retrieved snippets are sent to the configured Syntax provider
+  (cloud-first unless explicitly configured otherwise).
 - Undo/redo only records verified success and refuses to overwrite existing files.
 
 ## Install
@@ -79,11 +89,12 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-266 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+281 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
-scans, bounded Cortex memory, provider-backed text-only Syntax, RAG, GUI lifecycle, no-overwrite
-filesystem publication, whole-plan collision preflight, partial-outcome journal truthfulness,
-durable journal recovery, and cross-process journal serialization.
+scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
+read-only code indexing/retrieval, GUI lifecycle, no-overwrite filesystem publication,
+whole-plan collision preflight, partial-outcome journal truthfulness, durable journal recovery,
+and cross-process journal serialization.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -97,6 +108,10 @@ confirmation and a verified database/key/operation-log backup set.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
   the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
+- Code context currently retrieves symbol-sized semantic snippets; import/call dependency
+  graph expansion remains Phase C7 backlog. The local `steward_code` collection contains
+  plaintext source excerpts, and the GUI discloses that retrieved excerpts are sent to the
+  configured provider.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
@@ -106,7 +121,7 @@ confirmation and a verified database/key/operation-log backup set.
 
 ## Roadmap
 v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
-generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, and text-only
-Syntax with review/explanation intents); meta-prompting,
-surgical file patches, self-healing execution, MCP, vision, voice, and remote control remain
-future work tracked in PLAN.md.
+generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
+Syntax with review/explanation intents, and bounded read-only code-context retrieval);
+dependency-graph context, meta-prompting, surgical file patches, self-healing execution, MCP,
+vision, voice, and remote control remain future work tracked in PLAN.md.

@@ -108,8 +108,11 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   - **Future execution worker:** A separately sandboxed worker will own lint/run/edit cycles with hard iteration bounds; current `Syntax` cannot execute code or edit files.
 - [x] **Persistent Document RAG (Scout):**
   - **Memory:** `Scout` uses persistent ChromaDB ingestion and semantic retrieval over indexed documents with bounded results and source citations.
-- [ ] **Codebase-scale Semantic Context:**
-  - **Memory:** Extend semantic retrieval to source-code symbols and dependency graphs before Syntax can propose repository-wide edits.
+- [x] **Codebase-scale Semantic Context (symbol retrieval):**
+  - **Memory:** A separate persistent `steward_code` collection indexes an explicitly selected project root with bounded, read-only symbol chunks and supplies path/line-aware context to Syntax.
+  - **Safety:** Indexing denies secrets and dependency caches, refuses escaping symlinks/junctions, enforces file/byte limits, and never executes or modifies source.
+- [ ] **Dependency-graph Context:**
+  - **Memory:** Model imports and calls to expand or rerank repository-wide context. This remains explicit Phase C7 backlog rather than an implied feature of symbol retrieval.
 
 ---
 
