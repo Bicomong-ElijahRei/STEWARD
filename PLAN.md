@@ -61,7 +61,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 ## Ground state
 Implementation baseline: Phase C2 meta-prompting commit 1c66ecb9; C6 root hardening commit 8e8d4f34
 Suite: 307/307 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation, C6 root hardening, and documentation reconciliation are local and await human push; the human push updates origin, and the next batch reconciles HEAD. No push is claimed.
+Push state at verification: Phase C2 implementation `1c66ecb9` and documentation `64d9756b` are confirmed pushed ancestors of `origin/main`. C6 root hardening and its documentation closure are local and await human push; no push is claimed.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.

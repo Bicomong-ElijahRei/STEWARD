@@ -103,7 +103,7 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
 - [x] **Meta-Prompting (Architect + Builder):**
   - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint, published as an immutable app-owned artifact.
   - **Review:** The GUI's explicit Plan first mode accepts only validated `CODING` routing and requires approval bound to the plan UUID before a separate text-only Syntax request.
-  - **Implementation:** Local commit `1c66ecb9`; not pushed by this change.
+  - **Implementation:** Commit `1c66ecb9`; confirmed pushed as an ancestor of `origin/main`.
   - **Scope:** Architect and builder remain text-only; automated application of the blueprint remains Phase C3.
 - [ ] **AST Parsing & JSON Patches:**
   - **Future mutation worker:** A separate reviewed component will parse code and apply surgical patches to an approved plan; current `Syntax` remains text-only and cannot mutate files.
@@ -115,6 +115,7 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   - **Memory:** A separate persistent `steward_code` collection indexes an explicitly selected project root with bounded, read-only symbol chunks and supplies path/line-aware context to Syntax.
   - **Safety:** Indexing denies secrets and dependency caches, refuses a selected root whose own basename is in `DENIED_DIRECTORIES`, refuses escaping symlinks/junctions, enforces file/byte limits, and never executes or modifies source.
   - **Implementation:** Local commit `8e8d4f34`; not pushed by this change.
+  - **Push state:** The human push updates `origin/main`; the next batch reconciles `HEAD` against the confirmed remote ref.
 - [ ] **Dependency-graph Context:**
   - **Memory:** Model imports and calls to expand or rerank repository-wide context. This remains explicit Phase C7 backlog rather than an implied feature of symbol retrieval.
 
