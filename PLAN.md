@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 935a6236 | FS-S5 DONE: implemented persistent sidecar OS locking, bounded timeout, crash release, stale-transition protection, write-ahead/atomic journal guarantees, cross-process regressions, and 266/266 discovery tests green. | Prevent lost journal updates and conflicting undo/redo transitions when separate STEWARD processes share the AppData operation log.
 2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
 2026-11-23 | e1a37c30 | Filesystem journal truthfulness: distinguish no-op, failed, and uncertain outcomes; preserve partial-folder ownership evidence; detect file/directory plan conflicts in either order; 259/259 unit tests green. | Make durable history reflect unresolved filesystem state and prevent conflicting whole plans from mutating disk.
 2026-11-23 | 9d092fd7 | Added Batch FS-SAFETY-1: reproduce and repair no-op, partial-mutation, partial-folder, and folder-target preflight journal truthfulness; defer cross-process journal locking pending reviewed design. | Reproduce the handoff leads against the current checkout before changing safety behavior.
@@ -54,7 +55,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: FS-S5 implementation commit pending local closure
+Implementation baseline: FS-S5 local commit 935a6236
 Suite: 266/266 unit tests green; validator 5/5; compileall and diff checks green
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
@@ -125,8 +126,7 @@ Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.p
       exclusive undo/redo claims, timeout, crash release, and journal replace failure. Validate on
       the current Windows host; POSIX implementation is documented but not claimed as locally tested.
       Proof: Windows subprocess regressions pass; 266/266 discovery tests, 5/5 validator checks,
-      compileall, and diff checks are green. The final implementation SHA is recorded in the
-      changelog and closure entry below.
+      compileall, and diff checks are green. Implementation commit: `935a6236` (local; not pushed).
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
