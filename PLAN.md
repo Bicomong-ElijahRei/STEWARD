@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | eaee322b | FS-S5 closure: journal serialization is implemented and pushed; closure state, implemented SHAs, freeze line, and push metadata are reconciled. | Keep the tracked plan aligned with the verified Git closure baseline and prevent stale local/not-pushed claims.
 2026-11-23 | 935a6236 | FS-S5 DONE: implemented persistent sidecar OS locking, bounded timeout, crash release, stale-transition protection, write-ahead/atomic journal guarantees, cross-process regressions, and 266/266 discovery tests green. | Prevent lost journal updates and conflicting undo/redo transitions when separate STEWARD processes share the AppData operation log.
 2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
 2026-11-23 | e1a37c30 | Filesystem journal truthfulness: distinguish no-op, failed, and uncertain outcomes; preserve partial-folder ownership evidence; detect file/directory plan conflicts in either order; 259/259 unit tests green. | Make durable history reflect unresolved filesystem state and prevent conflicting whole plans from mutating disk.
@@ -55,21 +56,22 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: FS-S5 local commit 935a6236
-Suite: 266/266 unit tests green; validator 5/5; compileall and diff checks green
+Implementation baseline: FS-S5 closing commit eaee322b
+Suite: 267/267 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: origin/main contains 935a6236 and eaee322b; encoding repair fc3cc0ee and this plan reconciliation are local and await human push.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
-- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, 7907ebb1, e1a37c30
+- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, 7907ebb1, e1a37c30, 935a6236, eaee322b
   explicit shared-credential rotation; generation-safe scheduled scans; bounded Cortex
   general-chat memory with stale-response rejection; provider-backed text-only Syntax across
   generation/debugging/refactoring/review/explanation; generation-owned file previews with
   epoch-guarded approval/execution/provider/specialist continuations; no-overwrite
   filesystem publication with durable write-ahead operation history; truthful no-op/failed/
   uncertain journal outcomes; and whole-plan file/directory conflict detection.
-  Proof: 266/266 unit tests green, including cross-process journal serialization.
+  Proof: 267/267 unit tests green, including cross-process journal serialization and bounded source-integrity encoding coverage.
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.
@@ -87,7 +89,7 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
-v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current through the filesystem journal-truthfulness baseline e1a37c30. New findings go to the backlog.
+v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current through the FS-S5 journal-serialization closure eaee322b. New findings go to the backlog.
 
 ## BATCH FS-SAFETY-1 — filesystem journal truthfulness and plan conflicts
 Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.py, ARCHITECTURE.md, README.md, PLAN.md
@@ -105,7 +107,7 @@ Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.p
 - FS-S4  DONE | e1a37c30 | Whole-plan preflight omitted `create_folder` targets. Accept:
       folder/move and folder/rename target conflicts are rejected in either plan order before
       any mutation; valid non-conflicting parent/child plans remain accepted.
-- FS-S5  DONE | cc4800de | The operation journal uses process-local `threading.RLock`
+- FS-S5  DONE | cc4800de, 935a6236, eaee322b | The operation journal uses process-local `threading.RLock`
       objects, and the application does not enforce one running instance, so separate STEWARD
       processes can plausibly update the same `%APPDATA%\STEWARD\steward_operations.json`.
       Implemented design: a stable persistent `<operation-log>.lock` sidecar with an OS-managed
@@ -125,8 +127,28 @@ Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.p
       path, with bounded waits and visible exit codes/timeouts; cover concurrent operations,
       exclusive undo/redo claims, timeout, crash release, and journal replace failure. Validate on
       the current Windows host; POSIX implementation is documented but not claimed as locally tested.
-      Proof: Windows subprocess regressions pass; 266/266 discovery tests, 5/5 validator checks,
-      compileall, and diff checks are green. Implementation commit: `935a6236` (local; not pushed).
+      Proof: Windows subprocess regressions pass; 267/267 discovery tests, 5/5 validator checks,
+      compileall, and diff checks are green. Implementation commit: `935a6236` (pushed; confirmed
+      ancestor of `origin/main`). Closure commit: `eaee322b` (pushed; confirmed ancestor of
+      `origin/main`).
+
+- FS-S5-CLOSURE DONE | fc3cc0ee | Confirmed the reported arrow corruption in 11 user-facing
+      string literals in `agents/file_agent.py`; restored only the intended `→` characters and added a
+      bounded `SourceIntegrityTests` regression over tracked Python sources (venv excluded, utf-8-sig).
+      Proof: focused regression RED with 22 signature findings, then GREEN; 267/267 unit tests,
+      5/5 validator checks, compileall, and diff checks green. Encoding repair commit: `fc3cc0ee`
+      (local; not pushed).
+
+### FS-S5 closure handoff ledger
+- Verified baseline: `eaee322b`; origin/main was synced at verification. The pre-existing
+  FS-S5 implementation `935a6236` and closure `eaee322b` are confirmed pushed ancestors of
+  `origin/main`; the stale `local; not pushed` claim was removed.
+- Encoding finding: confirmed, not disputed. Exact affected literals were `agents/file_agent.py`
+  lines 683, 705, 790, 810, 1304, 1306, 1310, 1314, 1342, 1344, and 1499 before repair.
+- Repair: `fc3cc0ee` restores `→` in those 11 literals only and adds one bounded tracked-Python
+  regression. BOMs and line endings were not altered.
+- Push handoff: `fc3cc0ee` and this plan-reconciliation commit are local; a human must push them.
+  Do not claim they are pushed until `origin/main` confirms them.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
