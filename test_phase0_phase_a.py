@@ -1703,6 +1703,134 @@ class Batch3Tests(unittest.TestCase):
         self.assertFalse(hasattr(StewardGUI, "on_closing"))
 
 
+class CredentialRotationTests(unittest.TestCase):
+    """Selected shared credentials rotate by identity, never by URL fallback."""
+
+    def make_database(self, tmp):
+        db = DatabaseManager(
+            os.path.join(tmp, "rotation.db"),
+            os.path.join(tmp, "rotation.key"),
+        )
+        endpoint = "https://api.rotation.test/v1"
+        db.add_provider(
+            name="PrimaryA", base_url=endpoint, api_key="primary-key",
+            credential_id=None,
+        )
+        db.add_provider(
+            name="PrimaryB", base_url=endpoint, api_key="primary-key",
+            credential_id=None,
+        )
+        db.add_provider(
+            name="Secondary", base_url=endpoint, api_key="secondary-key",
+            credential_id=None,
+        )
+        primary_id = db.get_provider("PrimaryA")["credential_id"]
+        secondary_id = db.get_provider("Secondary")["credential_id"]
+        self.assertNotEqual(primary_id, secondary_id)
+        return db, endpoint, primary_id, secondary_id
+
+    def test_rotate_selected_credential_changes_only_its_linked_providers(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rotate_selected_") as tmp:
+            db, endpoint, primary_id, secondary_id = self.make_database(tmp)
+            try:
+                updated = db.rotate_credential_by_id(
+                    secondary_id,
+                    "rotated-secondary-key",
+                    expected_base_url=endpoint,
+                )
+
+                self.assertEqual(updated["credential_id"], secondary_id)
+                self.assertEqual(updated["providers_updated"], 1)
+                self.assertEqual(
+                    db.get_credential_by_id(primary_id)["api_key"], "primary-key"
+                )
+                self.assertEqual(
+                    db.get_credential_by_id(secondary_id)["api_key"],
+                    "rotated-secondary-key",
+                )
+                self.assertEqual(db.get_provider("PrimaryA")["api_key"], "primary-key")
+                self.assertEqual(db.get_provider("PrimaryB")["api_key"], "primary-key")
+                self.assertEqual(
+                    db.get_provider("Secondary")["api_key"], "rotated-secondary-key"
+                )
+                self.assertEqual(db.get_provider("PrimaryA")["credential_id"], primary_id)
+                self.assertEqual(db.get_provider("Secondary")["credential_id"], secondary_id)
+            finally:
+                db.close()
+
+    def test_rotation_rejects_invalid_ids_links_and_endpoint_mismatch(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rotate_reject_") as tmp:
+            db, endpoint, primary_id, secondary_id = self.make_database(tmp)
+            try:
+                with self.assertRaises(ValueError):
+                    db.rotate_credential_by_id(None, "new-key")
+                with self.assertRaises(ValueError):
+                    db.rotate_credential_by_id(99999, "new-key")
+                with self.assertRaises(ValueError):
+                    db.rotate_credential_by_id(
+                        secondary_id, "new-key", expected_base_url="https://other.test/v1"
+                    )
+                self.assertEqual(
+                    db.get_credential_by_id(primary_id)["api_key"], "primary-key"
+                )
+                self.assertEqual(
+                    db.get_credential_by_id(secondary_id)["api_key"], "secondary-key"
+                )
+            finally:
+                db.close()
+
+    def test_rotation_refuses_credential_without_provider_links(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rotate_orphan_") as tmp:
+            db = DatabaseManager(
+                os.path.join(tmp, "orphan.db"), os.path.join(tmp, "orphan.key")
+            )
+            try:
+                orphan_id = db.set_credential("https://api.orphan.test/v1", "orphan-key")
+                with self.assertRaises(ValueError):
+                    db.rotate_credential_by_id(orphan_id, "replacement-key")
+                self.assertEqual(
+                    db.get_credential_by_id(orphan_id)["api_key"], "orphan-key"
+                )
+            finally:
+                db.close()
+
+    def test_settings_ui_rotates_selected_group_with_its_own_count(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rotate_ui_") as tmp:
+            db, endpoint, primary_id, secondary_id = self.make_database(tmp)
+            db.add_provider(
+                name="SecondaryB", base_url=endpoint, api_key="secondary-key",
+                credential_id=secondary_id,
+            )
+            try:
+                settings = SettingsTab.__new__(SettingsTab)
+                settings._is_alive = Mock(return_value=True)
+                settings.winfo_toplevel = Mock(return_value=Mock())
+                settings.status_label = Mock()
+                settings.refresh_provider_list = Mock()
+                provider = db.get_provider("Secondary")
+
+                with patch("gui.settings_tab.get_db", return_value=db), \
+                     patch("gui.settings_tab.simpledialog.askstring", return_value="ui-rotated-key"), \
+                     patch("gui.settings_tab.messagebox.askyesno", return_value=True) as confirm:
+                    settings._edit_shared_credential(provider)
+
+                confirm.assert_called_once()
+                self.assertIn("shared by 2 providers", confirm.call_args.args[1])
+                self.assertEqual(
+                    db.get_credential_by_id(secondary_id)["api_key"], "ui-rotated-key"
+                )
+                self.assertEqual(
+                    db.get_credential_by_id(primary_id)["api_key"], "primary-key"
+                )
+                self.assertIn(
+                    "2 provider(s)",
+                    settings.status_label.configure.call_args.kwargs["text"],
+                )
+            finally:
+                db.close()
+
+
+
 class CredentialStoreTests(unittest.TestCase):
     """Tests for shared credential store per docs/credential_store_review.md."""
 

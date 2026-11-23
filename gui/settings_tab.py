@@ -498,9 +498,16 @@ class SettingsTab(ctk.CTkFrame):
                 if not confirm:
                     return
 
-            db.set_credential(base_url, new_key)
+            result = db.rotate_credential_by_id(
+                cred_id,
+                new_key,
+                expected_base_url=base_url,
+            )
             self.status_label.configure(
-                text=f"✅ Updated credential for {count} provider(s).",
+                text=(
+                    f"✅ Updated credential for {result['providers_updated']} "
+                    "provider(s)."
+                ),
                 text_color="#00FFCC",
             )
             self.refresh_provider_list()

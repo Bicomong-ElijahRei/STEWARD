@@ -274,6 +274,82 @@ class DatabaseManager:
                 self._conn.commit()
                 return cred_id
         
+    def rotate_credential_by_id(
+        self,
+        cred_id: int,
+        api_key: str,
+        expected_base_url: str | None = None,
+    ) -> dict:
+        """Rotate one explicitly selected shared credential.
+
+        Unlike :meth:`set_credential`, this operation never falls back to the
+        canonical credential for an endpoint.  The selected credential must
+        exist, must be linked to at least one provider, and (when supplied)
+        must belong to the expected normalized endpoint.  Provider links are
+        deliberately left unchanged so they continue to observe the rotated
+        value through the normal credential join.
+        """
+        if isinstance(cred_id, bool) or not isinstance(cred_id, int) or cred_id <= 0:
+            raise ValueError("A valid credential ID is required for rotation")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("A non-empty API key is required for rotation")
+        api_key = api_key.strip()
+
+        expected_norm = ""
+        if expected_base_url is not None:
+            expected_norm = normalize_base_url(expected_base_url)
+            if not expected_norm:
+                raise ValueError("Expected credential endpoint is invalid")
+
+        enc_key = self._encrypt(api_key)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            cursor = self._conn.cursor()
+            try:
+                cursor.execute("BEGIN IMMEDIATE")
+                cursor.execute(
+                    "SELECT id, base_url_normalized FROM credentials WHERE id = ?",
+                    (cred_id,),
+                )
+                credential = cursor.fetchone()
+                if credential is None:
+                    raise ValueError(f"Credential ID {cred_id} does not exist")
+                if expected_norm and credential["base_url_normalized"] != expected_norm:
+                    raise ValueError(
+                        "Credential does not belong to the expected normalized endpoint"
+                    )
+
+                cursor.execute(
+                    "SELECT COUNT(*) FROM providers WHERE credential_id = ?",
+                    (cred_id,),
+                )
+                providers_updated = int(cursor.fetchone()[0])
+                if providers_updated == 0:
+                    raise ValueError(
+                        "Credential is not linked to a provider; migration or re-entry is required"
+                    )
+
+                cursor.execute(
+                    """
+                    UPDATE credentials
+                    SET api_key_encrypted = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (enc_key, now, cred_id),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(f"Credential ID {cred_id} could not be rotated")
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+        return {
+            "credential_id": cred_id,
+            "providers_updated": providers_updated,
+            "base_url_normalized": credential["base_url_normalized"],
+        }
+
     def delete_credential(self, cred_id: int) -> bool:
         """Delete a credential and disable providers that relied on it.
 
