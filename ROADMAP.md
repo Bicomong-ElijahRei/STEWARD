@@ -1,8 +1,8 @@
-# 🗺️ STEWARD v2: The Master Blueprint
+# 🗺️ STEWARD: The Master Blueprint
 
 > **Vision:** To evolve STEWARD from a basic file organizer into an enterprise-grade, autonomous Multi-Agent system with a visually stunning "Cyber-Kawaii" interface.
 
-This document serves as the official technical roadmap for STEWARD v2. It outlines the architectural upgrades, UI/UX overhauls, and safety mechanisms required to make STEWARD a state-of-the-art desktop AI assistant.
+This document serves as the official technical roadmap for STEWARD. It outlines the architectural upgrades, UI/UX overhauls, and safety mechanisms required to make STEWARD a state-of-the-art desktop AI assistant.
 
 ## Release Roadmap
 
@@ -15,9 +15,13 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 - **v2.3 — Learning & Rules (Done):** deterministic `rules.yaml` categorization,
   priority-ordered matching, LLM bypass for known patterns, manual override
   learning, and visible rule/chat indicators.
-- **v2.4 — Hierarchical Swarm & Scheduling (Current):** readable plain-text Markdown
+- **v2.4 — Hierarchical Swarm & Scheduling (Done):** readable plain-text Markdown
   chat rendering, Cortex-to-specialist delegation with bounded workers, failure
-  isolation, and Live Feed observability, plus restart-persistent recurring file scans.
+  isolation, Live Feed observability, and restart-persistent recurring file scans.
+- **v3.0 — Safe-Intelligence Foundations (Current):** explicit credential rotation,
+  generation-safe scheduled scans, bounded Cortex conversation memory, provider-backed
+  text-only Syntax assistance, and persistent state relocated to `%APPDATA%\STEWARD`.
+  These foundations intentionally do not grant Syntax file-write or code-execution capability.
 - **v3.0 — Advanced Code Intelligence & Phase D (Future):** meta-prompting,
   surgical code workflows, self-healing loops, and research-backed integrations such
   as MCP, voice, and remote control.
@@ -55,44 +59,56 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
   - **Router:** If a provider returns a `429 Rate Limit`, `core/router.py` will look for another key associated with the same provider in the DB, update the `usage_ledger`, and automatically retry the request.
 - [x] **Provider Fallback Visualization:**
   - **UI:** When a provider fails, flash its card red in the `gui/live_feed.py`. Flash the backup provider green when it takes over.
-- [ ] **Provider Auto-Discovery:**
-  - **Backend:** Finalize the OpenRouter zero-prompt-cost scraper in `core/discovery.py` so it automatically populates the SQLite DB with new free models.
+- [x] **Explicit Shared-Credential Rotation:**
+  - **Safety:** Rotation targets one selected credential ID, validates the normalized endpoint and provider links, and rolls back failed updates without changing provider assignments.
+- [x] **Provider Auto-Discovery:**
+  - **Backend:** `core/discovery.py` fetches and filters OpenRouter free models and upserts missing disabled providers without replacing existing rows.
+  - **Scope:** Discovery is user-triggered from the API Hub rather than an autonomous background catalog refresh.
+- [x] **Persistent State Outside the Repository:**
+  - **Storage:** Database, Fernet key, and operation log use `%APPDATA%\STEWARD`; legacy root files are copied, never moved or overwritten.
 
 ---
 
 ## 🎨 Phase B: The Cyber-Kawaii Experience
 *Goal: Turn the UI into a living, breathing animation that visually explains what the AIs are doing.*
 
-- [ ] **4-State Chat Bubbles:**
-  - **UI:** Update `gui/chat_tab.py` to support dynamic states: `THINKING` (Pulsing shimmer), `TOOL_USE` (Spinning gear icon), `STREAMING` (Typewriter text effect), and `DONE` (Subtle green checkmark).
-- [ ] **Visual Agent Communication (Handoffs):**
-  - **UI:** In `gui/live_feed.py`, use a Tkinter Canvas to draw animated glowing arcs/light beams between agent avatars when a task is handed off.
-  - **UI:** Add cute speech bubbles (e.g., *"Cortex: Routing to Foldy..."*).
-- [ ] **Live Constellation View:**
-  - **UI:** Add a node-link diagram in the sidebar showing the swarm. Nodes light up as they work, visualizing the brain's workflow.
-- [ ] **Smooth Page Transitions:**
-  - **UI:** Implement custom Canvas animations or `ctk-transitions` for sliding/fading tabs in `gui/main_window.py`.
-- [ ] **File Materialize Animation:**
-  - **UI:** When a file is moved, play a glowing tile animation that drops into the destination folder icon.
+- [x] **Dynamic Chat Bubble States:**
+  - **UI:** `gui/chat_tab.py` supports dynamic `THINKING`, `TOOL_USE`, `STREAMING`, `DONE`, and `ERROR` states.
+- [x] **Visual Agent Communication (Handoffs):**
+  - **UI:** `gui/chat_tab.py` renders the handoff arc and agent-state feedback through the Live Feed.
+  - **Scope:** This covers the implemented handoff visualization, not an autonomous multi-agent planner.
+- [x] **Live Constellation View:**
+  - **UI:** `gui/constellation_view.py` provides a responsive node-link diagram whose agent nodes animate while working.
+- [x] **Smooth Page Transitions:**
+  - **UI:** `gui/main_window.py` fades the active tab content in on navigation.
+- [x] **Execution Success Pulse:**
+  - **UI:** Successful Organizer execution pulses the execute button green.
 
 ---
 
 ## 🧠 Phase C: The Swarm & Code Intelligence
 *Goal: Make STEWARD an autonomous coding beast that rivals Cline.*
 
-- [x] **Hierarchical Agent Swarm (Brain → Managers → Workers):**
+- [x] **Bounded Specialist Delegation:**
   - **Architecture:** `Cortex` (Supervisor) parses a validated, eight-task-max breakdown and delegates it to registered specialist workers.
-  - **Specialists:** Foldy handles dry-run file previews, Scout performs RAG search, and Click/Syntax have provider-backed fallbacks.
+  - **Specialists:** Foldy handles dry-run file previews, Scout performs RAG search, and Syntax provides provider-backed text-only coding assistance; Click remains future work.
   - **Reliability:** Results are synthesized by Cortex, specialist failures are isolated, and delegation start/completion is visible in the Live Feed.
+- [x] **Provider-Backed Text-Only Syntax:**
+  - **Agent:** `CodingAgent` performs generation, debugging, and refactoring through the shared router with `agent_name="Syntax"`, `require_tools=False`, and no tool definitions.
+  - **Boundary:** Syntax has no filesystem or process-execution surface and never applies generated code.
+- [x] **Bounded Cortex Conversation Memory:**
+  - **Memory:** General chat keeps at most 6 turns, 12,000 total characters, and 4,000 characters per message in memory.
+  - **Invalidation:** Clearing chat erases history and rejects stale in-flight responses.
 - [ ] **Meta-Prompting (Architect + Builder):**
-  - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint. `Syntax` uses a fast model to execute the blueprint.
+  - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint. A future execution worker applies the blueprint only through an approved mutation boundary.
 - [ ] **AST Parsing & JSON Patches:**
-  - **Syntax Agent:** Instead of rewriting entire files, `agents/coding_agent.py` will use Python's `ast` module to parse the code and apply surgical "find and replace" JSON patches.
+  - **Future mutation worker:** A separate reviewed component will parse code and apply surgical patches; current `Syntax` remains text-only and cannot mutate files.
 - [ ] **Self-Healing Loop & Linter Integration:**
-  - **Execution:** `Syntax` writes code → runs `flake8` (linter) → auto-fixes errors → runs `python script.py` in a `subprocess`.
-  - **Error Handling:** If the code crashes, `Syntax` reads the `stderr` traceback and attempts to fix the bug autonomously.
-- [ ] **RAG-based Infinite Context:**
-  - **Memory:** `Syntax` uses `ChromaDB` to semantic-search the entire codebase. It pulls only the relevant functions into its 128K context window, allowing it to work on massive projects.
+  - **Future execution worker:** A separately sandboxed worker will own lint/run/edit cycles with hard iteration bounds; current `Syntax` cannot execute code or edit files.
+- [x] **Persistent Document RAG (Scout):**
+  - **Memory:** `Scout` uses persistent ChromaDB ingestion and semantic retrieval over indexed documents with bounded results and source citations.
+- [ ] **Codebase-scale Semantic Context:**
+  - **Memory:** Extend semantic retrieval to source-code symbols and dependency graphs before Syntax can propose repository-wide edits.
 
 ---
 
@@ -100,10 +116,10 @@ This document serves as the official technical roadmap for STEWARD v2. It outlin
 *Goal: Bleeding-edge features that turn STEWARD into an enterprise-grade desktop assistant.*
 
 - [ ] **MCP (Model Context Protocol) Support:** Connect STEWARD to databases, web browsers, and third-party SaaS apps using Anthropic's open standard.
-- [ ] **Screen-Aware Automation:** `Click` (PC Agent) uses `llama3.2-vision` to take a screenshot, analyze the UI, and decide where to click.
-- [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, and shutdown cancels the worker cleanly.
+- [ ] **Screen-Aware Automation:** `Click` (PC Agent) will use a vision model to analyze a screenshot and propose an action; ambiguous actions must be refused and no PC-control surface exists today.
+- [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, cancellation is checked between file operations, and restart is refused while old work remains alive.
 - [ ] **Voice Activation:** `pyaudio` + `whisper` integration for hands-free wake-word control.
-- [ ] **Phone Remote Control:** A lightweight `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi.
+- [ ] **Phone Remote Control:** A lightweight authenticated `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi, with all remote actions sandboxed and logged.
 
 ---
 *Created with ❤️ by Elijah Rei Z. Bicomong*

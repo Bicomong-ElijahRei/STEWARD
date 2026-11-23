@@ -1,28 +1,32 @@
-# STEWARD v2 — Architecture Map
+# STEWARD — Architecture Map
 
 Read this FIRST. It exists so no session ever re-discovers the system by reading 15 files.
 
 ## System in one paragraph
 Desktop AI file organizer. CustomTkinter GUI (`main.py` -> `gui/main_window.py`) drives a
 Supervisor (`agents/supervisor.py`) that classifies intent, a Router (`core/router.py`) that
-picks a provider, and a FileAgent (`agents/file_agent.py`) that previews, gets approval for,
-and executes sandboxed file operations with undo/redo. SQLite + Fernet (`core/database.py`)
-stores providers/usage/traces. A watchdog daemon (`agent/daemon.py`) watches a folder.
+picks a provider, a FileAgent (`agents/file_agent.py`) that previews, gets approval for, and
+executes sandboxed file operations with undo/redo, and a text-only CodingAgent
+(`agents/coding_agent.py`) for provider-backed coding suggestions. SQLite + Fernet
+(`core/database.py`) stores providers/usage/traces in `%APPDATA%\STEWARD`. A watchdog daemon
+(`agent/daemon.py`) watches a folder, and a restart-safe scheduled scanner handles recurring
+file categorization.
 
 ## Module roles
 - `core/router.py`      APIManager: provider selection, cooldown, 429/401/5xx handling, `_steward` metadata
-- `core/database.py`    DatabaseManager: Fernet-encrypted providers, usage_ledger, traces; singleton via init_db/get_db
+- `core/database.py`    DatabaseManager: Fernet-encrypted providers, usage_ledger, traces; singleton via init_db/get_db; shared credentials support explicit ID rotation with endpoint/provider-link validation and rollback
 - `core/discovery.py`   OpenRouter free-model discovery (Phase 4/5)
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
+- `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring; text-only, no tools/files/processes
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
-- `agent/daemon.py`      watchdog handler; identity-aware dedup + bounded daemon workers; calls FileAgent.categorise_file
-- `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent, passes FileAgent to BOTH Chat and Organizer
-- `gui/chat_tab.py`      chat + approval flow + Live Feed wiring
-- `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop
-- `gui/settings_tab.py`  API Hub: provider CRUD, validation, discovery, assigned_agent dropdown
+- `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
+- `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
+- `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation
+- `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop, scheduled-scan controls
+- `gui/settings_tab.py`  API Hub: provider CRUD, validation, discovery, assigned_agent dropdown, explicit credential rotation
 - `gui/live_feed.py`     activity cards + provider failover flash
 
 ## The critical paths
@@ -32,6 +36,10 @@ File op approval: run() stores deep-copied parsed plan + uuid4 plan id under _pl
   -> _execute_tool_plan(dry_run=False) -> allowlist + path preflight -> _legacy_tool_functions[name]
 Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy ./rag_index)
   -> RAGAgent.search -> ChromaDB query -> source/content/distance results -> formatted Chat bubble
+General conversation: supervisor.route -> AGENT_GENERAL_CHAT -> bounded in-memory history
+  -> APIManager.route_request(agent_name="Cortex", require_tools=False) -> epoch check -> chat bubble
+Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.generate_code
+  -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -50,6 +58,13 @@ Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy .
 - Provider HTTP calls have a 30-second default timeout, so an in-flight daemon request cannot
   hold process exit indefinitely.
 
+## Conversation and Syntax boundaries
+- Cortex general-chat memory is instance-local and bounded to 6 turns, 12,000 total characters,
+  and 4,000 characters per message. Clearing chat erases history and increments an epoch.
+- Requests capture that epoch before routing/provider work; stale responses are discarded.
+- Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
+  and no tool definitions, and has no filesystem or process-execution API.
+
 ## Daemon lifecycle
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
   a deleted/recreated path is eligible for processing again.
@@ -57,8 +72,11 @@ Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy .
   (queued or active). Queue admission uses timed, stop-responsive backpressure.
 - `stop()` prevents new work, discards queued files, and joins workers briefly. Workers are
   daemon threads, so an active provider call cannot delay interpreter exit.
+- `ScheduledScanner` uses a generation-specific cancel event and tracks active scans. Cancellation
+  is checked between file operations; a timed-out stop returns `False` and restart is refused
+  until the old worker and scan are gone, preventing overlapping generations.
 
-## Known-open issues (ledger)
+## Historical issue ledger (all entries below closed)
 Batch 2A: H5 router skips a candidate + double-hits the promoted one (total failure possible
   with a healthy provider present); M4 InvalidToken bricks app; M5 re-verify resets
   assigned_agent; L1 Click unbindable + tier exact-match; N1 ChatTab finally lacks lifecycle
@@ -77,13 +95,15 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - PowerShell 5.1: `&&` invalid; `rg` and `tail` do not exist; pytest NOT installed (use unittest)
 - gui/chat_tab.py and gui/main_window.py START WITH A UTF-8 BOM. Read with utf-8-sig or bytes.
   A default-encoding read yields a FAKE SyntaxError U+00BB. Never "fix" the file for it.
-- Protected: steward.db, secret.key, steward_operations.json. Tests use tempfile +
+- Persistent state: `%APPDATA%\STEWARD\steward.db`, `secret.key`, and `steward_operations.json`;
+  legacy repository-root files are copied, never moved or overwritten. Tests use tempfile +
   patch.object(FileAgent,"OPERATION_LOG_PATH",...) AND pin the instance attribute.
 - Helper scripts go OUTSIDE the repo. Preserve BOM and line endings byte-for-byte.
 - test_validator.py is standalone: `python test_validator.py`
 
 ## Tests
-- test_phase0_phase_a.py — 138 tests. Run: `python -m unittest discover -v`
+- test_phase0_phase_a.py — 188 tests in the main suite. Run: `python -m unittest discover -v`
+- test_appdata_migration.py — 4 copy-only migration tests; total discovery count is 192
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
@@ -102,4 +122,4 @@ python -m unittest discover -v
 python test_validator.py
 python -m compileall -q . -x '[\\/]venv[\\/]'
 git diff --check && git diff --stat && git status --short
-Get-FileHash steward.db,secret.key
+Get-FileHash "$env:APPDATA\STEWARD\steward.db","$env:APPDATA\STEWARD\secret.key"

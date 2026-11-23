@@ -17,6 +17,13 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | HEAD | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, and test state; 192/192 unit tests green.
+2026-11-23 | 410cbdcf | v3.0 safe-intelligence foundations: added explicit shared-credential rotation, generation-safe scheduled scans, bounded Cortex conversation memory with stale-response rejection, and provider-backed text-only Syntax assistance; 192/192 unit tests green.
+2026-11-23 | 61390dca | Credential rotation safety: rotation now targets one explicit credential ID, validates the normalized endpoint and provider links, and rolls back failed updates; 180/180 unit tests green.
+2026-11-23 | 518785a9 | Scheduled-scan lifecycle: generation-specific cancellation, active-scan tracking, bounded stop, and restart refusal while old work remains alive; 184/184 unit tests green.
+2026-11-23 | 9641d1f1 | Cortex conversation memory: bounded to 6 turns, 12,000 total characters, and 4,000 characters per message; clear-chat invalidates stale in-flight responses.
+2026-11-23 | 410cbdcf | Syntax assistance: provider-backed generation/debug/refactoring is routed as text-only requests and cannot mutate files or execute code.
+2026-11-23 | b99c9a38 | Persistent state moved to `%APPDATA%\STEWARD` with copy-only, non-overwriting migration of legacy database/key/operation-log files; 180/180 unit tests green.
 2026-11-23 | 7d9d25c6 | v2.4 compatibility gate: removed unsupported CTkOptionMenu hover_color for CustomTkinter 5.2.2, strengthened the scheduled-scan UI regression check, and verified a clean bounded GUI startup; 175/175 unit tests green.
 2026-11-23 | 37f03ba2 | v2.4 Hierarchical Swarm & Scheduling: added readable plain-text Markdown chat rendering, bounded Cortex-to-specialist delegation with failure isolation and Live Feed observability, and restart-persistent recurring file scans with Organizer controls; 175/175 unit tests green.
 2026-11-23 | f1d98141 | P2 Learning Module: added deterministic priority-ordered rules.yaml categorization, pre-LLM Foldy bypass, manual override learning, Organizer rule display, and `[Rule]` chat labeling; 153/153 unit tests green.
@@ -42,12 +49,20 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 7d9d25c6 (v2.4 Hierarchical Swarm & Scheduling)
-Suite: 175/175 unit tests green
+Implementation baseline: 410cbdcf (v3.0 safe-intelligence foundations)
+Suite: 192/192 unit tests green
+Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf |
+  explicit shared-credential rotation; cooperative generation-safe scheduled scans;
+  bounded Cortex general-chat memory with stale-response rejection; and provider-backed
+  text-only Syntax generation/debug/refactoring. Proof: 192/192 unit tests green.
+- Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
+  use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
+  sources remain intact. Proof: AppDataMigrationTests.
 - v2.4 Hierarchical Swarm & Scheduling — DONE | 37f03ba2, 7d9d25c6 | Markdown chat
   rendering, bounded observable Cortex delegation, and persistent recurring file scans.
   Proof: MarkdownRenderingTests, HierarchicalSwarmTests, and ScheduledScannerTests;
@@ -62,7 +77,7 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
-v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling current at 37f03ba2. New findings go to the backlog.
+v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current at 410cbdcf. New findings go to the backlog.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -176,13 +191,13 @@ nothing when the window closes mid-animation (depends N1/N2 closed).
 ## PHASE C — Swarm & Code Intelligence (WHAT only)
 Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safety batch
 (new threat surface) before merge; feature tests alone are not sufficient to merge.
-- C1  DONE | 37f03ba2 | Hierarchical swarm: Cortex parses a validated task breakdown,
+- C1  DONE | 37f03ba2, 410cbdcf | Hierarchical swarm: Cortex parses a validated task breakdown,
       delegates to registered specialist workers, isolates worker failures, and synthesizes
       the surviving results. Foldy is a dry-run file preview, Scout is RAG search, and
-      Click/Syntax use provider-backed fallbacks. Accept: delegation start and each
-      specialist completion are visible in Live Feed; worker count is bounded to eight;
-      failure of one worker does not kill the run. Proof: HierarchicalSwarmTests and
-      GUI delegation-routing tests; 175/175 unit tests green.
+      Syntax provides provider-backed text-only coding assistance. Accept: delegation start
+      and each specialist completion are visible in Live Feed; worker count is bounded to eight;
+      failure of one worker does not kill the run. Proof: HierarchicalSwarmTests,
+      CodingAgentTests, and GUI delegation-routing tests; 192/192 unit tests green.
 - C2  BACKLOG | Meta-prompting: architect produces a plan, builder implements it, as
       separate routed steps. Accept: plan artifact exists and is reviewable before any
       edit. Est 5-10h.
@@ -192,7 +207,7 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.
-- C5  DONE | 8665d86d | RAG infinite context: ChromaDB ingestion, 500-character chunks with
+- C5  DONE | 8665d86d | Persistent document RAG: ChromaDB ingestion, 500-character chunks with
       50-character overlap, default MiniLM embeddings, bounded retrieval, source-change
       replacement, recursive TXT/PDF/DOCX ingestion, and Scout Chat results. Proof:
       known-token retrieval and changed-file replacement covered by RAGTests; 138/138 green.
@@ -203,12 +218,13 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - D2  BACKLOG | Screen-aware automation: screenshot -> vision analysis -> action.
       Accept: correct action on a controlled target; refuses ambiguous targets.
       Est 15-30h + safety batch.
-- D3  DONE | 37f03ba2, 7d9d25c6 | Scheduled agents: an instance-local background scanner runs the
-      real file categorization/move path at configurable 15-minute, 30-minute, 1-hour,
-      or 6-hour intervals. Accept: task runs on schedule, preference and last-run state
-      survive restart in AppData, cancellation is clean, and shutdown stops the worker.
-      Proof: ScheduledScannerTests cover execution, interval validation, persistence, and
-      cancellation; 175/175 unit tests green.
+- D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
+      scanner runs the real file categorization/move path at configurable 15-minute,
+      30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
+      in AppData. Generation-specific cancellation is checked between file operations; a
+      timed-out stop returns failure and restart is refused while old work remains alive.
+      Proof: ScheduledScannerTests cover execution, interval validation, persistence,
+      cancellation, generation isolation, and overlap refusal; 192/192 unit tests green.
 - D4  BACKLOG | Voice activation: wake word + speech-to-text command. Accept: hands-free
       command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
 - D5  BACKLOG | Phone remote control: authenticated API server. Accept: remote command
@@ -216,15 +232,13 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       Est 10-20h + safety batch.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
-- Conversation memory DONE | 2b9e5031 | Supervisor retains bounded instance-local context and the
-  latest FILE_OP intent, merging only short noun-like follow-ups ("incoming", "by type").
+- Conversation memory DONE | 2b9e5031, 9641d1f1 | Supervisor retains bounded instance-local
+  FILE_OP context; general Cortex chat retains at most 6 turns, 12,000 total characters, and
+  4,000 characters per message. Clearing chat erases general-chat memory and invalidates
+  stale in-flight responses.
 - pytest migration of the suite
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
-- Move steward.db, secret.key, steward_operations.json out of the repo working directory
-  (e.g. %APPDATA%\STEWARD\). Paths are currently os.getcwd()-based. Rationale: an agent with
-  shell access deleted the production DB; .clineignore governs file tools only. Keep
-  irreplaceable data outside the blast radius.
 
 ## Rules of engagement
 1. Work ONLY the batch or phase named in your prompt.

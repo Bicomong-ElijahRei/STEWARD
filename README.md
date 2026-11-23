@@ -4,16 +4,22 @@ language requests across multiple LLM providers and executes sandboxed file oper
 preview, explicit approval, and undo/redo.
 
 ## What it actually does today
-- Chat: a supervisor (Cortex) classifies intent and routes to the file agent (Foldy)
-  or semantic search agent (Scout).
+- Chat: Cortex classifies intent and routes to Foldy (file operations), Scout (semantic
+  document search), Syntax (provider-backed coding text), or Cortex for general conversation.
+- Cortex conversation: general chat retains at most 6 turns, 12,000 total characters, and
+  4,000 characters per message. Clearing chat erases that memory and rejects stale responses.
+- Syntax assistance: generation, debugging, and refactoring use providers bound to the
+  Syntax role. Syntax is text-only: it has no file, process, or tool-execution surface.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - File operations: preview a plan, approve it by ID, execute exactly the approved plan.
-- Organizer: per-file preview table with checkboxes, execute, undo/redo timeline.
+- Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
+  restart-persistent scheduled scans with cooperative cancellation.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
   Deduplication is filesystem-identity-aware, concurrency is capped at 4 workers and 32
   outstanding files, and stopping the daemon cancels queued work without holding process exit.
-- API Hub: add/verify/discover providers, bind them to agent roles, enable/disable.
+- API Hub: add/verify/discover providers, bind them to agent roles, enable/disable, and
+  rotate one explicitly selected shared credential by ID with endpoint/link validation.
 - Multi-provider routing with latency-based selection, 429 key failover on the same
   endpoint, 401/403 deactivation, 5xx cooldowns, and live failover visualization.
 
@@ -25,8 +31,11 @@ preview, explicit approval, and undo/redo.
   (bulk move, temp cleanup, deletion suggestion) are unreachable from a model-issued plan.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
 - Approval is bound to a preview plan ID. Stale, superseded, or replayed plans are refused.
-- API keys are encrypted at rest with Fernet; a rotated/missing key degrades to a visible
-  recoverable state rather than crashing or substituting wrong plaintext.
+- API keys are encrypted at rest with Fernet; credential rotation updates only the selected
+  credential after validating its endpoint and provider links, with transactional rollback.
+- A rotating scan cannot overlap with its predecessor: cancellation is checked between file
+  operations, and restart is refused while the old worker or scan remains alive.
+- Syntax receives text-only provider requests and cannot mutate files or execute code.
 - Undo/redo only records verified success and refuses to overwrite existing files.
 
 ## Install
@@ -36,17 +45,18 @@ venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
-Python 3.12. Configuration lives in steward.db (encrypted); secret.key is generated on first
-run. Both are gitignored — back them up, they are not recoverable from the repo.
+Python 3.12. Persistent configuration lives in `%APPDATA%\STEWARD\steward.db`; its Fernet
+key lives beside it as `secret.key`. Legacy repository-root files are copied, not moved, on
+first startup. Back up the AppData database/key pair; they are not recoverable from the repo.
 
 ## Tests
 ```
 python -m unittest discover -v
 python test_validator.py
 ```
-138 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo
-semantics, credential recovery, migration safety, daemon concurrency, RAG ingestion/retrieval,
-and GUI threading/lifecycle.
+192 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+credential rotation/recovery, migration safety, daemon concurrency, restart-safe scheduled
+scans, bounded Cortex memory, provider-backed text-only Syntax, RAG, and GUI lifecycle.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -56,16 +66,17 @@ Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires 
 confirmation and a verified database/key/operation-log backup set.
 
 ## Known limitations
-- Click (PC control) and Syntax (coding) are registered personas but not implemented;
-  general conversation falls through to a canned response.
+- Click (PC control) is a registered persona but is not implemented.
+- Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
   the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
-- Production data lives in the repo working directory; relocating it to %APPDATA% is planned.
 - No packaging/installer yet.
 
 ## Roadmap
-Phase C5 (RAG) is implemented; Phase C swarm/AST work and Phase D (MCP, vision, voice,
-remote) remain backlog in PLAN.md.
+v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
+restart-safe scheduling, bounded Cortex memory, and text-only Syntax); meta-prompting,
+surgical file patches, self-healing execution, MCP, vision, voice, and remote control remain
+future work tracked in PLAN.md.
