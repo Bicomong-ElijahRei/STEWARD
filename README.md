@@ -32,6 +32,16 @@ preview, explicit approval, and undo/redo.
 - The dispatchable tool set is derived from the declared schema; undeclared tools
   (bulk move, temp cleanup, deletion suggestion) are unreachable from a model-issued plan.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
+  Plan preflight also rejects occupied destinations and duplicate plan targets, while the
+  mutation primitive rechecks collisions immediately before publication.
+- Move, rename, and undo/redo publication never overwrite an occupied destination. Regular
+  files are published through a same-directory temporary copy and an atomic no-overwrite
+  reservation; Windows uses hard-link reservation when available and an `O_EXCL` fallback.
+- The operation journal is write-ahead durable: intent is atomically persisted before a
+  filesystem mutation and completion afterward. Write failures stop the operation or leave
+  an explicit `uncertain` record for manual reconciliation rather than claiming success.
+- Folder history records only directories actually created, with filesystem identity checks.
+  Legacy folder records without ownership evidence are not destructively undone or redone.
 - Approval is bound to a preview plan ID. Stale, superseded, or replayed plans are refused.
 - Clearing chat advances a conversation epoch and invalidates pending or in-flight previews;
   stale preview, approval, execution, provider, and specialist UI continuations are discarded.
@@ -61,9 +71,10 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-236 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+247 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
-scans, bounded Cortex memory, provider-backed text-only Syntax, RAG, and GUI lifecycle.
+scans, bounded Cortex memory, provider-backed text-only Syntax, RAG, GUI lifecycle, no-overwrite
+filesystem publication, whole-plan collision preflight, and durable journal recovery.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.

@@ -115,13 +115,26 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - Persistent state: `%APPDATA%\STEWARD\steward.db`, `secret.key`, and `steward_operations.json`;
   legacy repository-root files are copied, never moved or overwritten. Tests use tempfile +
   patch.object(FileAgent,"OPERATION_LOG_PATH",...) AND pin the instance attribute.
+- Mutation publication is no-overwrite: a same-directory temporary copy is reserved at the
+  destination with a hard link when supported, otherwise an `O_EXCL` file descriptor. The
+  source is removed only after destination publication succeeds. Rename and undo/redo use the
+  same primitive rather than `os.rename`/`shutil.move` overwrite behavior.
+- Operation-history writes use a unique same-directory temporary file, flush, `fsync`, and
+  atomic replacement; non-Windows hosts also fsync the containing directory. Process-wide
+  locking and per-entry revisions serialize agents sharing a log and reject stale writers.
+- Mutation intent is persisted before disk mutation and completion afterward. Interrupted
+  intents/transitions reload as `uncertain` and block blind undo/redo. Folder operations record
+  exact created-directory identities; legacy records without this evidence are refused for
+  destructive undo/redo.
 - Helper scripts go OUTSIDE the repo. Preserve BOM and line endings byte-for-byte.
 - test_validator.py is standalone: `python test_validator.py`
 
 ## Tests
 - test_phase0_phase_a.py — main regression suite. Run: `python -m unittest discover -v`
 - test_lifecycle_hardening.py — generation/epoch ownership regressions
-- test_appdata_migration.py — copy-only migration tests; total discovery count is 236
+- test_appdata_migration.py — copy-only migration tests
+- test_filesystem_journal_hardening.py — collision, ownership, write-ahead, and journal-failure regressions
+- Total discovery count is 247
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

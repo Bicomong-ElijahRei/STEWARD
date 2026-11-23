@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 7907ebb1 | Filesystem mutation safety: added no-overwrite publication, write-ahead atomic operation history, exact folder ownership, whole-plan destination conflict preflight, uncertain-state recovery, and 247/247 unit tests green.
 2026-11-23 | 8dd2e411 | Lifecycle hardening: added preview-generation ownership, epoch-guarded chat/approval/execution/specialist UI continuations, five Syntax intents, and generation-isolated scanner restarts; 236/236 unit tests green.
 2026-11-23 | 8dd2e411 | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, lifecycle, provider-attribution, and test state; 236/236 unit tests green.
 2026-11-23 | 410cbdcf | v3.0 safe-intelligence foundations: added explicit shared-credential rotation, generation-safe scheduled scans, bounded Cortex conversation memory with stale-response rejection, and provider-backed text-only Syntax assistance; 192/192 unit tests green.
@@ -50,19 +51,20 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 8dd2e411 (v3.0 lifecycle and provider-attribution hardening)
-Suite: 236/236 unit tests green
+Implementation baseline: 7907ebb1 (v3.0 filesystem mutation and durable-history hardening)
+Suite: 247/247 unit tests green
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
-- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, HEAD |
+- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, 7907ebb1, HEAD |
   explicit shared-credential rotation; generation-safe scheduled scans; bounded Cortex
   general-chat memory with stale-response rejection; provider-backed text-only Syntax across
-  generation/debugging/refactoring/review/explanation; and generation-owned file previews with
-  epoch-guarded approval, execution, provider, and specialist UI continuations.
-  Proof: 236/236 unit tests green.
+  generation/debugging/refactoring/review/explanation; generation-owned file previews with
+  epoch-guarded approval/execution/provider/specialist continuations; and no-overwrite
+  filesystem publication with durable write-ahead operation history.
+  Proof: 247/247 unit tests green.
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.

@@ -20,7 +20,8 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   isolation, Live Feed observability, and restart-persistent recurring file scans.
 - **v3.0 — Safe-Intelligence Foundations (Current):** explicit credential rotation,
   generation-safe scheduled scans, bounded Cortex conversation memory, provider-backed
-  text-only Syntax assistance, and persistent state relocated to `%APPDATA%\STEWARD`.
+  text-only Syntax assistance, durable write-ahead filesystem history, no-overwrite
+  mutation publication, and persistent state relocated to `%APPDATA%\STEWARD`.
   These foundations intentionally do not grant Syntax file-write or code-execution capability.
 - **v3.0 — Advanced Code Intelligence & Phase D (Future):** meta-prompting,
   surgical code workflows, self-healing loops, and research-backed integrations such
