@@ -20,26 +20,30 @@ file categorization.
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
-- `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring; text-only, no tools/files/processes
+- `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
-- `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation
+- `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
 - `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop, scheduled-scan controls
 - `gui/settings_tab.py`  API Hub: provider CRUD, validation, discovery, assigned_agent dropdown, explicit credential rotation
 - `gui/live_feed.py`     activity cards + provider failover flash
 
 ## The critical paths
 Chat request: send_chat -> supervisor.route -> AGENT_ROUTING_KEYS -> specialist agent
-File op approval: run() stores deep-copied parsed plan + uuid4 plan id under _plan_lock
-  -> ChatTab captures id AT PREVIEW TIME -> user approves -> execute_pending_plan(plan_id)
+File op approval: run() captures a preview generation and stores a deep-copied parsed plan
+  + uuid4 plan id under _plan_lock -> ChatTab receives the request-local id through
+  plan_id_callback -> user approves -> execute_pending_plan(plan_id)
   -> _execute_tool_plan(dry_run=False) -> allowlist + path preflight -> _legacy_tool_functions[name]
+Discarding, superseding, or clearing chat advances the preview generation, so a late provider
+response cannot publish an executable plan or overwrite newer provider metadata.
 Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy ./rag_index)
   -> RAGAgent.search -> ChromaDB query -> source/content/distance results -> formatted Chat bubble
 General conversation: supervisor.route -> AGENT_GENERAL_CHAT -> bounded in-memory history
   -> APIManager.route_request(agent_name="Cortex", require_tools=False) -> epoch check -> chat bubble
 Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
   -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
+  -> one of five intent instructions: generation, debugging, refactoring, review, explanation
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -64,7 +68,15 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
 - Cortex general-chat memory is instance-local and bounded to 6 turns, 12,000 total characters,
   and 4,000 characters per message. Clearing chat erases history and increments an epoch.
 - Requests capture that epoch before routing/provider work; stale responses and queued UI
-  callbacks are discarded. History snapshots and turn writes are protected by one instance lock.
+  callbacks are discarded across general chat, file preview/approval/execution, Scout, Syntax,
+  provider reporting, Live Feed, and delegation. History snapshots and turn writes are protected
+  by one instance lock. Clear invalidates pending/in-flight file previews in the same critical
+  section; the final execution check and plan claim are serialized with that invalidation.
+- Provider metadata is delivered through request-local callbacks for Cortex, Foldy, and
+  Syntax. Shared ``last_provider`` remains available for compatibility but cannot misattribute
+  one concurrent request's provider to another request.
+- Delegated Syntax original-request context is thread-local, so overlapping requests cannot
+  replace one another's intent context.
 - Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
   and no tool definitions, and has no filesystem or process-execution API. Empty, malformed,
   and tool-bearing provider responses are rejected.
@@ -77,9 +89,9 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
 - `stop()` prevents new work, discards queued files, and joins workers briefly. Workers are
   daemon threads, so an active provider call cannot delay interpreter exit.
 - `ScheduledScanner` uses a generation-specific cancel event and tracks active scans. Cancellation
-  is checked between file operations; a timed-out stop returns `False` and restart is refused
-  until the old worker and scan are gone, preventing overlapping generations. Shared scan state
-  and notification are committed atomically only by the owning generation.
+  is checked between file operations; a timed-out stop returns `False`. Restarting creates a new
+  isolated generation even if an old worker is still unwinding; the scan mutex prevents
+  overlapping scan bodies, and the old generation cannot commit shared state or notifications.
 
 ## Historical issue ledger (all entries below closed)
 Batch 2A: H5 router skips a candidate + double-hits the promoted one (total failure possible
@@ -107,8 +119,9 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_validator.py is standalone: `python test_validator.py`
 
 ## Tests
-- test_phase0_phase_a.py — 188 tests in the main suite. Run: `python -m unittest discover -v`
-- test_appdata_migration.py — 4 copy-only migration tests; total discovery count is 192
+- test_phase0_phase_a.py — main regression suite. Run: `python -m unittest discover -v`
+- test_lifecycle_hardening.py — generation/epoch ownership regressions
+- test_appdata_migration.py — copy-only migration tests; total discovery count is 236
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

@@ -94,11 +94,11 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   - **Specialists:** Foldy handles dry-run file previews, Scout performs RAG search, and Syntax provides provider-backed text-only coding assistance; Click remains future work.
   - **Reliability:** Results are synthesized by Cortex, specialist failures are isolated, and delegation start/completion is visible in the Live Feed.
 - [x] **Provider-Backed Text-Only Syntax:**
-  - **Agent:** `CodingAgent` performs generation, debugging, and refactoring through the shared router with `agent_name="Syntax"`, `require_tools=False`, and no tool definitions.
+  - **Agent:** `CodingAgent` performs generation, debugging, refactoring, review, and explanation through the shared router with `agent_name="Syntax"`, `require_tools=False`, and no tool definitions.
   - **Boundary:** Syntax has no filesystem or process-execution surface and never applies generated code.
 - [x] **Bounded Cortex Conversation Memory:**
   - **Memory:** General chat keeps at most 6 turns, 12,000 total characters, and 4,000 characters per message in memory.
-  - **Invalidation:** Clearing chat erases history and rejects stale in-flight responses.
+  - **Invalidation:** Clearing chat erases history, invalidates pending or in-flight file previews, and rejects stale responses and specialist UI continuations.
 - [ ] **Meta-Prompting (Architect + Builder):**
   - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint. A future execution worker applies the blueprint only through an approved mutation boundary.
 - [ ] **AST Parsing & JSON Patches:**
@@ -117,7 +117,7 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
 
 - [ ] **MCP (Model Context Protocol) Support:** Connect STEWARD to databases, web browsers, and third-party SaaS apps using Anthropic's open standard.
 - [ ] **Screen-Aware Automation:** `Click` (PC Agent) will use a vision model to analyze a screenshot and propose an action; ambiguous actions must be refused and no PC-control surface exists today.
-- [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, cancellation is checked between file operations, and restart is refused while old work remains alive.
+- [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, cancellation is checked between file operations, and restart creates an isolated generation whose old worker cannot commit state or notifications into the replacement.
 - [ ] **Voice Activation:** `pyaudio` + `whisper` integration for hands-free wake-word control.
 - [ ] **Phone Remote Control:** A lightweight authenticated `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi, with all remote actions sandboxed and logged.
 

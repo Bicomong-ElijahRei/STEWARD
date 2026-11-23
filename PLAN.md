@@ -17,7 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
-2026-11-23 | HEAD | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, and test state; 192/192 unit tests green.
+2026-11-23 | 8dd2e411 | Lifecycle hardening: added preview-generation ownership, epoch-guarded chat/approval/execution/specialist UI continuations, five Syntax intents, and generation-isolated scanner restarts; 236/236 unit tests green.
+2026-11-23 | 8dd2e411 | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, lifecycle, provider-attribution, and test state; 236/236 unit tests green.
 2026-11-23 | 410cbdcf | v3.0 safe-intelligence foundations: added explicit shared-credential rotation, generation-safe scheduled scans, bounded Cortex conversation memory with stale-response rejection, and provider-backed text-only Syntax assistance; 192/192 unit tests green.
 2026-11-23 | 61390dca | Credential rotation safety: rotation now targets one explicit credential ID, validates the normalized endpoint and provider links, and rolls back failed updates; 180/180 unit tests green.
 2026-11-23 | 518785a9 | Scheduled-scan lifecycle: generation-specific cancellation, active-scan tracking, bounded stop, and restart refusal while old work remains alive; 184/184 unit tests green.
@@ -49,17 +50,19 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: 410cbdcf (v3.0 safe-intelligence foundations)
-Suite: 192/192 unit tests green
+Implementation baseline: 8dd2e411 (v3.0 lifecycle and provider-attribution hardening)
+Suite: 236/236 unit tests green
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
-- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf |
-  explicit shared-credential rotation; cooperative generation-safe scheduled scans;
-  bounded Cortex general-chat memory with stale-response rejection; and provider-backed
-  text-only Syntax generation/debug/refactoring. Proof: 192/192 unit tests green.
+- v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, HEAD |
+  explicit shared-credential rotation; generation-safe scheduled scans; bounded Cortex
+  general-chat memory with stale-response rejection; provider-backed text-only Syntax across
+  generation/debugging/refactoring/review/explanation; and generation-owned file previews with
+  epoch-guarded approval, execution, provider, and specialist UI continuations.
+  Proof: 236/236 unit tests green.
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.
@@ -194,10 +197,10 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
 - C1  DONE | 37f03ba2, 410cbdcf | Hierarchical swarm: Cortex parses a validated task breakdown,
       delegates to registered specialist workers, isolates worker failures, and synthesizes
       the surviving results. Foldy is a dry-run file preview, Scout is RAG search, and
-      Syntax provides provider-backed text-only coding assistance. Accept: delegation start
-      and each specialist completion are visible in Live Feed; worker count is bounded to eight;
-      failure of one worker does not kill the run. Proof: HierarchicalSwarmTests,
-      CodingAgentTests, and GUI delegation-routing tests; 192/192 unit tests green.
+      Syntax provides provider-backed text-only coding assistance with five intents. Accept:
+      delegation start and each specialist completion are visible in Live Feed; worker count is
+      bounded to eight; failure of one worker does not kill the run. Proof: HierarchicalSwarmTests,
+      CodingAgentTests, and GUI delegation-routing tests; 236/236 unit tests green.
 - C2  BACKLOG | Meta-prompting: architect produces a plan, builder implements it, as
       separate routed steps. Accept: plan artifact exists and is reviewable before any
       edit. Est 5-10h.
@@ -222,9 +225,10 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       scanner runs the real file categorization/move path at configurable 15-minute,
       30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
       in AppData. Generation-specific cancellation is checked between file operations; a
-      timed-out stop returns failure and restart is refused while old work remains alive.
+      timed-out stop returns failure; restart creates an isolated generation whose old worker cannot
+      commit state or notifications into the replacement.
       Proof: ScheduledScannerTests cover execution, interval validation, persistence,
-      cancellation, generation isolation, and overlap refusal; full unit suite green.
+      cancellation, generation isolation, and isolated overlap; full unit suite green.
 - D4  BACKLOG | Voice activation: wake word + speech-to-text command. Accept: hands-free
       command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
 - D5  BACKLOG | Phone remote control: authenticated API server. Accept: remote command
@@ -232,10 +236,11 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       Est 10-20h + safety batch.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
-- Conversation memory DONE | 2b9e5031, 9641d1f1 | Supervisor retains bounded instance-local
+- Conversation memory DONE | 2b9e5031, 9641d1f1, HEAD | Supervisor retains bounded instance-local
   FILE_OP context; general Cortex chat retains at most 6 turns, 12,000 total characters, and
-  4,000 characters per message. Clearing chat erases general-chat memory and invalidates
-  stale in-flight responses.
+  4,000 characters per message. Clearing chat erases general-chat memory, invalidates pending
+  or in-flight file previews, and rejects stale responses/UI continuations across all specialist
+  paths.
 - pytest migration of the suite
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
