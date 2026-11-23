@@ -224,7 +224,7 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       in AppData. Generation-specific cancellation is checked between file operations; a
       timed-out stop returns failure and restart is refused while old work remains alive.
       Proof: ScheduledScannerTests cover execution, interval validation, persistence,
-      cancellation, generation isolation, and overlap refusal; 192/192 unit tests green.
+      cancellation, generation isolation, and overlap refusal; full unit suite green.
 - D4  BACKLOG | Voice activation: wake word + speech-to-text command. Accept: hands-free
       command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
 - D5  BACKLOG | Phone remote control: authenticated API server. Accept: remote command

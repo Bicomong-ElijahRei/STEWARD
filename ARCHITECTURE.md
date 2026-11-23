@@ -38,7 +38,7 @@ Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy .
   -> RAGAgent.search -> ChromaDB query -> source/content/distance results -> formatted Chat bubble
 General conversation: supervisor.route -> AGENT_GENERAL_CHAT -> bounded in-memory history
   -> APIManager.route_request(agent_name="Cortex", require_tools=False) -> epoch check -> chat bubble
-Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.generate_code
+Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.handle_request
   -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
 
 ## Sandbox rules (do not weaken)
@@ -55,15 +55,19 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.generate_code
 - 429 -> cooldown_until from Retry-After, record_usage, prefer another key on SAME endpoint
 - 401/403 -> is_active=0. 5xx -> failure_count++, >3 -> 5 min cooldown
 - Success resets failure_count/cooldown; injects `_steward` {provider, model, agent_name, failovers}
+- Tool-bearing requests only use providers with `supports_tools=True`; there is no fallback to
+  a text-only provider.
 - Provider HTTP calls have a 30-second default timeout, so an in-flight daemon request cannot
   hold process exit indefinitely.
 
 ## Conversation and Syntax boundaries
 - Cortex general-chat memory is instance-local and bounded to 6 turns, 12,000 total characters,
   and 4,000 characters per message. Clearing chat erases history and increments an epoch.
-- Requests capture that epoch before routing/provider work; stale responses are discarded.
+- Requests capture that epoch before routing/provider work; stale responses and queued UI
+  callbacks are discarded. History snapshots and turn writes are protected by one instance lock.
 - Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
-  and no tool definitions, and has no filesystem or process-execution API.
+  and no tool definitions, and has no filesystem or process-execution API. Empty, malformed,
+  and tool-bearing provider responses are rejected.
 
 ## Daemon lifecycle
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
@@ -74,7 +78,8 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodingAgent.generate_code
   daemon threads, so an active provider call cannot delay interpreter exit.
 - `ScheduledScanner` uses a generation-specific cancel event and tracks active scans. Cancellation
   is checked between file operations; a timed-out stop returns `False` and restart is refused
-  until the old worker and scan are gone, preventing overlapping generations.
+  until the old worker and scan are gone, preventing overlapping generations. Shared scan state
+  and notification are committed atomically only by the owning generation.
 
 ## Historical issue ledger (all entries below closed)
 Batch 2A: H5 router skips a candidate + double-hits the promoted one (total failure possible
