@@ -314,9 +314,15 @@ class PlanAgent:
             content = str(result.get("content") or "").strip()
             if not content:
                 continue
-            snippet = content[:min(len(content), 2000, remaining)]
-            remaining -= len(snippet)
-            sections.append(f"--- {path}:{start}-{end} ---\n{snippet}")
+            header = f"--- {path}:{start}-{end} ---"
+            separator_length = 2
+            available = remaining - separator_length - len(header) - 1
+            if available <= 0:
+                continue
+            snippet = content[:min(len(content), 2000, available)]
+            section = f"{header}\n{snippet}"
+            sections.append(section)
+            remaining -= len(section) + separator_length
         return "\n\n".join(sections)
 
     def _artifact_path(self, plan_id):

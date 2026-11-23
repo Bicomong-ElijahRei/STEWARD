@@ -130,12 +130,19 @@ class CodingAgent:
             content = str(result.get("content") or "").strip()
             if not content:
                 continue
-            snippet = content[:min(len(content), cls.MAX_CODE_SNIPPET_CHARS, remaining)]
-            remaining -= len(snippet)
             header = f"--- {path}:{start}-{end}"
             if symbol:
                 header += f" ({symbol})"
-            sections.append(f"{header} ---\n{snippet}")
+            separator_length = 2
+            available = remaining - separator_length - len(header) - 5
+            if available <= 0:
+                continue
+            snippet = content[:min(
+                len(content), cls.MAX_CODE_SNIPPET_CHARS, available
+            )]
+            section = f"{header} ---\n{snippet}"
+            sections.append(section)
+            remaining -= len(section) + separator_length
         return "\n\n".join(sections)
 
     @classmethod
