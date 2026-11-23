@@ -120,12 +120,19 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
   source is removed only after destination publication succeeds. Rename and undo/redo use the
   same primitive rather than `os.rename`/`shutil.move` overwrite behavior.
 - Operation-history writes use a unique same-directory temporary file, flush, `fsync`, and
-  atomic replacement; non-Windows hosts also fsync the containing directory. Process-wide
-  locking and per-entry revisions serialize agents sharing a log and reject stale writers.
+  atomic replacement; non-Windows hosts also fsync the containing directory. A process-local
+  lock and per-entry revisions serialize threads/agents sharing a log in one process and reject
+  stale writers. They do not synchronize separate processes; no single-instance guarantee
+  currently prevents two STEWARD processes from sharing the AppData operation log.
 - Mutation intent is persisted before disk mutation and completion afterward. Interrupted
-  intents/transitions reload as `uncertain` and block blind undo/redo. Folder operations record
-  exact created-directory identities; legacy records without this evidence are refused for
-  destructive undo/redo.
+  intents/transitions reload as `uncertain` and block blind undo/redo. A published move/rename
+  whose source removal fails records `failed` only after destination rollback is verified; if
+  cleanup cannot be verified, it records `uncertain`. Folder operations record exact
+  created-directory identities; partial creation preserves that evidence and is uncertain.
+  Legacy records without this evidence are refused for destructive undo/redo.
+- Whole-plan preflight includes file and directory targets. A file/directory target collision is
+  rejected in either plan order before the first mutation, while a directory parent with a file
+  child remains valid.
 - Helper scripts go OUTSIDE the repo. Preserve BOM and line endings byte-for-byte.
 - test_validator.py is standalone: `python test_validator.py`
 
@@ -133,8 +140,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_phase0_phase_a.py — main regression suite. Run: `python -m unittest discover -v`
 - test_lifecycle_hardening.py — generation/epoch ownership regressions
 - test_appdata_migration.py — copy-only migration tests
-- test_filesystem_journal_hardening.py — collision, ownership, write-ahead, and journal-failure regressions
-- Total discovery count is 247
+- test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
+- Total discovery count is 259
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

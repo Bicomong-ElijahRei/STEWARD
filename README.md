@@ -32,16 +32,20 @@ preview, explicit approval, and undo/redo.
 - The dispatchable tool set is derived from the declared schema; undeclared tools
   (bulk move, temp cleanup, deletion suggestion) are unreachable from a model-issued plan.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
-  Plan preflight also rejects occupied destinations and duplicate plan targets, while the
-  mutation primitive rechecks collisions immediately before publication.
+  Plan preflight rejects occupied destinations, duplicate targets, and file/directory target
+  collisions in either plan order, while the mutation primitive rechecks collisions immediately
+  before publication.
 - Move, rename, and undo/redo publication never overwrite an occupied destination. Regular
   files are published through a same-directory temporary copy and an atomic no-overwrite
   reservation; Windows uses hard-link reservation when available and an `O_EXCL` fallback.
 - The operation journal is write-ahead durable: intent is atomically persisted before a
   filesystem mutation and completion afterward. Write failures stop the operation or leave
   an explicit `uncertain` record for manual reconciliation rather than claiming success.
+  No-op mutations are non-success history, verified destination rollback is ordinary failure,
+  and unresolved partial state is `uncertain` and blocks blind undo/redo.
 - Folder history records only directories actually created, with filesystem identity checks.
-  Legacy folder records without ownership evidence are not destructively undone or redone.
+  Partial folder creation preserves that ownership evidence for recovery. Legacy folder records
+  without ownership evidence are not destructively undone or redone.
 - Approval is bound to a preview plan ID. Stale, superseded, or replayed plans are refused.
 - Clearing chat advances a conversation epoch and invalidates pending or in-flight previews;
   stale preview, approval, execution, provider, and specialist UI continuations are discarded.
@@ -71,10 +75,11 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-247 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+259 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, RAG, GUI lifecycle, no-overwrite
-filesystem publication, whole-plan collision preflight, and durable journal recovery.
+filesystem publication, whole-plan collision preflight, partial-outcome journal truthfulness, and
+durable journal recovery.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -91,6 +96,9 @@ confirmation and a verified database/key/operation-log backup set.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
+- Operation-history locking is process-local. Separate STEWARD processes can plausibly share
+  the same `%APPDATA%\STEWARD\steward_operations.json`; cross-process journal ownership needs a
+  separately reviewed locking design.
 - No packaging/installer yet.
 
 ## Roadmap
