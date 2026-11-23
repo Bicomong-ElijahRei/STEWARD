@@ -165,7 +165,7 @@ class ScheduledScanner:
             raise ValueError("stop_timeout must be non-negative")
         self._running = False
         self._thread = None
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._scan_lock = threading.Lock()
         self._scheduler = schedule.Scheduler()
         self._generation = 0
@@ -240,22 +240,32 @@ class ScheduledScanner:
 
     def _scan(self, cancel_event=None, generation=None):
         """Categorize files currently present in Incoming."""
-        if cancel_event is None:
-            with self._state_lock:
-                cancel_event = self._cancel_event or threading.Event()
-        if generation is None:
-            with self._state_lock:
-                generation = self._generation
-        if not self._scan_lock.acquire(blocking=False):
-            return {
-                "processed": 0,
-                "failed": 0,
-                "skipped": True,
-                "error": "scan_already_running",
-                "cancelled": False,
-            }
         with self._state_lock:
-            self._active_scans += 1
+            if cancel_event is None:
+                cancel_event = self._cancel_event or threading.Event()
+            if generation is None:
+                generation = self._generation
+            current = generation == self._generation
+        if not current:
+            return self._skipped_scan("stale_generation", cancelled=False)
+        if cancel_event.is_set():
+            return self._skipped_scan("scan_cancelled", cancelled=True)
+
+        if not self._scan_lock.acquire(blocking=False):
+            return self._skipped_scan("scan_already_running", cancelled=False)
+        with self._state_lock:
+            if generation != self._generation:
+                current = False
+            elif cancel_event.is_set():
+                current = False
+            else:
+                self._active_scans += 1
+        if not current:
+            self._scan_lock.release()
+            if cancel_event.is_set():
+                return self._skipped_scan("scan_cancelled", cancelled=True)
+            return self._skipped_scan("stale_generation", cancelled=False)
+
         try:
             root = os.path.realpath(os.path.abspath(self.file_agent.root_path))
             incoming = os.path.realpath(os.path.abspath(
@@ -274,26 +284,26 @@ class ScheduledScanner:
             }
             if not os.path.isdir(incoming):
                 summary["error"] = "incoming_folder_not_found"
-                self.last_error = summary["error"]
-                self.last_scan_time = datetime.now().isoformat(timespec="seconds")
-                self.scan_count += 1
-                self._notify_scan(summary)
+                self._commit_scan(summary, generation)
                 return summary
 
             try:
                 filenames = sorted(os.listdir(incoming))
             except OSError as exc:
                 summary["error"] = str(exc)
-                self.last_error = str(exc)
-                self.last_scan_time = datetime.now().isoformat(timespec="seconds")
-                self.scan_count += 1
-                self._notify_scan(summary)
+                self._commit_scan(summary, generation)
                 return summary
 
             for filename in filenames:
                 if cancel_event.is_set():
                     summary["cancelled"] = True
+                    summary["error"] = "scan_cancelled"
                     break
+                with self._state_lock:
+                    if generation != self._generation:
+                        summary["skipped"] = True
+                        summary["error"] = "stale_generation"
+                        return summary
                 filepath = os.path.join(incoming, filename)
                 if not os.path.isfile(filepath):
                     continue
@@ -305,7 +315,6 @@ class ScheduledScanner:
                     moved = not os.path.exists(filepath)
                     if moved and not result_text.startswith("Error"):
                         summary["processed"] += 1
-                        self.files_processed += 1
                     else:
                         summary["failed"] += 1
                     summary["files"].append({
@@ -322,20 +331,41 @@ class ScheduledScanner:
                     })
                 if cancel_event.is_set():
                     summary["cancelled"] = True
+                    summary["error"] = "scan_cancelled"
                     break
 
-            self.last_error = summary["error"]
-            self.last_scan_time = datetime.now().isoformat(timespec="seconds")
-            self.scan_count += 1
-            with self._state_lock:
-                current = generation == self._generation
-            if current:
-                self._notify_scan(summary)
+            self._commit_scan(summary, generation)
             return summary
         finally:
             with self._state_lock:
                 self._active_scans -= 1
             self._scan_lock.release()
+
+    @staticmethod
+    def _skipped_scan(error, cancelled=False):
+        """Build a summary for a scan rejected before it owns any work."""
+        return {
+            "processed": 0,
+            "failed": 0,
+            "skipped": True,
+            "error": error,
+            "files": [],
+            "cancelled": cancelled,
+        }
+
+    def _commit_scan(self, summary, generation):
+        """Atomically commit and notify state for the owning generation."""
+        with self._state_lock:
+            if generation != self._generation:
+                summary["skipped"] = True
+                summary["error"] = "stale_generation"
+                return False
+            self.last_error = summary["error"]
+            self.last_scan_time = datetime.now().isoformat(timespec="seconds")
+            self.scan_count += 1
+            self.files_processed += summary["processed"]
+            self._notify_scan(summary)
+        return True
 
     def _notify_scan(self, summary):
         if not callable(self.on_scan):

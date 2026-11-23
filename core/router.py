@@ -30,34 +30,20 @@ class APIManager:
         providers = db.get_active_providers()
         now = datetime.now()
 
+        needs_tool_support = bool(require_tools or tools)
         eligible = [
             provider
             for provider in providers
             if self._matches_agent(provider, agent_name)
             and not self._is_cooling_down(provider.get("cooldown_until"), now)
             and self._matches_tier(provider.get("intelligence_tier"), required_tier)
-            and (not require_tools or bool(provider.get("supports_tools")))
+            and (not needs_tool_support or bool(provider.get("supports_tools")))
         ]
         eligible.sort(key=self._speed_score)
 
         cloud_providers = [provider for provider in eligible if not provider.get("is_local")]
         local_providers = [provider for provider in eligible if provider.get("is_local")]
         candidates = cloud_providers + local_providers[:1]
-
-        # Graceful fallback: If require_tools was set but no provider has supports_tools=True,
-        # fallback to general active providers so requests don't instantly crash.
-        if not candidates and require_tools:
-            fallback_eligible = [
-                provider
-                for provider in providers
-                if self._matches_agent(provider, agent_name)
-                and not self._is_cooling_down(provider.get("cooldown_until"), now)
-                and self._matches_tier(provider.get("intelligence_tier"), required_tier)
-            ]
-            fallback_eligible.sort(key=self._speed_score)
-            cloud_fallback = [p for p in fallback_eligible if not p.get("is_local")]
-            local_fallback = [p for p in fallback_eligible if p.get("is_local")]
-            candidates = cloud_fallback + local_fallback[:1]
 
         provider_chain = []
         decryption_errors = getattr(db, "decryption_errors", {})

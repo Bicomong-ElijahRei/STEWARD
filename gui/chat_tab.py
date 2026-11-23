@@ -238,6 +238,7 @@ class ChatTab(ctk.CTkFrame):
         self._processing = False
         self._general_chat_history = []
         self._conversation_epoch = 0
+        self._conversation_lock = threading.RLock()
         self.dialog_timeout = 600
         self._register_swarm_handlers()
         self.build()
@@ -359,13 +360,54 @@ class ChatTab(ctk.CTkFrame):
 
     def clear_chat(self):
         """Remove visible chat bubbles and the bounded Cortex conversation."""
-        self._conversation_epoch = getattr(self, "_conversation_epoch", 0) + 1
-        self._general_chat_history = []
+        with self._conversation_state_lock():
+            self._conversation_epoch = getattr(self, "_conversation_epoch", 0) + 1
+            self._general_chat_history = []
         for widget in self.chat_display.winfo_children():
             widget.destroy()
 
+    def _conversation_state_lock(self):
+        """Return the lock protecting Cortex epoch and conversation history."""
+        lock = getattr(self, "_conversation_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._conversation_lock = lock
+        return lock
+
+    def _is_current_conversation_epoch(self, epoch):
+        """Return whether a request still belongs to the active conversation."""
+        with self._conversation_state_lock():
+            return epoch == getattr(self, "_conversation_epoch", 0)
+
+    def _conversation_messages(self, user_msg, epoch):
+        """Return a locked history snapshot if the request is still current."""
+        with self._conversation_state_lock():
+            if epoch != getattr(self, "_conversation_epoch", 0):
+                return None
+            return [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Cortex, the supervisor AI of STEWARD. "
+                        "You are helpful, friendly, and knowledgeable "
+                        "about the STEWARD system. Answer questions "
+                        "naturally and conversationally. If asked about "
+                        "system capabilities, explain what STEWARD can "
+                        "do (file organization, document search, provider "
+                        "management). Keep responses concise and helpful."
+                    ),
+                },
+                *list(getattr(self, "_general_chat_history", [])),
+                {"role": "user", "content": user_msg},
+            ]
+
     def _remember_general_chat(self, role, content):
         """Append one bounded message to the in-memory Cortex conversation."""
+        with self._conversation_state_lock():
+            self._remember_general_chat_locked(role, content)
+
+    def _remember_general_chat_locked(self, role, content):
+        """Append one message while the conversation lock is held."""
         text = str(content or "")
         if len(text) > self.MAX_CHAT_MESSAGE_CHARS:
             text = text[-self.MAX_CHAT_MESSAGE_CHARS:]
@@ -381,6 +423,15 @@ class ChatTab(ctk.CTkFrame):
             len(message["content"]) for message in history
         ) > self.MAX_CHAT_CONTEXT_CHARS:
             history.pop(0)
+
+    def _remember_general_chat_turn(self, epoch, user_content, assistant_content):
+        """Atomically append a Cortex turn if its conversation is still current."""
+        with self._conversation_state_lock():
+            if epoch != getattr(self, "_conversation_epoch", 0):
+                return False
+            self._remember_general_chat_locked("user", user_content)
+            self._remember_general_chat_locked("assistant", assistant_content)
+            return True
 
     def _clear_live_feed(self):
         """Clear visible live-feed activity cards from the chat header."""
@@ -402,6 +453,14 @@ class ChatTab(ctk.CTkFrame):
         except Exception:
             pass
 
+    def _safe_after_if_epoch(self, callback, epoch):
+        """Schedule UI work only if the owning conversation is still current."""
+        def guarded_callback():
+            if not self._is_current_conversation_epoch(epoch):
+                return
+            callback()
+        self._safe_after(guarded_callback)
+
     def _restore_return_key(self):
         self.chat_entry.bind("<Return>", lambda e: self.send_chat())
         self._processing = False
@@ -420,7 +479,8 @@ class ChatTab(ctk.CTkFrame):
         user_msg = self.chat_entry.get().strip()
         if not user_msg:
             return
-        request_epoch = getattr(self, "_conversation_epoch", 0)
+        with self._conversation_state_lock():
+            request_epoch = getattr(self, "_conversation_epoch", 0)
         self._processing = True
         restore_input = [False]
         self.chat_entry.delete(0, "end")
@@ -446,10 +506,13 @@ class ChatTab(ctk.CTkFrame):
                 if agent_type != AGENT_UNKNOWN:
                     self._safe_after(lambda: self.handoff_canvas.trigger_handoff("Cortex", agent_name))
 
-                self._safe_after(lambda: self._add_bubble(
-                    "STEWARD", f"[{agent_name}] Routing: {action}",
-                    color, align="left",
-                ))
+                self._safe_after_if_epoch(
+                    lambda: self._add_bubble(
+                        "STEWARD", f"[{agent_name}] Routing: {action}",
+                        color, align="left",
+                    ),
+                    request_epoch,
+                )
 
                 if self.live_feed:
                     self._safe_after(lambda: self.live_feed.agent_working(
@@ -694,7 +757,9 @@ class ChatTab(ctk.CTkFrame):
                         NEON_ORANGE, align="left", state="THINKING",
                     )))
                     try:
-                        syntax_response = self._get_coding_agent().generate_code(action)
+                        syntax_response = self._get_coding_agent().handle_request(
+                            action, original_request=user_msg
+                        )
                         syntax_detail = self._report_provider("Syntax")
                         if syntax_bubble[0]:
                             self._safe_after(lambda: syntax_bubble[0].set_message(syntax_response))
@@ -722,28 +787,19 @@ class ChatTab(ctk.CTkFrame):
                 elif agent_type == AGENT_GENERAL_CHAT:
                     # Send to Cortex for natural conversation.
                     cortex_bubble = [None]
-                    self._safe_after(lambda: cortex_bubble.__setitem__(0, self._add_bubble(
-                        "STEWARD", "Thinking...",
-                        NEON_PURPLE, align="left", state="THINKING",
-                    )))
+                    self._safe_after_if_epoch(
+                        lambda: cortex_bubble.__setitem__(0, self._add_bubble(
+                            "STEWARD", "Thinking...",
+                            NEON_PURPLE, align="left", state="THINKING",
+                        )),
+                        request_epoch,
+                    )
 
                     try:
-                        messages = [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are Cortex, the supervisor AI of STEWARD. "
-                                    "You are helpful, friendly, and knowledgeable "
-                                    "about the STEWARD system. Answer questions "
-                                    "naturally and conversationally. If asked about "
-                                    "system capabilities, explain what STEWARD can "
-                                    "do (file organization, document search, provider "
-                                    "management). Keep responses concise and helpful."
-                                ),
-                            },
-                            *list(getattr(self, "_general_chat_history", [])),
-                            {"role": "user", "content": user_msg},
-                        ]
+                        messages = self._conversation_messages(user_msg, request_epoch)
+                        if messages is None:
+                            logger.info("[Chat] discarded stale Cortex conversation request")
+                            return
 
                         response = self.supervisor.api_manager.route_request(
                             messages=messages,
@@ -752,14 +808,15 @@ class ChatTab(ctk.CTkFrame):
                         )
 
                         cortex_response = response["choices"][0]["message"].get("content", "")
-                        if request_epoch != getattr(self, "_conversation_epoch", 0):
+                        if not self._remember_general_chat_turn(
+                            request_epoch, user_msg, cortex_response
+                        ):
                             logger.info("[Chat] discarded stale Cortex conversation response")
                             return
 
-                        self._remember_general_chat("user", user_msg)
-                        self._remember_general_chat("assistant", cortex_response)
-
                         def finish_conversation():
+                            if not self._is_current_conversation_epoch(request_epoch):
+                                return
                             bubble = cortex_bubble[0]
                             if bubble:
                                 bubble.set_message(cortex_response)
@@ -770,7 +827,7 @@ class ChatTab(ctk.CTkFrame):
                                     NEON_PURPLE, align="left", state="DONE",
                                 )
 
-                        self._safe_after(finish_conversation)
+                        self._safe_after_if_epoch(finish_conversation, request_epoch)
                         if self.live_feed:
                             self._safe_after(
                                 lambda: self.live_feed.agent_done(
@@ -782,6 +839,8 @@ class ChatTab(ctk.CTkFrame):
                         error_message = f"Sorry, I encountered an error: {e}"
 
                         def finish_with_error():
+                            if not self._is_current_conversation_epoch(request_epoch):
+                                return
                             bubble = cortex_bubble[0]
                             if bubble:
                                 bubble.set_message(error_message)
@@ -792,16 +851,23 @@ class ChatTab(ctk.CTkFrame):
                                     NEON_PURPLE, align="left", state="ERROR",
                                 )
 
-                        self._safe_after(finish_with_error)
+                        self._safe_after_if_epoch(finish_with_error, request_epoch)
                 else:
                     feed = self.live_feed
                     if feed:
                         self._safe_after(lambda feed=feed: feed.agent_working(
                             "Cortex", "Delegating complex task"
                         ))
-                    delegation_result = self.supervisor.delegate_task(
-                        user_msg, ["Foldy", "Scout", "Click", "Syntax"]
+                    previous_delegation_request = getattr(
+                        self, "_delegation_original_request", None
                     )
+                    self._delegation_original_request = user_msg
+                    try:
+                        delegation_result = self.supervisor.delegate_task(
+                            user_msg, ["Foldy", "Scout", "Click", "Syntax"]
+                        )
+                    finally:
+                        self._delegation_original_request = previous_delegation_request
                     delegated_response = str(
                         delegation_result.get("response")
                         or delegation_result.get("final_response")
@@ -831,9 +897,12 @@ class ChatTab(ctk.CTkFrame):
             except Exception as e:
                 restore_input[0] = True
                 logger.error(f"Chat processing error: {e}")
-                self._safe_after(lambda e=e: self._add_bubble(
-                    "STEWARD", f"Error: {e}", "#FF5555", align="left",
-                ))
+                self._safe_after_if_epoch(
+                    lambda e=e: self._add_bubble(
+                        "STEWARD", f"Error: {e}", "#FF5555", align="left",
+                    ),
+                    request_epoch,
+                )
             finally:
                 # Always re-enable input once preview/approval is complete,
                 # regardless of which agent branch ran or whether it errored.
@@ -864,7 +933,10 @@ class ChatTab(ctk.CTkFrame):
 
     def _delegate_syntax_task(self, task):
         """Delegate coding work to the provider-backed, text-only Syntax agent."""
-        return self._get_coding_agent().generate_code(task)
+        original_request = getattr(self, "_delegation_original_request", "") or task
+        return self._get_coding_agent().handle_request(
+            task, original_request=original_request
+        )
 
     def _get_coding_agent(self):
         """Return the injected Syntax agent or create one from the shared router."""

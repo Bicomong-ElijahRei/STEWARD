@@ -350,6 +350,51 @@ class RouterAssignmentTests(unittest.TestCase):
         post.assert_called_once()
         self.assertEqual(result["_steward"]["provider"], "ClickBrain")
 
+    def test_tool_request_is_not_sent_to_provider_without_tool_support(self):
+        self.db.add_provider(
+            name="TextOnly",
+            base_url="https://text-only.example/v1",
+            api_key="text-only-key",
+            model_name="text-only-model",
+            speed_score_ms=1,
+            intelligence_tier="Fast",
+            supports_tools=False,
+            assigned_agent="Foldy",
+        )
+
+        with patch("core.router.requests.post") as post:
+            with self.assertRaisesRegex(RuntimeError, "No active providers"):
+                self.manager.route_request(
+                    [{"role": "user", "content": "move a file"}],
+                    agent_name="Foldy",
+                    require_tools=True,
+                    tools=[{"type": "function", "function": {"name": "move_file"}}],
+                )
+
+        post.assert_not_called()
+
+    def test_tool_payload_never_bypasses_provider_capability_filter(self):
+        self.db.add_provider(
+            name="TextOnly",
+            base_url="https://text-only.example/v1",
+            api_key="text-only-key",
+            model_name="text-only-model",
+            speed_score_ms=1,
+            intelligence_tier="Fast",
+            supports_tools=False,
+            assigned_agent="Foldy",
+        )
+
+        with patch("core.router.requests.post") as post:
+            with self.assertRaisesRegex(RuntimeError, "No active providers"):
+                self.manager.route_request(
+                    [{"role": "user", "content": "move a file"}],
+                    agent_name="Foldy",
+                    tools=[{"type": "function", "function": {"name": "move_file"}}],
+                )
+
+        post.assert_not_called()
+
     def test_429_immediately_uses_another_key_on_same_endpoint(self):
         endpoint = "https://same.example/v1"
         first_id = self.add_provider("First", endpoint, "key-1", 1, "Foldy")
@@ -3304,6 +3349,104 @@ class CodingAgentTests(unittest.TestCase):
                 all(message["role"] in ("system", "user") for message in call.kwargs["messages"])
             )
 
+    def test_handle_request_preserves_original_context_and_task_intent(self):
+        from agents.coding_agent import CodingAgent
+
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{"message": {"content": "corrected source"}}],
+            "_steward": {"provider": "CodeProvider", "model": "code-model"},
+        }
+        agent = CodingAgent(api_manager=manager)
+
+        result = agent.handle_request(
+            "debug the failing function",
+            original_request=(
+                "Fix this Python function:\n"
+                "def total(values):\n"
+                "    return sum(values) + 1\n"
+                "It fails when values is empty."
+            ),
+        )
+
+        self.assertEqual(result, "corrected source")
+        request = manager.route_request.call_args.kwargs
+        prompt = request["messages"][-1]["content"]
+        self.assertIn("Task: debug the failing function", prompt)
+        self.assertIn("Original request:", prompt)
+        self.assertIn("def total(values):", prompt)
+        self.assertIn("debug", request["messages"][0]["content"].lower())
+        self.assertEqual(request["agent_name"], "Syntax")
+        self.assertFalse(request["require_tools"])
+        self.assertNotIn("tools", request)
+
+    def test_handle_request_distinguishes_refactor_and_generation_intent(self):
+        from agents.coding_agent import CodingAgent
+
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{"message": {"content": "result text"}}],
+        }
+        agent = CodingAgent(api_manager=manager)
+
+        agent.handle_request(
+            "refactor this for readability",
+            original_request="def add(a, b): return a + b",
+        )
+        refactor_prompt = manager.route_request.call_args.kwargs["messages"][-1][
+            "content"
+        ]
+        self.assertIn("Task: refactor this for readability", refactor_prompt)
+        self.assertIn("def add(a, b):", refactor_prompt)
+
+        agent.handle_request(
+            "write a new parser",
+            original_request="Create a CSV parser",
+        )
+        generation_prompt = manager.route_request.call_args.kwargs["messages"][-1][
+            "content"
+        ]
+        self.assertIn("Task: write a new parser", generation_prompt)
+        self.assertIn("Create a CSV parser", generation_prompt)
+        self.assertNotIn("refactor this for readability", generation_prompt)
+
+    def test_empty_or_malformed_provider_response_is_rejected(self):
+        from agents.coding_agent import CodingAgent
+
+        for response in (
+            {"choices": [{"message": {"content": "   "}}]},
+            {"choices": []},
+            {"choices": [{"message": {}}]},
+            {},
+        ):
+            with self.subTest(response=response):
+                manager = Mock()
+                manager.route_request.return_value = response
+                agent = CodingAgent(api_manager=manager)
+
+                with self.assertRaises(ValueError):
+                    agent.generate_code("write a greeting")
+
+    def test_tool_bearing_provider_response_is_rejected(self):
+        from agents.coding_agent import CodingAgent
+
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{
+                "message": {
+                    "content": None,
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {"name": "delete_file"},
+                    }],
+                },
+            }],
+        }
+        agent = CodingAgent(api_manager=manager)
+
+        with self.assertRaisesRegex(ValueError, "unsupported tool call"):
+            agent.generate_code("write a greeting")
+
     def test_coding_agent_has_no_mutation_surface(self):
         import ast
         from agents.coding_agent import CodingAgent
@@ -3332,17 +3475,48 @@ class CodingAgentTests(unittest.TestCase):
         chat, callbacks = ChatWorkflowTests().make_chat(
             routing={"agent": AGENT_CODING, "action": "write a parser"}
         )
+        chat.chat_entry.get.return_value = "write a parser"
         chat.coding_agent = Mock()
-        chat.coding_agent.generate_code.return_value = "parser source"
+        chat.coding_agent.handle_request.return_value = "parser source"
 
         with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
             chat.send_chat()
         for callback in callbacks:
             callback()
 
-        chat.coding_agent.generate_code.assert_called_once_with("write a parser")
+        chat.coding_agent.handle_request.assert_called_once_with(
+            "write a parser", original_request="write a parser"
+        )
         chat.file_agent.run.assert_not_called()
         chat.file_agent.execute_pending_plan.assert_not_called()
+
+    def test_delegated_syntax_preserves_original_request_context(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_UNKNOWN, "action": "complex coding request"}
+        )
+        chat.chat_entry.get.return_value = (
+            "Fix this function:\ndef total(values):\n    return sum(values) + 1"
+        )
+        chat.coding_agent = Mock()
+        chat.coding_agent.handle_request.return_value = "fixed source"
+
+        def delegate(user_msg, sub_agents):
+            result = chat._delegate_syntax_task("debug the failing function")
+            return {"response": result, "error": None, "results": []}
+
+        chat.supervisor.delegate_task.side_effect = delegate
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        for callback in callbacks:
+            callback()
+
+        chat.coding_agent.handle_request.assert_called_once_with(
+            "debug the failing function",
+            original_request=(
+                "Fix this function:\ndef total(values):\n    return sum(values) + 1"
+            ),
+        )
 
 
 class GeneralConversationTests(unittest.TestCase):
@@ -3432,6 +3606,81 @@ class GeneralConversationTests(unittest.TestCase):
             chat.send_chat()
         for callback in callbacks:
             callback()
+
+        self.assertEqual(chat._general_chat_history, [])
+
+    def test_queued_cortex_success_callback_does_not_recreate_cleared_chat(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "friendly reply"},
+        )
+        chat.chat_display = Mock()
+        chat.chat_display.winfo_children.return_value = []
+        chat._general_chat_history = []
+        chat._conversation_epoch = 0
+        chat._conversation_lock = threading.RLock()
+        chat.supervisor.api_manager = Mock()
+        chat.supervisor.api_manager.route_request.return_value = {
+            "choices": [{"message": {"content": "stale answer"}}],
+            "_steward": {"provider": "TestProvider", "model": "test-model"},
+        }
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        chat.clear_chat()
+        chat._add_bubble.reset_mock()
+
+        self.assertTrue(callbacks)
+        for callback in callbacks:
+            callback()
+
+        chat._add_bubble.assert_not_called()
+        self.assertEqual(chat._general_chat_history, [])
+
+    def test_queued_cortex_error_callback_does_not_recreate_cleared_chat(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "friendly reply"},
+        )
+        chat.chat_display = Mock()
+        chat.chat_display.winfo_children.return_value = []
+        chat._general_chat_history = []
+        chat._conversation_epoch = 0
+        chat._conversation_lock = threading.RLock()
+        chat.supervisor.api_manager = Mock()
+        chat.supervisor.api_manager.route_request.side_effect = RuntimeError(
+            "provider failed"
+        )
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        chat.clear_chat()
+        chat._add_bubble.reset_mock()
+
+        self.assertTrue(callbacks)
+        for callback in callbacks:
+            callback()
+
+        chat._add_bubble.assert_not_called()
+        self.assertEqual(chat._general_chat_history, [])
+
+    def test_stale_conversation_turn_cannot_repopulate_cleared_memory(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat.chat_display = Mock()
+        chat.chat_display.winfo_children.return_value = []
+        chat._general_chat_history = []
+        chat._conversation_epoch = 0
+        chat._conversation_lock = threading.RLock()
+
+        chat._remember_general_chat_turn(0, "question", "answer")
+        self.assertEqual(
+            chat._general_chat_history,
+            [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "answer"},
+            ],
+        )
+
+        chat.clear_chat()
+        chat._remember_general_chat_turn(0, "stale question", "stale answer")
 
         self.assertEqual(chat._general_chat_history, [])
 
@@ -4028,6 +4277,146 @@ class ScheduledScannerTests(unittest.TestCase):
             self.assertTrue(scanner.stop())
 
 
+
+    def test_stale_scanner_generation_does_not_mutate_state_or_notify(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_stale_") as tmp:
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            notifications = []
+            scanner = ScheduledScanner(
+                file_agent,
+                interval_minutes=1,
+                on_scan=notifications.append,
+            )
+            scanner._generation = 2
+            stale_cancel = threading.Event()
+
+            summary = scanner._scan(
+                cancel_event=stale_cancel,
+                generation=1,
+            )
+
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["error"], "stale_generation")
+            self.assertEqual(scanner.scan_count, 0)
+            self.assertEqual(scanner.files_processed, 0)
+            self.assertIsNone(scanner.last_scan_time)
+            self.assertIsNone(scanner.last_error)
+            self.assertEqual(notifications, [])
+
+    def test_cancelled_scanner_generation_does_not_mutate_state_or_notify(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_cancelled_") as tmp:
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            notifications = []
+            scanner = ScheduledScanner(
+                file_agent,
+                interval_minutes=1,
+                on_scan=notifications.append,
+            )
+            cancelled = threading.Event()
+            cancelled.set()
+
+            summary = scanner._scan(
+                cancel_event=cancelled,
+                generation=scanner._generation,
+            )
+
+            self.assertTrue(summary["cancelled"])
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["error"], "scan_cancelled")
+            self.assertEqual(scanner.scan_count, 0)
+            self.assertEqual(scanner.files_processed, 0)
+            self.assertIsNone(scanner.last_scan_time)
+            self.assertIsNone(scanner.last_error)
+            self.assertEqual(notifications, [])
+
+    def test_scan_state_is_not_committed_when_generation_changes_during_work(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_stale_work_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            source = os.path.join(incoming, "report.txt")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write("stale generation test")
+
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            notifications = []
+            scanner = ScheduledScanner(
+                file_agent,
+                interval_minutes=1,
+                on_scan=notifications.append,
+            )
+
+            def categorise(filepath, destination, dry_run=None):
+                scanner._generation += 1
+                return f"Moved {filepath}"
+
+            file_agent.categorise_file.side_effect = categorise
+            summary = scanner._scan(
+                cancel_event=threading.Event(),
+                generation=scanner._generation,
+            )
+
+            self.assertTrue(summary["skipped"])
+            self.assertEqual(summary["error"], "stale_generation")
+            self.assertEqual(scanner.scan_count, 0)
+            self.assertEqual(scanner.files_processed, 0)
+            self.assertIsNone(scanner.last_scan_time)
+            self.assertEqual(notifications, [])
+
+    def test_scan_commit_and_notification_share_generation_ownership(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_atomic_") as tmp:
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            notifications = []
+            scanner = ScheduledScanner(
+                file_agent,
+                interval_minutes=1,
+                on_scan=notifications.append,
+            )
+
+            summary = scanner._scan(
+                cancel_event=threading.Event(),
+                generation=scanner._generation,
+            )
+
+            self.assertEqual(scanner.scan_count, 1)
+            self.assertEqual(len(notifications), 1)
+            self.assertIs(notifications[0], summary)
+
+    def test_missing_incoming_folder_is_reported_by_current_generation(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_missing_") as tmp:
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            notifications = []
+            scanner = ScheduledScanner(
+                file_agent,
+                interval_minutes=1,
+                on_scan=notifications.append,
+            )
+
+            summary = scanner._scan(
+                cancel_event=threading.Event(),
+                generation=scanner._generation,
+            )
+
+            self.assertEqual(summary["error"], "incoming_folder_not_found")
+            self.assertEqual(scanner.scan_count, 1)
+            self.assertEqual(scanner.last_error, "incoming_folder_not_found")
+            self.assertEqual(len(notifications), 1)
 
     def test_scanner_rejects_invalid_interval(self):
         from agent.daemon import ScheduledScanner
