@@ -6,8 +6,9 @@ and emits real-time events to the LiveFeedWidget.
 """
 
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 import json
+import queue
 import threading
 import logging
 import math
@@ -240,6 +241,13 @@ class ChatTab(ctk.CTkFrame):
         self._conversation_epoch = 0
         self._delegation_context = threading.local()
         self._conversation_lock = threading.RLock()
+        self._code_index_agent = None
+        self._code_index_epoch = 0
+        self._code_index_cancel = threading.Event()
+        self._code_index_thread = None
+        self._code_index_job_token = None
+        self._code_index_results = queue.Queue()
+        self._code_index_status_label = None
         self.dialog_timeout = 600
         self._register_swarm_handlers()
         self.build()
@@ -256,6 +264,19 @@ class ChatTab(ctk.CTkFrame):
             text_color=TEXT_BRIGHT,
         )
         title.pack(side="left")
+
+        self.code_index_btn = ctk.CTkButton(
+            header,
+            text="Code Index",
+            width=96,
+            height=28,
+            corner_radius=8,
+            font=("Nunito", 11, "bold"),
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self._show_code_index_dialog,
+        )
+        self.code_index_btn.pack(side="right")
 
         # Split container: chat (left) + live feed (right)
         self.split_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -359,6 +380,188 @@ class ChatTab(ctk.CTkFrame):
         )
         self.clear_btn.pack(side="right", padx=(0, 8))
 
+    def _code_index_is_current(self, index_epoch, request_epoch):
+        """Return whether an index result still belongs to the active chat."""
+        return (
+            index_epoch == getattr(self, "_code_index_epoch", 0)
+            and request_epoch == getattr(self, "_conversation_epoch", 0)
+        )
+
+    def _get_code_index_agent(self):
+        """Return the lazily-created CODE collection agent."""
+        agent = getattr(self, "_code_index_agent", None)
+        if agent is None:
+            from agents.code_index_agent import CodeIndexAgent
+
+            agent = CodeIndexAgent()
+            self._code_index_agent = agent
+        return agent
+
+    def _show_code_index_dialog(self):
+        """Show explicit root selection and index/status/clear controls."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("STEWARD Code Index")
+        dialog.geometry("620x260")
+        root_var = ctk.StringVar(value="")
+        path_entry = ctk.CTkEntry(
+            dialog, textvariable=root_var, placeholder_text="Select a project folder"
+        )
+        path_entry.pack(fill="x", padx=16, pady=(16, 8))
+        disclosure = ctk.CTkLabel(
+            dialog,
+            text=(
+                "Retrieved code snippets are sent to your configured provider "
+                "(cloud-first). The local code index stores plaintext snippets."
+            ),
+            text_color=TEXT_MUTED,
+            wraplength=570,
+            justify="left",
+        )
+        disclosure.pack(fill="x", padx=16, pady=(0, 8))
+        self._code_index_status_label = ctk.CTkLabel(
+            dialog, text="No code indexing operation is running.", text_color=TEXT_MUTED
+        )
+        self._code_index_status_label.pack(fill="x", padx=16, pady=(0, 4))
+
+        def choose_root():
+            selected = filedialog.askdirectory(title="Select project folder")
+            if selected:
+                root_var.set(selected)
+
+        def start_index():
+            root = root_var.get().strip()
+            if not root:
+                messagebox.showwarning("Code Index", "Select a project folder first.")
+                return
+            if getattr(self, "_code_index_status_label", None) is not None:
+                self._code_index_status_label.configure(
+                    text="Indexing project code..."
+                )
+            self._start_code_index(root, dialog)
+
+        def show_status():
+            try:
+                status = self._get_code_index_agent().status()
+                messagebox.showinfo(
+                    "Code Index",
+                    f"Files: {status.get('files', 0)}\nChunks: {status.get('chunks', 0)}",
+                )
+            except Exception as exc:
+                messagebox.showerror("Code Index", str(exc))
+
+        def clear_index():
+            try:
+                cancel_event = getattr(self, "_code_index_cancel", None)
+                if cancel_event is not None:
+                    cancel_event.set()
+                self._code_index_epoch = getattr(self, "_code_index_epoch", 0) + 1
+                self._code_index_job_token = None
+                self._code_index_thread = None
+                self._get_code_index_agent().clear()
+                messagebox.showinfo("Code Index", "Code index cleared.")
+            except Exception as exc:
+                messagebox.showerror("Code Index", str(exc))
+
+        ctk.CTkButton(dialog, text="Choose folder", command=choose_root).pack(
+            side="left", padx=(16, 6), pady=4
+        )
+        ctk.CTkButton(dialog, text="Index", command=start_index).pack(
+            side="left", padx=6, pady=4
+        )
+        ctk.CTkButton(dialog, text="Status", command=show_status).pack(
+            side="left", padx=6, pady=4
+        )
+        ctk.CTkButton(dialog, text="Clear", command=clear_index).pack(
+            side="left", padx=6, pady=4
+        )
+        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(
+            side="right", padx=16, pady=4
+        )
+
+    def _start_code_index(self, root, dialog=None):
+        """Index a selected root in a worker and marshal results to Tk."""
+        previous = getattr(self, "_code_index_cancel", None)
+        if previous is not None:
+            previous.set()
+        cancel_event = threading.Event()
+        self._code_index_cancel = cancel_event
+        self._code_index_epoch = getattr(self, "_code_index_epoch", 0) + 1
+        index_epoch = self._code_index_epoch
+        request_epoch = getattr(self, "_conversation_epoch", 0)
+
+        job_token = object()
+        self._code_index_job_token = job_token
+
+        def worker():
+            try:
+                summary = self._get_code_index_agent().index_project(
+                    root, cancel_event=cancel_event
+                )
+                self._code_index_results.put(
+                    (job_token, index_epoch, request_epoch, summary, None)
+                )
+            except Exception as exc:
+                self._code_index_results.put(
+                    (job_token, index_epoch, request_epoch, None, exc)
+                )
+
+        thread = threading.Thread(target=worker, name="steward-code-index", daemon=True)
+        self._code_index_thread = thread
+        if self.live_feed:
+            self.live_feed.agent_working("Scout", "Indexing project code")
+        thread.start()
+        self._poll_code_index_results()
+
+    def _poll_code_index_results(self):
+        """Consume worker results on the Tk thread."""
+        current_result_consumed = False
+        try:
+            while True:
+                job_token, index_epoch, request_epoch, summary, error = (
+                    self._code_index_results.get_nowait()
+                )
+                if job_token is not getattr(self, "_code_index_job_token", None):
+                    continue
+                if not self._code_index_is_current(index_epoch, request_epoch):
+                    continue
+                current_result_consumed = True
+                if error is not None:
+                    messagebox.showerror("Code Index", str(error))
+                elif summary is not None:
+                    status = (
+                        f"Indexed {summary.get('files_processed', 0)} files; "
+                        f"{summary.get('chunks_created', 0)} chunks"
+                    )
+                    if summary.get("cancelled"):
+                        status = "Code indexing cancelled."
+                    label = getattr(self, "_code_index_status_label", None)
+                    if label is not None:
+                        try:
+                            label.configure(text=status)
+                        except Exception:
+                            pass
+                    if self.live_feed:
+                        self.live_feed.agent_done("Scout", status)
+        except queue.Empty:
+            pass
+        if current_result_consumed:
+            self._code_index_thread = None
+            self._code_index_job_token = None
+            return
+        if getattr(self, "_code_index_thread", None) is not None:
+            self.after(100, self._poll_code_index_results)
+
+    def _code_index_context(self, query):
+        """Retrieve bounded CODE context for Syntax, without changing no-index behavior."""
+        agent = getattr(self, "_code_index_agent", None)
+        if agent is None:
+            return []
+        try:
+            return agent.search(query, n_results=5)
+        except Exception as exc:
+            logger.warning("Code context retrieval failed: %s", exc)
+            return []
+
     def clear_chat(self):
         """Remove visible chat bubbles and the bounded Cortex conversation.
 
@@ -366,6 +569,12 @@ class ChatTab(ctk.CTkFrame):
         request may still be running, but it no longer owns input controls or
         conversation state and a new request can be admitted immediately.
         """
+        cancel_event = getattr(self, "_code_index_cancel", None)
+        if cancel_event is not None:
+            cancel_event.set()
+        self._code_index_epoch = getattr(self, "_code_index_epoch", 0) + 1
+        self._code_index_job_token = None
+        self._code_index_thread = None
         with self._conversation_state_lock():
             self._conversation_epoch = getattr(self, "_conversation_epoch", 0) + 1
             self._general_chat_history = []
@@ -886,10 +1095,16 @@ class ChatTab(ctk.CTkFrame):
                     )), request_epoch)
                     try:
                         syntax_provider = {}
+                        syntax_context = self._code_index_context(action)
+                        syntax_kwargs = {
+                            "original_request": user_msg,
+                            "provider_callback": syntax_provider.update,
+                        }
+                        if syntax_context:
+                            syntax_kwargs["code_context"] = syntax_context
                         syntax_response = self._get_coding_agent().handle_request(
                             action,
-                            original_request=user_msg,
-                            provider_callback=syntax_provider.update,
+                            **syntax_kwargs,
                         )
                         syntax_detail = self._report_provider(
                             "Syntax", request_epoch, provider_info=syntax_provider
@@ -1100,9 +1315,11 @@ class ChatTab(ctk.CTkFrame):
             if delegation_context is not None
             else None
         ) or getattr(self, "_delegation_original_request", "") or task
-        return self._get_coding_agent().handle_request(
-            task, original_request=original_request
-        )
+        syntax_kwargs = {"original_request": original_request}
+        code_context = self._code_index_context(task)
+        if code_context:
+            syntax_kwargs["code_context"] = code_context
+        return self._get_coding_agent().handle_request(task, **syntax_kwargs)
 
     def _get_coding_agent(self):
         """Return the injected Syntax agent or create one from the shared router."""

@@ -19,6 +19,9 @@ class CodingAgent:
     INTENT_REFACTORING = "refactoring"
     INTENT_REVIEW = "review"
     INTENT_EXPLANATION = "explanation"
+    MAX_CODE_CONTEXT_RESULTS = 5
+    MAX_CODE_CONTEXT_CHARS = 8000
+    MAX_CODE_SNIPPET_CHARS = 2000
 
     _INTENT_INSTRUCTIONS = {
         INTENT_GENERATION: (
@@ -83,6 +86,7 @@ class CodingAgent:
         original_request: str = "",
         language: str = "python",
         provider_callback=None,
+        code_context=None,
     ) -> str:
         """Handle one coding task while retaining its original request context.
 
@@ -101,10 +105,38 @@ class CodingAgent:
             "Original request:\n"
             f"{original_text}"
         )
+        context_text = self._format_code_context(code_context)
+        if context_text:
+            prompt += "\n\nRetrieved code context:\n" + context_text
         return self._request(
             self._INTENT_INSTRUCTIONS[intent], prompt,
             provider_callback=provider_callback,
         )
+
+    @classmethod
+    def _format_code_context(cls, code_context):
+        """Format a bounded number of retrieved snippets for the provider prompt."""
+        if not isinstance(code_context, (list, tuple)):
+            return ""
+        sections = []
+        remaining = cls.MAX_CODE_CONTEXT_CHARS
+        for result in list(code_context)[:cls.MAX_CODE_CONTEXT_RESULTS]:
+            if not isinstance(result, dict) or remaining <= 0:
+                continue
+            path = str(result.get("relative_path") or "unknown")
+            start = result.get("start_line", 1)
+            end = result.get("end_line", start)
+            symbol = str(result.get("symbol") or "")
+            content = str(result.get("content") or "").strip()
+            if not content:
+                continue
+            snippet = content[:min(len(content), cls.MAX_CODE_SNIPPET_CHARS, remaining)]
+            remaining -= len(snippet)
+            header = f"--- {path}:{start}-{end}"
+            if symbol:
+                header += f" ({symbol})"
+            sections.append(f"{header} ---\n{snippet}")
+        return "\n\n".join(sections)
 
     @classmethod
     def _classify_intent(cls, task: str, original_request: str):
