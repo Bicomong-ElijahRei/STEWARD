@@ -830,7 +830,14 @@ class OrganizerTab(ctk.CTkFrame):
 
     def _start_scheduled_scan(self):
         """Start a scanner using the current watched/destination folders."""
-        self._stop_scheduled_scan()
+        existing = getattr(self, "scheduled_scanner", None)
+        if existing is not None and not existing.stop():
+            self._log(
+                "Scheduled scan is still stopping; restart was refused to avoid overlap."
+            )
+            self._update_schedule_status()
+            return existing
+        self.scheduled_scanner = None
         interval = self.SCHEDULE_INTERVALS.get(
             self.schedule_interval_var.get(), 60
         )
@@ -842,7 +849,10 @@ class OrganizerTab(ctk.CTkFrame):
             on_scan=self._on_scheduled_scan_complete,
         )
         self.scheduled_scanner = scanner
-        scanner.start()
+        if not scanner.start():
+            self._log("Scheduled scan could not be started.")
+            self._update_schedule_status()
+            return scanner
         self._update_schedule_status()
         self._log(
             f"Scheduled scan enabled. Incoming: {self.watched_var.get()} "
@@ -853,10 +863,13 @@ class OrganizerTab(ctk.CTkFrame):
     def stop_scheduled_scan(self):
         """Stop the recurring scanner without changing its saved preference."""
         scanner = getattr(self, "scheduled_scanner", None)
-        self.scheduled_scanner = None
+        stopped = True
         if scanner is not None:
-            scanner.stop()
+            stopped = scanner.stop()
+            if stopped:
+                self.scheduled_scanner = None
         self._update_schedule_status()
+        return stopped
 
     def _on_schedule_interval_changed(self, _value=None):
         """Apply a new interval immediately and persist it."""

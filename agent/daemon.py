@@ -151,6 +151,7 @@ class ScheduledScanner:
         incoming_path=None,
         destination_path=None,
         on_scan=None,
+        stop_timeout=5.0,
     ):
         if isinstance(interval_minutes, bool) or interval_minutes <= 0:
             raise ValueError("interval_minutes must be greater than zero")
@@ -159,11 +160,17 @@ class ScheduledScanner:
         self.incoming_path = incoming_path
         self.destination_path = destination_path
         self.on_scan = on_scan
+        self.stop_timeout = float(stop_timeout)
+        if self.stop_timeout < 0:
+            raise ValueError("stop_timeout must be non-negative")
         self._running = False
         self._thread = None
         self._state_lock = threading.Lock()
         self._scan_lock = threading.Lock()
         self._scheduler = schedule.Scheduler()
+        self._generation = 0
+        self._cancel_event = None
+        self._active_scans = 0
         self.last_scan_time = None
         self.last_error = None
         self.scan_count = 0
@@ -180,11 +187,22 @@ class ScheduledScanner:
         with self._state_lock:
             if self._running:
                 return False
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            if self._active_scans:
+                return False
+            self._generation += 1
+            generation = self._generation
+            cancel_event = threading.Event()
+            self._cancel_event = cancel_event
             self._scheduler.clear()
-            self._scheduler.every(self.interval).minutes.do(self._scan)
+            self._scheduler.every(self.interval).minutes.do(
+                self._scan, cancel_event, generation
+            )
             self._running = True
             self._thread = threading.Thread(
                 target=self._run_scheduler,
+                args=(cancel_event, generation),
                 name="steward-scheduled-scanner",
                 daemon=True,
             )
@@ -195,30 +213,49 @@ class ScheduledScanner:
         """Stop scheduling, wait briefly for the worker, and return its state."""
         with self._state_lock:
             self._running = False
+            cancel_event = self._cancel_event
             thread = self._thread
-            self._thread = None
+        if cancel_event is not None:
+            cancel_event.set()
         self._scheduler.clear()
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2.0)
-        return not self.running
+            thread.join(timeout=self.stop_timeout)
+        with self._state_lock:
+            worker_alive = thread is not None and thread.is_alive()
+            scan_alive = self._active_scans > 0
+            if not worker_alive and thread is self._thread:
+                self._thread = None
+            return not worker_alive and not scan_alive
 
-    def _run_scheduler(self):
-        while self.running:
+    def _run_scheduler(self, cancel_event, generation):
+        while not cancel_event.is_set():
+            with self._state_lock:
+                if generation != self._generation or self._cancel_event is not cancel_event:
+                    return
             try:
                 self._scheduler.run_pending()
             except Exception as exc:
                 self.last_error = str(exc)
-            time.sleep(0.25)
+            cancel_event.wait(0.25)
 
-    def _scan(self):
+    def _scan(self, cancel_event=None, generation=None):
         """Categorize files currently present in Incoming."""
+        if cancel_event is None:
+            with self._state_lock:
+                cancel_event = self._cancel_event or threading.Event()
+        if generation is None:
+            with self._state_lock:
+                generation = self._generation
         if not self._scan_lock.acquire(blocking=False):
             return {
                 "processed": 0,
                 "failed": 0,
                 "skipped": True,
                 "error": "scan_already_running",
+                "cancelled": False,
             }
+        with self._state_lock:
+            self._active_scans += 1
         try:
             root = os.path.realpath(os.path.abspath(self.file_agent.root_path))
             incoming = os.path.realpath(os.path.abspath(
@@ -233,6 +270,7 @@ class ScheduledScanner:
                 "skipped": False,
                 "error": None,
                 "files": [],
+                "cancelled": False,
             }
             if not os.path.isdir(incoming):
                 summary["error"] = "incoming_folder_not_found"
@@ -253,6 +291,9 @@ class ScheduledScanner:
                 return summary
 
             for filename in filenames:
+                if cancel_event.is_set():
+                    summary["cancelled"] = True
+                    break
                 filepath = os.path.join(incoming, filename)
                 if not os.path.isfile(filepath):
                     continue
@@ -279,13 +320,21 @@ class ScheduledScanner:
                         "result": f"Error: {exc}",
                         "moved": False,
                     })
+                if cancel_event.is_set():
+                    summary["cancelled"] = True
+                    break
 
             self.last_error = summary["error"]
             self.last_scan_time = datetime.now().isoformat(timespec="seconds")
             self.scan_count += 1
-            self._notify_scan(summary)
+            with self._state_lock:
+                current = generation == self._generation
+            if current:
+                self._notify_scan(summary)
             return summary
         finally:
+            with self._state_lock:
+                self._active_scans -= 1
             self._scan_lock.release()
 
     def _notify_scan(self, summary):

@@ -3712,6 +3712,146 @@ class ScheduledScannerTests(unittest.TestCase):
             )
             self.assertFalse(scanner.running)
             self.assertIsNotNone(scanner.last_scan_time)
+    def test_stop_cancels_between_files_and_refuses_overlapping_restart(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_cancel_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            for name in ("01-first.txt", "02-later.txt"):
+                with open(os.path.join(incoming, name), "w", encoding="utf-8") as handle:
+                    handle.write(name)
+
+            entered = threading.Event()
+            release = threading.Event()
+            calls = []
+            file_agent = Mock()
+            file_agent.root_path = tmp
+
+            def categorise(filepath, destination, dry_run=None):
+                calls.append(os.path.basename(filepath))
+                if filepath.endswith("01-first.txt"):
+                    entered.set()
+                    self.assertTrue(release.wait(timeout=2.0))
+                target = os.path.join(destination, "Documents", os.path.basename(filepath))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                os.replace(filepath, target)
+                return f"Moved {filepath}"
+
+            file_agent.categorise_file.side_effect = categorise
+            scanner = ScheduledScanner(
+                file_agent, interval_minutes=1, stop_timeout=0.05
+            )
+            self.assertTrue(scanner.start())
+            result = {}
+
+            def run_scan():
+                result["summary"] = scanner._scan()
+
+            scan_thread = threading.Thread(target=run_scan)
+            scan_thread.start()
+            self.assertTrue(entered.wait(timeout=1.0))
+
+            self.assertFalse(scanner.stop(), "stop must not claim completion while scan is active")
+            self.assertFalse(scanner.start(), "restart must refuse while old scan is alive")
+            release.set()
+            scan_thread.join(timeout=2.0)
+            self.assertFalse(scan_thread.is_alive())
+
+            self.assertEqual(calls, ["01-first.txt"])
+            self.assertTrue(result["summary"]["cancelled"])
+            self.assertEqual(result["summary"]["processed"], 1)
+            self.assertTrue(scanner.start(), "a later valid start must be allowed")
+            self.assertTrue(scanner.stop())
+
+    def test_old_scheduler_generation_cannot_resume_after_restart(self):
+        from agent.daemon import ScheduledScanner
+
+        class ControlledScheduler:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self.calls = 0
+                self.job = None
+
+            class Every:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+                @property
+                def minutes(self):
+                    return self
+
+                def do(self, job, *args):
+                    self.scheduler.job = job
+                    self.scheduler.job_args = args
+                    return self
+
+            def every(self, _minutes):
+                return self.Every(self)
+
+            def do(self, job, *args):
+                self.job = job
+                self.job_args = args
+                return self
+
+            def run_pending(self):
+                self.calls += 1
+                self.entered.set()
+                self.release.wait(timeout=2.0)
+
+            def clear(self):
+                pass
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_generation_") as tmp:
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            scanner = ScheduledScanner(
+                file_agent, interval_minutes=1, stop_timeout=0.05
+            )
+            controlled = ControlledScheduler()
+            scanner._scheduler = controlled
+
+            self.assertTrue(scanner.start())
+            self.assertTrue(controlled.entered.wait(timeout=1.0))
+            old_thread = scanner._thread
+            self.assertFalse(scanner.stop())
+            self.assertFalse(scanner.start())
+
+            controlled.release.set()
+            old_thread.join(timeout=2.0)
+            self.assertFalse(old_thread.is_alive())
+            self.assertTrue(scanner.start())
+            self.assertIsNot(scanner._thread, old_thread)
+            self.assertTrue(scanner.stop())
+
+    def test_failed_scan_does_not_prevent_later_valid_start(self):
+        from agent.daemon import ScheduledScanner
+
+        with tempfile.TemporaryDirectory(prefix="steward_scan_failure_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            with open(os.path.join(incoming, "bad.txt"), "w", encoding="utf-8") as handle:
+                handle.write("bad")
+
+            file_agent = Mock()
+            file_agent.root_path = tmp
+            file_agent.categorise_file.side_effect = RuntimeError("provider failed")
+            scanner = ScheduledScanner(file_agent, interval_minutes=1)
+
+            self.assertTrue(scanner.start())
+            summary = scanner._scan()
+            self.assertEqual(summary["failed"], 1)
+            self.assertFalse(scanner.start(), "running scanner must not create a duplicate thread")
+            self.assertTrue(scanner.stop())
+            self.assertTrue(scanner.start())
+            self.assertTrue(scanner.stop())
+
+
 
     def test_scanner_rejects_invalid_interval(self):
         from agent.daemon import ScheduledScanner
@@ -3753,6 +3893,27 @@ class ScheduledScannerTests(unittest.TestCase):
                 restored._last_scheduled_scan_time,
                 "2026-11-23T12:00:00",
             )
+
+    def test_organizer_refuses_restart_until_previous_scan_stops(self):
+        organizer = OrganizerTab.__new__(OrganizerTab)
+        organizer.file_agent = Mock()
+        organizer.scheduled_scanner = Mock()
+        organizer.scheduled_scanner.stop.return_value = False
+        organizer.schedule_interval_var = Mock()
+        organizer.schedule_interval_var.get.return_value = "1 hr"
+        organizer.watched_var = Mock()
+        organizer.watched_var.get.return_value = "Incoming"
+        organizer.dest_var = Mock()
+        organizer.dest_var.get.return_value = "Sorted"
+        organizer._log = Mock()
+        organizer._update_schedule_status = Mock()
+
+        result = organizer._start_scheduled_scan()
+
+        self.assertIs(result, organizer.scheduled_scanner)
+        organizer.scheduled_scanner.stop.assert_called_once_with()
+        self.assertEqual(organizer._log.call_count, 1)
+        self.assertIn("restart was refused", organizer._log.call_args.args[0])
 
     def test_organizer_exposes_scheduled_scan_controls(self):
         source = (
