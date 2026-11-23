@@ -123,6 +123,15 @@ class CodeIndexAgent:
         expanded = os.path.abspath(os.path.expanduser(root.strip()))
         return os.path.realpath(expanded)
 
+    @classmethod
+    def _is_denied_root(cls, root: str) -> bool:
+        """Deny a selected root whose own basename is a denied directory."""
+        if not isinstance(root, str) or not root.strip():
+            return False
+        expanded = os.path.abspath(os.path.expanduser(root.strip()))
+        basename = os.path.basename(os.path.normpath(expanded)).casefold()
+        return basename in cls.DENIED_DIRECTORIES
+
     @staticmethod
     def _contained_by(root: str, candidate: str) -> bool:
         """Return containment using realpath, abspath, commonpath, and normcase."""
@@ -379,6 +388,11 @@ class CodeIndexAgent:
         self, root: str, cancel_event: Optional[threading.Event] = None
     ) -> Dict[str, Any]:
         """Incrementally index one explicitly selected project folder."""
+        if self._is_denied_root(root):
+            raise ValueError(
+                "Code project root cannot be a denied directory: "
+                f"{os.path.basename(os.path.normpath(os.path.abspath(os.path.expanduser(root.strip()))))}"
+            )
         root_path = self._normalize_root(root)
         if not os.path.isdir(root_path):
             raise NotADirectoryError(f"Code project root not found: {root_path}")

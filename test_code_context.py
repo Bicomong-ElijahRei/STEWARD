@@ -112,6 +112,42 @@ class CodeIndexAgentTests(unittest.TestCase):
         self.assertTrue(self.agent.search("allowed_symbol", n_results=5))
         self.assertTrue(allowed.exists())
 
+    def test_selected_root_with_denied_basename_is_refused_before_read(self):
+        before_count = self.agent.collection.count()
+        before_root = self.agent._active_root()
+
+        for denied_name in self.agent.DENIED_DIRECTORIES:
+            with self.subTest(denied_name=denied_name):
+                root_name = (
+                    denied_name.upper()
+                    if denied_name == "node_modules"
+                    else denied_name
+                )
+                denied_root = Path(self.temp_dir.name) / root_name
+                denied_root.mkdir(exist_ok=True)
+                source = denied_root / "dependency.py"
+                source.write_text(
+                    "def denied_root_symbol():\n"
+                    "    return 'DENIED_ROOT_TOKEN'\n",
+                    encoding="utf-8",
+                )
+
+                with patch("builtins.open", wraps=open) as open_spy:
+                    with self.assertRaisesRegex(ValueError, "denied directory"):
+                        self.agent.index_project(str(denied_root) + os.sep)
+
+                opened_names = {
+                    str(Path(str(call.args[0])).resolve()).lower()
+                    for call in open_spy.call_args_list
+                    if call.args
+                }
+                self.assertNotIn(str(source.resolve()).lower(), opened_names)
+                self.assertEqual(self.agent.collection.count(), before_count)
+                self.assertEqual(self.agent._active_root(), before_root)
+                self.assertEqual(
+                    self.agent.search("DENIED_ROOT_TOKEN", n_results=5), []
+                )
+
     def test_symlink_or_junction_escape_is_refused_before_read(self):
         outside = Path(self.temp_dir.name) / "outside"
         outside.mkdir()
