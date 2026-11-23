@@ -29,7 +29,7 @@ This review determines whether that future mutation surface can be bounded safel
 
 - **C3 does not execute patched code.** It does not import the target module, run the target program, invoke a test runner, invoke a linter, evaluate the patch, or start a subprocess. Parsing source with `ast` is analysis, not execution.
 - **C3 does not lint or test patched code.** Syntax parsing and structural validation are mutation preconditions, not linting or test execution.
-- **C4 owns execution.** PLAN defines C4 as a self-healing `lint/run -> read stderr -> patch -> retry` loop with its own hard iteration bound and sandbox (`PLAN.md:293-313`, Phase C gate and C3/C4 items). C4 must retain a **separate safety gate**; C3 approval is not C4 execution approval.
+- **C4 owns execution.** PLAN defines C4 as a self-healing `lint/run -> read stderr -> patch -> retry` loop with its own hard iteration bound and sandbox (`PLAN.md:295-320`, Phase C gate and C3/C4 items). C4 must retain a **separate safety gate**; C3 approval is not C4 execution approval.
 - C3 does not create files, delete files, rename files, or move files. Its first implementation is limited to content edits of admitted existing files.
 - C3 does not modify the existing Incoming/Sorted sandbox, reuse it as a write root, or silently widen it.
 - This review adds no implementation, tests, dependencies, UI, or runtime behavior.
@@ -37,9 +37,9 @@ This review determines whether that future mutation surface can be bounded safel
 ### 1.3 Verified starting point
 
 - C2 currently validates a strict plan blueprint, persists an app-owned immutable artifact, and uses a single-use ID-bound approval to start a **text-only** Syntax request (`agents/plan_agent.py:81-147`, `validate_blueprint`; `agents/plan_agent.py:213-267`, `PlanAgent.approve_plan` and `PlanAgent.build_plan`). Its builder prompt explicitly says Syntax has no tools and must not claim to edit, apply, run, or test files (`agents/plan_agent.py:157-160`, `BUILDER_PROMPT`).
-- C2 targets remain informational and never reach FileAgent (`PLAN.md:86-92`, Phase C2 implemented record; `ARCHITECTURE.md:54-58`, Meta-prompting critical path).
+- C2 targets remain informational and never reach FileAgent (`PLAN.md:88-94`, Phase C2 implemented record; `ARCHITECTURE.md:54-58`, Meta-prompting critical path).
 - The existing FileAgent canonicalizes its root and constructs exactly two mutation roots, `Incoming` and `Sorted` (`agents/file_agent.py:82-93`, `FileAgent.__init__`). `_sandbox_path` resolves each path with `realpath`/`abspath` and accepts it only when `commonpath`/`normcase` matches one of those roots (`agents/file_agent.py:144-160`, `FileAgent._sandbox_path`).
-- The current C3/C4 acceptance language requires a real-file patch that does not destroy unrelated code, clean malformed-patch rejection, a bounded self-healing loop, sandbox containment, and per-iteration logging (`PLAN.md:307-313`, C3 and C4 backlog items).
+- The current C3/C4 acceptance language requires a real-file patch that does not destroy unrelated code, clean malformed-patch rejection, a bounded self-healing loop, sandbox containment, and per-iteration logging (`PLAN.md:309-320`, C3 and C4 backlog items).
 
 ---
 
@@ -102,7 +102,7 @@ Add a **new, explicit user-selected code workspace** mutation root, parallel to 
 
 **Advantages**
 
-- It preserves C3’s stated goal of applying a patch to a real file (`PLAN.md:307-310`, C3 backlog item).
+- It preserves C3’s stated goal of applying a patch to a real file (`PLAN.md:309-317`, C3 backlog item).
 - It gives code mutation a boundary that can be reviewed independently rather than weakening the file-organizer sandbox.
 - It can reuse the journal lock and durable-history infrastructure without changing move/rename semantics.
 - It permits exact-byte approval and content-specific recovery without pretending the existing move primitive replaces file contents.
@@ -118,7 +118,7 @@ Add a **new, explicit user-selected code workspace** mutation root, parallel to 
 Write patched copies to an app-owned staging area and require the user to apply them manually.
 
 **Advantages:** zero new source-mutation surface; easy inspection; no target overwrite.
-**Costs:** it does not meet PLAN’s C3 acceptance target of applying a patch to a real file (`PLAN.md:307-310`). It is better described as an export/diff feature than C3. It also does not remove the need for safe path naming, exact diffs, secret-path denial, backup retention, or conflict handling when the user later applies the result.
+**Costs:** it does not meet PLAN’s C3 acceptance target of applying a patch to a real file (`PLAN.md:309-317`). It is better described as an export/diff feature than C3. It also does not remove the need for safe path naming, exact diffs, secret-path denial, backup retention, or conflict handling when the user later applies the result.
 
 #### Option C — defer C3 entirely
 
@@ -229,7 +229,7 @@ The anchor must use a stable structural identity, not a model-provided absolute 
 
 ### 4.4 Target binding and model path authority
 
-A model response may supply only the relative path and structural edit intent. The app resolves the path beneath the already selected root; it must not accept or resolve a model-supplied absolute path. This follows the C2 precedent that targets are informational text and never reach FileAgent (`agents/plan_agent.py:150-160`, architect/builder prompts; `PLAN.md:86-92`, C2 implemented record).
+A model response may supply only the relative path and structural edit intent. The app resolves the path beneath the already selected root; it must not accept or resolve a model-supplied absolute path. This follows the C2 precedent that targets are informational text and never reach FileAgent (`agents/plan_agent.py:150-160`, architect/builder prompts; `PLAN.md:88-94`, C2 implemented record).
 
 Binding is twofold: source hash binds the patch to the reviewed original bytes, while patch ID + artifact hash binds approval to this exact patch. Reapplying the same patch to changed bytes must fail rather than merge or regenerate.
 
@@ -261,7 +261,7 @@ Use stdlib `tokenize`/source offsets to splice only exact admitted source spans,
 
 ### 5.2 Dependency justification
 
-The recommendation is **stdlib `ast` + `tokenize`/offset splicing, with no new dependency**. This follows the project precedent that rejected third-party locking packages as unnecessary (`PLAN.md:141-152`, FS-S5 design and dependency rationale). A parser dependency is justified only if v1 cannot satisfy comment/format preservation and strict malformed-input rejection. It should not be added speculatively.
+The recommendation is **stdlib `ast` + `tokenize`/offset splicing, with no new dependency**. This follows the project precedent that rejected third-party locking packages as unnecessary (`PLAN.md:143-154`, FS-S5 design and dependency rationale). A parser dependency is justified only if v1 cannot satisfy comment/format preservation and strict malformed-input rejection. It should not be added speculatively.
 
 ### 5.3 BOM, CRLF, and byte preservation
 
@@ -550,7 +550,7 @@ This is neither a feature approval nor permission to implement. It is a safety-r
 
 ## 13. Acceptance criteria for the eventual C3 implementation batch
 
-These criteria derive from PLAN’s C3 acceptance line (`PLAN.md:307-310`) and this review. All are required.
+These criteria derive from PLAN’s C3 acceptance line (`PLAN.md:309-317`) and this review. All are required.
 
 1. **Real-file application:** an approved patch applies to an admitted real `.py` file and the result parses.
 2. **Unrelated code preserved:** bytes outside declared edit ranges are identical; comments and formatting outside edited spans remain byte-identical.
@@ -582,7 +582,7 @@ These criteria derive from PLAN’s C3 acceptance line (`PLAN.md:307-310`) and t
 - **Current cross-process lock:** `agent/journal_lock.py:1-191`.
 - **Current read-side code boundary:** `agents/code_index_agent.py:22-190`, constants/root/denylist/containment/link handling; `agents/code_index_agent.py:211-264`, AST analysis; `agents/code_index_agent.py:329-378`, traversal and bounded raw-byte read.
 - **App-data location:** `core/database.py:20-22`.
-- **Plan/roadmap intent:** `PLAN.md:293-313`, Phase C gate and C3/C4; `PLAN.md:371-379`, rules of engagement; `ROADMAP.md:90-122`, Phase C items.
+- **Plan/roadmap intent:** `PLAN.md:295-320`, Phase C gate and C3/C4; `PLAN.md:390-398`, rules of engagement; `ROADMAP.md:90-122`, Phase C items.
 - **Formatting-library behavior:** `ast.unparse`, LibCST, and parso are evaluated as candidate technologies in this design; no claim is made that STEWARD currently depends on or uses them. No dependency file was read or changed in C3-R because dependency changes are forbidden for this batch.
 
 **Evidence gaps:** the authorized context did not include a C3 implementation, patch artifact format, content-edit journal entry, source-file replacement primitive, or C3 UI; therefore this review specifies required behavior but makes no claim that any of it exists today. Exact portable atomic-replacement behavior, AST anchor edge cases, and third-party library version behavior require focused implementation-batch research before code is written.

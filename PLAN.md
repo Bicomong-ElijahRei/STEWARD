@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-24 | fbfb42fc | C3-R AST patch safety review: documented a 13-section threat/design review and RE-SCOPE decision; C3 and C4 remain BACKLOG, with eventual C3 requiring a separate explicitly selected code-workspace mutation root. | Establish bounded exact-approval and content-recovery criteria without introducing a code mutation surface or weakening Incoming/Sorted.
 2026-11-24 | 883347bf | Phase C7 static dependency-graph context: added identifier-only import/call edge derivation from the existing bounded C6 admission reads, root-scoped graph persistence/traversal, bounded semantic retrieval expansion, changed/deleted-file edge reconciliation, and header-inclusive provider context accounting with 316/316 unit tests green. | Expand repository context across statically visible dependencies without executing code, reading denied/external paths, or changing provider payload limits.
 2026-11-24 | 8e8d4f34 | C6 code-index review hardening: deny selected roots whose own basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules. | Close the C6 review finding without weakening existing secret-path exclusions.
 2026-11-24 | a96eb888 | Phase C6 code context: added a bounded, read-only persistent CODE collection with explicit-root traversal, denylisting, symbol-aware chunks, hash-based incremental replacement, scoped retrieval, GUI lifecycle controls, bounded Syntax prompt context, and 281/281 unit tests green. | Ground Syntax in repository code without granting code execution or mutation capability.
@@ -61,8 +62,9 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 
 ## Ground state
 Implementation baseline: Phase C7 static dependency-graph context commit 883347bf
+Review baseline: C3-R AST patch safety review commit fbfb42fc
 Suite: 316/316 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, and push-state reconciliation `96dcfe14` are confirmed pushed ancestors of `origin/main`. C7 implementation `883347bf` and its documentation closure are local and await human push; no push is claimed.
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, and its documentation closure `42c4245c` are confirmed pushed ancestors of `origin/main`. C3-R review `fbfb42fc` and this PLAN reconciliation commit are local and await human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -306,8 +308,13 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       builder request; no file changes are applied. Proof: 306/306 unit tests green.
 - C3  BACKLOG | AST-based surgical patches: a separate future execution worker may apply
       a user-approved plan through structured AST patches, preserving comments and formatting.
-      C2 does not apply files. Accept: patch applies to a real file without destroying
-      unrelated code; rejected cleanly on malformed patch. Est 15-25h.
+      C2 does not apply files. C3-R RE-SCOPE requires a new explicitly user-selected
+      code-workspace mutation root disjoint from Incoming/Sorted, immutable exact-diff
+      single-use approval, formatting-preserving stdlib AST/token splicing, bounded
+      files/edits, journaled content undo/redo, and no execution in v1. Review:
+      docs/ast_patch_review.md. Accept: patch applies to a real file without destroying
+      unrelated code; rejected cleanly on malformed patch. Est 15-25h after the separate
+      implementation/safety batch.
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.
@@ -337,6 +344,18 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       Accept: external/unresolved/denied module strings cause no reads, relevant cross-file
       dependencies are found without root leakage, and provider snippet/character limits are
       unchanged. Proof: DependencyGraphCodeIndexTests; 316/316 unit tests green.
+
+## BATCH C3-R — AST patch safety review (CLOSED)
+Files: docs/ast_patch_review.md, PLAN.md
+Review document: docs/ast_patch_review.md
+- C3-R  DONE | fbfb42fc | Completed a documentation-only, 13-section AST patch safety/threat
+      review covering scope, threats, three mutation-boundary options, patch schema,
+      formatting/comment preservation, approval, journal/recovery, blast-radius caps,
+      failure/rollback, UI impact, future RED->GREEN proof, residual risks, and eventual
+      acceptance criteria. Decision: RE-SCOPE to a new explicit code-workspace mutation root
+      parallel to and disjoint from Incoming/Sorted; C3 and C4 remain BACKLOG. No code, tests,
+      dependencies, UI, or behavior changes were introduced. Proof: 316/316 existing unit tests
+      green; validator 5/5; compileall and diff checks green.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server
