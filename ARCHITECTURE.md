@@ -23,7 +23,7 @@ file categorization.
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
-- `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, incremental replacement, scoped retrieval
+- `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, static import/call graph derivation and traversal, incremental replacement, scoped semantic/dependency retrieval
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
@@ -47,7 +47,8 @@ Scout retrieval: supervisor.route -> AGENT_RAG -> ChatTab._get_rag_agent (lazy .
 General conversation: supervisor.route -> AGENT_GENERAL_CHAT -> bounded in-memory history
   -> APIManager.route_request(agent_name="Cortex", require_tools=False) -> epoch check -> chat bubble
 Syntax coding: supervisor.route -> AGENT_CODING -> CodeIndexAgent.search (only when an
-  explicit root has been indexed) -> CodingAgent.handle_request with <=5 path/line snippets
+  explicit root has been indexed) -> bounded root-scoped semantic/dependency expansion ->
+  CodingAgent.handle_request with <=5 path/line snippets
   -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
   -> one of five intent instructions: generation, debugging, refactoring, review, explanation
 Meta-prompting: Chat **Plan first** -> validated supervisor CODING category
@@ -100,9 +101,10 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
 - Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
   and no tool definitions, and has no filesystem or process-execution API. Empty, malformed,
   and tool-bearing provider responses are rejected.
-- Code context changes only the user message: at most five snippets and 8,000 characters are
-  formatted with relative path, line range, and symbol. With no index, the existing Syntax
-  prompt is unchanged. Indexing never imports, executes, or modifies source.
+- Code context changes only the user message: at most five snippets, 2,000 characters per
+  snippet, and 8,000 total characters including headers are formatted with relative path,
+  line range, and symbol. With no index, the existing Syntax prompt is unchanged. Indexing
+  never imports, executes, or modifies source.
 
 ## Code-index safety rules
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
@@ -116,6 +118,15 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   overlap. The report states truncation and file-limit conditions deterministically.
 - Python is chunked by top-level AST function/class boundaries with overlapping-window
   fallback. Non-Python and invalid Python use bounded overlapping windows.
+- During the same admitted read, Python AST analysis derives bounded identifier-only import
+  and call facts. Resolution uses name-based lookup against the admitted root inventory only;
+  it never imports or executes source and never reads external, unresolved, denied, or
+  out-of-root module strings. Dynamic imports, aliases, ambiguous symbols, and runtime
+  dependency behavior remain unresolved approximations.
+- Import/call edges are stored as bounded scalar JSON metadata on the first chunk of each
+  file. Traversal is root-scoped and bounded by depth, visited nodes, edges per node, imports
+  and calls per file, total edges, and metadata characters. Changed/deleted files reconcile
+  their edges during the existing incremental rebuild.
 - Chunk IDs and metadata are root-scoped. A content hash replaces changed chunks and removes
   chunks for deleted files; the most recently indexed root is persisted in collection
   metadata so retrieval does not mix projects.

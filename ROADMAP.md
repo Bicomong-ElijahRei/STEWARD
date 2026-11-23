@@ -114,10 +114,12 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
 - [x] **Codebase-scale Semantic Context (symbol retrieval):**
   - **Memory:** A separate persistent `steward_code` collection indexes an explicitly selected project root with bounded, read-only symbol chunks and supplies path/line-aware context to Syntax.
   - **Safety:** Indexing denies secrets and dependency caches, refuses a selected root whose own basename is in `DENIED_DIRECTORIES`, refuses escaping symlinks/junctions, enforces file/byte limits, and never executes or modifies source.
-  - **Implementation:** Local commit `8e8d4f34`; not pushed by this change.
-  - **Push state:** The human push updates `origin/main`; the next batch reconciles `HEAD` against the confirmed remote ref.
-- [ ] **Dependency-graph Context:**
-  - **Memory:** Model imports and calls to expand or rerank repository-wide context. This remains explicit Phase C7 backlog rather than an implied feature of symbol retrieval.
+  - **Implementation:** Commit `8e8d4f34`; confirmed pushed as an ancestor of `origin/main`.
+- [x] **Dependency-graph Context (Phase C7):**
+  - **Memory:** Static Python import/call edges are derived during the existing bounded admission read, persisted as identifier-only scalar metadata, traversed with deterministic bounds, and used to expand root-scoped semantic context across files.
+  - **Safety:** Graph resolution never imports or executes source, resolves only against admitted root inventory, records external/unresolved imports without reading them, and cannot cross roots or expose denied paths. Provider limits remain five snippets, 2,000 characters per snippet, and 8,000 total characters including headers.
+  - **Implementation:** Commit `883347bf`; local and not pushed by this change.
+  - **Limitations:** Resolution is a static name-based approximation: dynamic imports, aliases, ambiguous symbols, and runtime dependency behavior are not resolved.
 
 ---
 

@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-24 | 883347bf | Phase C7 static dependency-graph context: added identifier-only import/call edge derivation from the existing bounded C6 admission reads, root-scoped graph persistence/traversal, bounded semantic retrieval expansion, changed/deleted-file edge reconciliation, and header-inclusive provider context accounting with 316/316 unit tests green. | Expand repository context across statically visible dependencies without executing code, reading denied/external paths, or changing provider payload limits.
 2026-11-24 | 8e8d4f34 | C6 code-index review hardening: deny selected roots whose own basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules. | Close the C6 review finding without weakening existing secret-path exclusions.
 2026-11-24 | a96eb888 | Phase C6 code context: added a bounded, read-only persistent CODE collection with explicit-root traversal, denylisting, symbol-aware chunks, hash-based incremental replacement, scoped retrieval, GUI lifecycle controls, bounded Syntax prompt context, and 281/281 unit tests green. | Ground Syntax in repository code without granting code execution or mutation capability.
 2026-11-24 | 1c66ecb9 | Phase C2 meta-prompting: added schema-validated Cortex plan artifacts, explicit ID-bound approval, and a separate text-only Syntax request; architect and builder remain text-only and automated application remains C3. | Keep plan creation reviewable without implying file mutation capability.
@@ -59,9 +60,13 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: Phase C2 meta-prompting commit 1c66ecb9; C6 root hardening commit 8e8d4f34
-Suite: 307/307 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9` and documentation `64d9756b` are confirmed pushed ancestors of `origin/main`. C6 root hardening and its documentation closure are local and await human push; no push is claimed.
+Implementation baseline: Phase C7 static dependency-graph context commit 883347bf
+Suite: 316/316 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, and push-state reconciliation `96dcfe14` are confirmed pushed ancestors of `origin/main`. C7 implementation `883347bf` and its documentation closure are local and await human push; no push is claimed.
+Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
+pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
+Tests/Gates body. They are not rewritten because they are already public history; C7 commit
+`883347bf` and its documentation closure use the required structured body.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -85,6 +90,15 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
   request. Targets are informational and never reach FileAgent; no file changes are
   applied by either step. Proof: BlueprintValidationTests, PlanPersistenceTests,
   PlanReviewGateTests, PlanGuiLifecycleTests; 306/306 unit tests green.
+- Phase C7 Static dependency-graph context — DONE | 883347bf | Python import/call
+  edges are statically derived during the existing bounded C6 admission read, persisted as
+  identifier-only scalar metadata, traversed with deterministic root-scoped bounds, and used
+  to expand semantic context across files. Resolution never imports or executes source and
+  resolves only against admitted root inventory; external/unresolved/denied module strings
+  cause no reads. Provider limits remain five snippets, 2,000 characters per snippet, and
+  8,000 total characters including headers. Proof: DependencyGraphCodeIndexTests; 316/316
+  unit tests green. Limitation: name-based static approximation does not resolve dynamic
+  imports, aliases, ambiguous symbols, or runtime behavior.
 - Phase C6 Codebase-scale semantic context — DONE | a96eb888, 8e8d4f34 | Separate
   persistent `steward_code` collection provides explicit-root, bounded, read-only symbol
   retrieval for Syntax, with denylisting, containment, incremental replacement, GUI lifecycle
@@ -316,10 +330,13 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       whose own basename is in `DENIED_DIRECTORIES` before traversal; filename secret
       rules remain active. Proof: CodeIndexAgentTests, SyntaxCodeContextTests, and
       ChatCodeIndexLifecycleTests; 307/307 unit tests green.
-- C7  BACKLOG | Dependency-graph modeling: build an explicit import/call graph and use it
-      to expand or rerank repository-wide context. Accept: graph edges are derived without
-      executing code, bounded traversal has deterministic limits, and retrieval tests prove
-      relevant cross-file dependencies are found without leaking denied paths. Est 15-25h.
+- C7  DONE | 883347bf | Dependency-graph modeling: an explicit static import/call graph is
+      derived without executing code, persisted as bounded identifier-only root-scoped
+      metadata, traversed with deterministic depth/node/edge limits, and used to expand
+      semantic repository context. Changed/deleted files reconcile edges idempotently.
+      Accept: external/unresolved/denied module strings cause no reads, relevant cross-file
+      dependencies are found without root leakage, and provider snippet/character limits are
+      unchanged. Proof: DependencyGraphCodeIndexTests; 316/316 unit tests green.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server

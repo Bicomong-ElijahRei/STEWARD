@@ -19,8 +19,10 @@ preview, explicit approval, and undo/redo.
 - Code context: an explicitly selected project root can be indexed in a separate persistent
   `steward_code` collection. Python AST symbols, bounded overlapping fallback chunks,
   path/line-aware retrieval, incremental replacement, status, and clear are available from
-  the Chat header's **Code Index** control. Retrieved snippets are included in Syntax's
-  existing text-only provider prompt.
+  the Chat header's **Code Index** control. Phase C7 also derives a static, read-only
+  import/call graph and uses bounded root-scoped dependency expansion to include relevant
+  cross-file snippets. Retrieved snippets are included in Syntax's existing text-only provider
+  prompt.
 - File operations: preview a plan, approve it by ID, and execute exactly the approved plan.
   Preview generations own plan publication and provider metadata, so discarded or superseded
   previews cannot become executable or overwrite newer results.
@@ -93,11 +95,12 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-307 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+316 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
-read-only code indexing/retrieval, GUI lifecycle, no-overwrite filesystem publication,
-whole-plan collision preflight, partial-outcome journal truthfulness, durable journal recovery,
+read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
+no-overwrite filesystem publication, whole-plan collision preflight, partial-outcome journal
+truthfulness, durable journal recovery,
 cross-process journal serialization, and schema-validated meta-prompting review gates.
 
 ## Architecture
@@ -114,10 +117,11 @@ confirmation and a verified database/key/operation-log backup set.
   the plan. Automated application remains Phase C3.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
   the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
-- Code context currently retrieves symbol-sized semantic snippets; import/call dependency
-  graph expansion remains Phase C7 backlog. The local `steward_code` collection contains
-  plaintext source excerpts, and the GUI discloses that retrieved excerpts are sent to the
-  configured provider.
+- Code context retrieves symbol-sized semantic snippets and statically derived import/call
+  dependency context. Graph resolution is a name-based approximation: dynamic imports, aliases,
+  ambiguous symbols, and runtime dependency behavior are not resolved. The local
+  `steward_code` collection contains plaintext source excerpts, and the GUI discloses that
+  retrieved excerpts are sent to the configured provider.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
@@ -128,6 +132,6 @@ confirmation and a verified database/key/operation-log backup set.
 ## Roadmap
 v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
 generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
-Syntax with review/explanation intents, and bounded read-only code-context retrieval);
-dependency-graph context, surgical file patches, self-healing execution, MCP,
-vision, voice, and remote control remain future work tracked in PLAN.md.
+Syntax with review/explanation intents, and bounded read-only code-context retrieval with
+static dependency expansion); surgical file patches, self-healing execution, MCP, vision,
+voice, and remote control remain future work tracked in PLAN.md.
