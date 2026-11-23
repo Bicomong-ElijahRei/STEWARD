@@ -27,6 +27,44 @@ class ToolResult(str):
         return result
 
 
+class MutationOutcomeError(Exception):
+    """Failure with an explicit filesystem outcome for journal handling."""
+
+    def __init__(self, state, message, actual_destination=None):
+        super().__init__(message)
+        self.state = state
+        self.actual_destination = actual_destination
+
+
+def _remove_published_source(source, destination):
+    """Remove a published source and roll back the destination on failure."""
+    try:
+        os.remove(source)
+    except Exception as source_error:
+        cleanup_error = None
+        try:
+            if os.path.lexists(destination):
+                os.remove(destination)
+        except Exception as exc:
+            cleanup_error = exc
+
+        source_exists = os.path.lexists(source)
+        destination_exists = os.path.lexists(destination)
+        if source_exists and not destination_exists:
+            state = "failed"
+            detail = str(source_error)
+        else:
+            state = "uncertain"
+            detail = (
+                f"{source_error}; destination rollback failed: {cleanup_error}"
+                if cleanup_error is not None
+                else f"{source_error}; destination rollback could not be verified"
+            )
+        raise MutationOutcomeError(
+            state, detail, actual_destination=destination
+        ) from source_error
+
+
 def resolve_move_destination(source, destination):
     """Return the concrete final path used by move semantics."""
     destination = os.path.normpath(destination)
@@ -94,14 +132,7 @@ def _move_without_overwrite(source, destination):
     if _same_effective_path(source, final_destination):
         raise FileExistsError(f"Source and destination are the same path: '{source}'")
     _publish_without_overwrite(source, final_destination)
-    try:
-        os.remove(source)
-    except Exception:
-        try:
-            os.remove(final_destination)
-        except OSError:
-            pass
-        raise
+    _remove_published_source(source, final_destination)
     return final_destination
 
 
@@ -113,6 +144,12 @@ def move_file(source, destination):
         return ToolResult(
             f"Moved '{source}' → '{actual_destination}'",
             actual_destination=actual_destination,
+        )
+    except MutationOutcomeError as exc:
+        return ToolResult(
+            f"Error: {exc}",
+            mutation_state=exc.state,
+            actual_destination=exc.actual_destination or destination,
         )
     except Exception as e:
         return f"Error: {e}"
@@ -139,22 +176,22 @@ def rename_file(old_path, new_name):
         if os.path.lexists(new_path):
             raise FileExistsError(f"Destination already exists: '{new_path}'")
         _publish_without_overwrite(old_path, new_path)
-        try:
-            os.remove(old_path)
-        except Exception:
-            try:
-                os.remove(new_path)
-            except OSError:
-                pass
-            raise
+        _remove_published_source(old_path, new_path)
         return ToolResult(
             f"Renamed '{old_path}' → '{new_path}'",
             actual_destination=new_path,
+        )
+    except MutationOutcomeError as exc:
+        return ToolResult(
+            f"Error: {exc}",
+            mutation_state=exc.state,
+            actual_destination=exc.actual_destination or new_path,
         )
     except Exception as e:
         return f"Error: {e}"
 
 def create_folder(path):
+    created_paths = []
     try:
         path = os.path.normpath(path)
         if os.path.exists(path):
@@ -177,7 +214,6 @@ def create_folder(path):
             if parent == cursor:
                 break
             cursor = parent
-        created_paths = []
         for directory in reversed(missing):
             try:
                 os.mkdir(directory)
@@ -190,7 +226,11 @@ def create_folder(path):
             created_paths=created_paths,
         )
     except Exception as e:
-        return f"Error: {e}"
+        return ToolResult(
+            f"Error: {e}",
+            mutation_state="uncertain" if created_paths else "failed",
+            created_paths=created_paths,
+        )
 
 def list_directory(directory):
     try:

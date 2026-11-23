@@ -392,11 +392,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         """Record exact directory identities for safe later undo/redo."""
         ownership = []
         for path in paths:
-            stat = os.stat(path)
+            try:
+                stat = os.stat(path)
+                device = stat.st_dev
+                inode = stat.st_ino
+            except OSError:
+                # Preserve path evidence even if the directory disappears during
+                # journaling. Missing identity cannot pass the later identity
+                # check, so recovery remains blocked rather than becoming unsafe.
+                device = None
+                inode = None
             ownership.append({
                 "path": path,
-                "device": stat.st_dev,
-                "inode": stat.st_ino,
+                "device": device,
+                "inode": inode,
             })
         return ownership
 
@@ -424,18 +433,37 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 result = _legacy_tool_functions[func_name](**safe_args)
             else:
                 result = callback(**safe_args)
+            metadata = dict(getattr(result, "metadata", {}) or {})
             if isinstance(result, str) and result.startswith("Error"):
                 entry["result"] = result
                 entry["success"] = False
-                entry["state"] = "failed"
+                entry["state"] = metadata.get("mutation_state", "failed")
                 entry["revision"] = entry.get("revision", 0) + 1
+                if metadata:
+                    entry.update(metadata)
+                if operation == "create_folder":
+                    created_paths = metadata.get("created_paths", [])
+                    if created_paths:
+                        metadata["folder_ownership"] = self._folder_ownership(created_paths)
+                        entry["folder_ownership"] = metadata["folder_ownership"]
+                actual_destination = metadata.get("actual_destination")
+                if actual_destination and operation == "move":
+                    entry["destination"] = actual_destination
                 try:
                     self._save_operation_log()
                 except Exception as journal_error:
                     return f"{result} (operation history could not be finalized: {journal_error})"
                 return result
 
-            metadata = dict(getattr(result, "metadata", {}) or {})
+            if metadata.get("no_op"):
+                entry["result"] = result
+                entry["success"] = False
+                entry["state"] = "no_op"
+                entry["revision"] = entry.get("revision", 0) + 1
+                entry.update(metadata)
+                self._save_operation_log()
+                return result
+
             if operation == "create_folder":
                 created_paths = metadata.get("created_paths", [])
                 if not created_paths:
@@ -1033,7 +1061,18 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         """Reject destination conflicts before the first operation mutates disk."""
         approved = {t["function"]["name"] for t in self._get_tool_definitions()}
         planned_destinations = {}
+        planned_folders = {}
         produced_sources = set()
+
+        def path_key(path):
+            return os.path.normcase(os.path.abspath(path))
+
+        def is_ancestor(parent, child):
+            try:
+                return os.path.commonpath((parent, child)) == parent
+            except ValueError:
+                return False
+
         for index, tool_call in enumerate(tool_calls):
             func_name = tool_call["function"]["name"]
             if func_name not in approved:
@@ -1041,16 +1080,59 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             safe_args = self._validate_mutation(
                 func_name, tool_call["function"]["arguments"]
             )
+
+            if func_name == "create_folder":
+                folder = safe_args["path"]
+                key = path_key(folder)
+                if key in planned_folders:
+                    previous = planned_folders[key]
+                    raise ValueError(
+                        f"Plan conflict: operations {previous + 1} and {index + 1} "
+                        f"both create '{folder}'."
+                    )
+                if key in planned_destinations:
+                    previous = planned_destinations[key]
+                    raise ValueError(
+                        f"Plan conflict: operations {previous + 1} and {index + 1} "
+                        f"target '{folder}' as both a file and a directory."
+                    )
+                if os.path.lexists(folder) and not os.path.isdir(folder):
+                    raise ValueError(
+                        f"Plan conflict: folder destination is an existing file: '{folder}'."
+                    )
+                for file_destination, previous in planned_destinations.items():
+                    if is_ancestor(file_destination, key):
+                        raise ValueError(
+                            f"Plan conflict: operation {previous + 1} targets file "
+                            f"'{file_destination}', which cannot contain directory "
+                            f"'{folder}'."
+                        )
+                planned_folders[key] = index
+                continue
+
             destination = self._planned_destination(func_name, safe_args)
             if destination is None:
                 continue
-            key = os.path.normcase(os.path.abspath(destination))
+            key = path_key(destination)
             if key in planned_destinations:
                 previous = planned_destinations[key]
                 raise ValueError(
                     f"Plan conflict: operations {previous + 1} and {index + 1} "
                     f"both target '{destination}'."
                 )
+            if key in planned_folders:
+                previous = planned_folders[key]
+                raise ValueError(
+                    f"Plan conflict: operations {previous + 1} and {index + 1} "
+                    f"target '{destination}' as both a file and a directory."
+                )
+            for folder_key, previous in planned_folders.items():
+                if is_ancestor(key, folder_key):
+                    raise ValueError(
+                        f"Plan conflict: operation {index + 1} targets file "
+                        f"'{destination}', which cannot contain directory "
+                        f"'{folder_key}'."
+                    )
             if os.path.lexists(destination):
                 raise ValueError(
                     f"Plan conflict: destination already exists: '{destination}'."
@@ -1058,7 +1140,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             planned_destinations[key] = index
             source = safe_args.get("source") or safe_args.get("old_path")
             if source:
-                source_key = os.path.normcase(os.path.abspath(source))
+                source_key = path_key(source)
                 if source_key in produced_sources:
                     raise ValueError(
                         "Plan conflict: a later operation depends on the output of "

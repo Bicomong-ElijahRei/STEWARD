@@ -259,6 +259,261 @@ class FilesystemJournalHardeningTests(unittest.TestCase):
             self.assertIn("no ownership evidence", result)
             self.assertTrue(os.path.isdir(folder))
 
+    def test_same_name_rename_is_not_successful_history(self):
+        with tempfile.TemporaryDirectory(prefix="steward_noop_rename_") as root:
+            incoming, sorted_dir = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            destination = os.path.join(sorted_dir, "destination.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+
+            moved = agent.move_file("Incoming/source.txt", "Sorted/destination.txt")
+            renamed = agent.rename_file(
+                "Sorted/destination.txt", os.path.basename(destination)
+            )
+
+            self.assertIn("Moved", moved)
+            self.assertIn("No-op", renamed)
+            with open(destination, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "original")
+            self.assertFalse(any(
+                entry.get("operation") == "rename" and entry.get("success")
+                for entry in agent._operation_log
+            ))
+            self.assertIn("Undid move", agent.undo_last())
+            self.assertTrue(os.path.exists(source))
+            self.assertFalse(os.path.exists(destination))
+
+    def test_move_source_removal_failure_with_verified_rollback_is_failed(self):
+        with tempfile.TemporaryDirectory(prefix="steward_move_rollback_") as root:
+            incoming, sorted_dir = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            destination = os.path.join(sorted_dir, "destination.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            original_remove = os.remove
+
+            def fail_source_remove(path):
+                if os.path.normcase(os.path.abspath(path)) == os.path.normcase(source):
+                    raise PermissionError("source removal failed")
+                return original_remove(path)
+
+            with patch("agent.tools.os.remove", side_effect=fail_source_remove):
+                result = agent.move_file(
+                    "Incoming/source.txt", "Sorted/destination.txt"
+                )
+
+            self.assertIn("Error", result)
+            self.assertTrue(os.path.exists(source))
+            self.assertFalse(os.path.exists(destination))
+            self.assertEqual(agent._operation_log[-1]["state"], "failed")
+            self.assertFalse(agent._operation_log[-1]["success"])
+
+    def test_move_source_removal_and_cleanup_failure_is_uncertain(self):
+        with tempfile.TemporaryDirectory(prefix="steward_move_uncertain_") as root:
+            incoming, sorted_dir = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            destination = os.path.join(sorted_dir, "destination.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            original_remove = os.remove
+
+            def fail_source_and_cleanup(path):
+                normalized = os.path.normcase(os.path.abspath(path))
+                if normalized in {
+                    os.path.normcase(source), os.path.normcase(destination),
+                }:
+                    raise PermissionError("source and cleanup removal failed")
+                return original_remove(path)
+
+            with patch("agent.tools.os.remove", side_effect=fail_source_and_cleanup):
+                result = agent.move_file(
+                    "Incoming/source.txt", "Sorted/destination.txt"
+                )
+
+            self.assertIn("Error", result)
+            self.assertTrue(os.path.exists(source))
+            self.assertTrue(os.path.exists(destination))
+            self.assertEqual(agent._operation_log[-1]["state"], "uncertain")
+            self.assertFalse(agent._operation_log[-1]["success"])
+            self.assertIn("Undo blocked", agent.undo_last())
+
+    def test_rename_source_removal_failure_with_verified_rollback_is_failed(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rename_rollback_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            destination = os.path.join(incoming, "renamed.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            original_remove = os.remove
+
+            def fail_source_remove(path):
+                if os.path.normcase(os.path.abspath(path)) == os.path.normcase(source):
+                    raise PermissionError("source removal failed")
+                return original_remove(path)
+
+            with patch("agent.tools.os.remove", side_effect=fail_source_remove):
+                result = agent.rename_file("Incoming/source.txt", "renamed.txt")
+
+            self.assertIn("Error", result)
+            self.assertTrue(os.path.exists(source))
+            self.assertFalse(os.path.exists(destination))
+            self.assertEqual(agent._operation_log[-1]["state"], "failed")
+            self.assertFalse(agent._operation_log[-1]["success"])
+
+    def test_rename_source_removal_and_cleanup_failure_is_uncertain(self):
+        with tempfile.TemporaryDirectory(prefix="steward_rename_uncertain_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            destination = os.path.join(incoming, "renamed.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            original_remove = os.remove
+
+            def fail_source_and_cleanup(path):
+                normalized = os.path.normcase(os.path.abspath(path))
+                if normalized in {
+                    os.path.normcase(source), os.path.normcase(destination),
+                }:
+                    raise PermissionError("source and cleanup removal failed")
+                return original_remove(path)
+
+            with patch("agent.tools.os.remove", side_effect=fail_source_and_cleanup):
+                result = agent.rename_file("Incoming/source.txt", "renamed.txt")
+
+            self.assertIn("Error", result)
+            self.assertTrue(os.path.exists(source))
+            self.assertTrue(os.path.exists(destination))
+            self.assertEqual(agent._operation_log[-1]["state"], "uncertain")
+            self.assertFalse(agent._operation_log[-1]["success"])
+            self.assertIn("Undo blocked", agent.undo_last())
+
+    def test_folder_failure_before_change_is_ordinary_failed_history(self):
+        with tempfile.TemporaryDirectory(prefix="steward_folder_no_change_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            target = os.path.join(incoming, "New", "Child")
+            agent = self.make_agent(root)
+
+            with patch("agent.tools.os.mkdir", side_effect=PermissionError("mkdir failed")):
+                result = agent.create_folder("Incoming/New/Child")
+
+            self.assertIn("Error", result)
+            self.assertFalse(os.path.exists(os.path.join(incoming, "New")))
+            self.assertFalse(os.path.exists(target))
+            self.assertEqual(agent._operation_log[-1]["state"], "failed")
+            self.assertFalse(agent._operation_log[-1]["success"])
+            self.assertFalse(agent._operation_log[-1].get("created_paths"))
+
+    def test_partial_folder_creation_preserves_evidence_and_is_uncertain(self):
+        with tempfile.TemporaryDirectory(prefix="steward_folder_partial_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            parent = os.path.join(incoming, "New")
+            target = os.path.join(parent, "Child")
+            agent = self.make_agent(root)
+            original_mkdir = os.mkdir
+
+            def fail_child_mkdir(path, *args, **kwargs):
+                if os.path.normcase(os.path.abspath(path)) == os.path.normcase(target):
+                    raise PermissionError("child mkdir failed")
+                return original_mkdir(path, *args, **kwargs)
+
+            with patch("agent.tools.os.mkdir", side_effect=fail_child_mkdir):
+                result = agent.create_folder("Incoming/New/Child")
+
+            self.assertIn("Error", result)
+            self.assertTrue(os.path.isdir(parent))
+            self.assertFalse(os.path.exists(target))
+            entry = agent._operation_log[-1]
+            self.assertEqual(entry["state"], "uncertain")
+            self.assertFalse(entry["success"])
+            self.assertEqual(entry.get("created_paths"), [parent])
+            ownership = entry.get("folder_ownership")
+            self.assertEqual(len(ownership), 1)
+            self.assertEqual(ownership[0]["path"], parent)
+            self.assertIn("Undo blocked", agent.undo_last())
+
+    def _assert_folder_move_conflict_is_rejected(self, folder_first):
+        with tempfile.TemporaryDirectory(prefix="steward_folder_move_conflict_") as root:
+            incoming, sorted_dir = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            target = os.path.join(sorted_dir, "Category")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            folder_call = {"function": {"name": "create_folder", "arguments": {
+                "path": target,
+            }}}
+            move_call = {"function": {"name": "move_file", "arguments": {
+                "source": source, "destination": target,
+            }}}
+            plan = [folder_call, move_call] if folder_first else [move_call, folder_call]
+
+            agent._pending_plan = plan
+            agent._pending_plan_id = "folder-move-conflict"
+            results = agent.execute_pending_plan("folder-move-conflict")
+
+            self.assertIn("Plan conflict", results)
+            self.assertTrue(os.path.exists(source))
+            self.assertFalse(os.path.exists(target))
+            self.assertFalse(any(entry.get("success") for entry in agent._operation_log))
+
+    def test_whole_plan_rejects_folder_move_conflict_folder_first(self):
+        self._assert_folder_move_conflict_is_rejected(folder_first=True)
+
+    def test_whole_plan_rejects_folder_move_conflict_move_first(self):
+        self._assert_folder_move_conflict_is_rejected(folder_first=False)
+
+    def _assert_folder_rename_conflict_is_rejected(self, folder_first):
+        with tempfile.TemporaryDirectory(prefix="steward_folder_rename_conflict_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            target = os.path.join(incoming, "renamed.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            folder_call = {"function": {"name": "create_folder", "arguments": {
+                "path": target,
+            }}}
+            rename_call = {"function": {"name": "rename_file", "arguments": {
+                "old_path": source, "new_name": "renamed.txt",
+            }}}
+            plan = [folder_call, rename_call] if folder_first else [rename_call, folder_call]
+
+            agent._pending_plan = plan
+            agent._pending_plan_id = "folder-rename-conflict"
+            results = agent.execute_pending_plan("folder-rename-conflict")
+
+            self.assertIn("Plan conflict", results)
+            self.assertTrue(os.path.exists(source))
+            self.assertFalse(os.path.exists(target))
+            self.assertFalse(any(entry.get("success") for entry in agent._operation_log))
+
+    def test_whole_plan_rejects_folder_rename_conflict_folder_first(self):
+        self._assert_folder_rename_conflict_is_rejected(folder_first=True)
+
+    def test_whole_plan_rejects_folder_rename_conflict_rename_first(self):
+        self._assert_folder_rename_conflict_is_rejected(folder_first=False)
+
+    def test_whole_plan_allows_folder_parent_and_file_child(self):
+        with tempfile.TemporaryDirectory(prefix="steward_folder_child_") as root:
+            incoming, _ = self.prepare_workspace(root)
+            source = os.path.join(incoming, "source.txt")
+            folder = os.path.join(incoming, "Category")
+            destination = os.path.join(folder, "source.txt")
+            self.write_file(source, "original")
+            agent = self.make_agent(root)
+            plan = [
+                {"function": {"name": "create_folder", "arguments": {"path": folder}}},
+                {"function": {"name": "move_file", "arguments": {
+                    "source": source, "destination": destination,
+                }}},
+            ]
+
+            results = agent._execute_tool_plan(plan, dry_run=False)
+
+            self.assertFalse(any("Plan conflict" in result for result in results))
+            self.assertTrue(os.path.isdir(folder))
+            self.assertTrue(os.path.exists(destination))
+            self.assertFalse(os.path.exists(source))
+
 
 if __name__ == "__main__":
     unittest.main()

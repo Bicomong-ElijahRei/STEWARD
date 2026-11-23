@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-23 | 9d092fd7 | Added Batch FS-SAFETY-1: reproduce and repair no-op, partial-mutation, partial-folder, and folder-target preflight journal truthfulness; defer cross-process journal locking pending reviewed design. | Reproduce the handoff leads against the current checkout before changing safety behavior.
 2026-11-23 | 7907ebb1 | Filesystem mutation safety: added no-overwrite publication, write-ahead atomic operation history, exact folder ownership, whole-plan destination conflict preflight, uncertain-state recovery, and 247/247 unit tests green.
 2026-11-23 | 8dd2e411 | Lifecycle hardening: added preview-generation ownership, epoch-guarded chat/approval/execution/specialist UI continuations, five Syntax intents, and generation-isolated scanner restarts; 236/236 unit tests green.
 2026-11-23 | 8dd2e411 | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, lifecycle, provider-attribution, and test state; 236/236 unit tests green.
@@ -82,7 +83,29 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
-v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current at 410cbdcf. New findings go to the backlog.
+v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current through the filesystem-safety baseline 7907ebb1. New findings go to the backlog.
+
+## BATCH FS-SAFETY-1 — filesystem journal truthfulness and plan conflicts
+Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.py, ARCHITECTURE.md, README.md, PLAN.md
+- FS-S1  IN-PROGRESS | 9d092fd7 | Same-name rename returns `no_op` but is journaled as a
+      successful reversible operation. Accept: the file is unchanged; no successful rename
+      history entry exists; the no-op does not prevent undo of the preceding legitimate move.
+- FS-S2  IN-PROGRESS | 9d092fd7 | A published move/rename whose source removal fails may leave
+      both source and destination, but the journal records ordinary failure. Accept: verified
+      rollback records `failed`; unresolved cleanup records `uncertain` and blocks blind undo/redo;
+      deterministic move and rename tests assert both filesystem and journal state.
+- FS-S3  IN-PROGRESS | 9d092fd7 | Folder creation loses created-directory evidence when a later
+      component fails. Accept: a pre-change failure records ordinary failure; partial creation
+      preserves exact created paths/ownership and records `uncertain`; deterministic tests assert
+      the remaining tree and recovery state.
+- FS-S4  IN-PROGRESS | 9d092fd7 | Whole-plan preflight omits `create_folder` targets. Accept:
+      folder/move and folder/rename target conflicts are rejected in either plan order before
+      any mutation; valid non-conflicting parent/child plans remain accepted.
+- FS-S5  DEFERRED | 9d092fd7 | The operation journal uses process-local `threading.RLock`
+      objects, and the application does not enforce one running instance. Do not describe this as
+      inter-process protection. Follow-up: design and review a portable cross-process journal
+      ownership/lock protocol with stale-writer, crash, timeout, and multi-platform tests before
+      introducing platform-specific locking.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
