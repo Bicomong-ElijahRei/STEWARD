@@ -23,8 +23,8 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   text-only Syntax assistance, durable write-ahead filesystem history, no-overwrite
   mutation publication, and persistent state relocated to `%APPDATA%\STEWARD`.
   These foundations intentionally do not grant Syntax file-write or code-execution capability.
-- **v3.0 — Advanced Code Intelligence & Phase D (Future):** meta-prompting,
-  surgical code workflows, self-healing loops, and research-backed integrations such
+- **v3.0 — Advanced Code Intelligence & Phase D (Future):** surgical code workflows,
+  self-healing loops, and research-backed integrations such
   as MCP, voice, and remote control.
 
 ---
@@ -100,10 +100,13 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
 - [x] **Bounded Cortex Conversation Memory:**
   - **Memory:** General chat keeps at most 6 turns, 12,000 total characters, and 4,000 characters per message in memory.
   - **Invalidation:** Clearing chat erases history, invalidates pending or in-flight file previews, and rejects stale responses and specialist UI continuations.
-- [ ] **Meta-Prompting (Architect + Builder):**
-  - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint. A future execution worker applies the blueprint only through an approved mutation boundary.
+- [x] **Meta-Prompting (Architect + Builder):**
+  - **Router:** `Cortex` uses a heavy reasoning model (e.g., Kimi) to write a strict JSON blueprint, published as an immutable app-owned artifact.
+  - **Review:** The GUI's explicit Plan first mode accepts only validated `CODING` routing and requires approval bound to the plan UUID before a separate text-only Syntax request.
+  - **Implementation:** Local commit `1c66ecb9`; not pushed by this change.
+  - **Scope:** Architect and builder remain text-only; automated application of the blueprint remains Phase C3.
 - [ ] **AST Parsing & JSON Patches:**
-  - **Future mutation worker:** A separate reviewed component will parse code and apply surgical patches; current `Syntax` remains text-only and cannot mutate files.
+  - **Future mutation worker:** A separate reviewed component will parse code and apply surgical patches to an approved plan; current `Syntax` remains text-only and cannot mutate files.
 - [ ] **Self-Healing Loop & Linter Integration:**
   - **Future execution worker:** A separately sandboxed worker will own lint/run/edit cycles with hard iteration bounds; current `Syntax` cannot execute code or edit files.
 - [x] **Persistent Document RAG (Scout):**

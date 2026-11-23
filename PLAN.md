@@ -18,6 +18,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 
 ## Changelog
 2026-11-24 | a96eb888 | Phase C6 code context: added a bounded, read-only persistent CODE collection with explicit-root traversal, denylisting, symbol-aware chunks, hash-based incremental replacement, scoped retrieval, GUI lifecycle controls, bounded Syntax prompt context, and 281/281 unit tests green. | Ground Syntax in repository code without granting code execution or mutation capability.
+2026-11-24 | 1c66ecb9 | Phase C2 meta-prompting: added schema-validated Cortex plan artifacts, explicit ID-bound approval, and a separate text-only Syntax request; architect and builder remain text-only and automated application remains C3. | Keep plan creation reviewable without implying file mutation capability.
 2026-11-23 | eaee322b | FS-S5 closure: journal serialization is implemented and pushed; closure state, implemented SHAs, freeze line, and push metadata are reconciled. | Keep the tracked plan aligned with the verified Git closure baseline and prevent stale local/not-pushed claims.
 2026-11-23 | 935a6236 | FS-S5 DONE: implemented persistent sidecar OS locking, bounded timeout, crash release, stale-transition protection, write-ahead/atomic journal guarantees, cross-process regressions, and 266/266 discovery tests green. | Prevent lost journal updates and conflicting undo/redo transitions when separate STEWARD processes share the AppData operation log.
 2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
@@ -57,9 +58,9 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: Phase C6 code-context commit a96eb888
-Suite: 281/281 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C6 implementation and this documentation reconciliation are local and await human push; no push is claimed.
+Implementation baseline: Phase C2 meta-prompting commit 1c66ecb9
+Suite: 306/306 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation and this documentation reconciliation are local and await human push; no push is claimed.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -76,6 +77,13 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 - Persistent state relocation — DONE | b99c9a38 | Database, Fernet key, and operation log
   use `%APPDATA%\STEWARD`; legacy root files are copied without overwrite and the legacy
   sources remain intact. Proof: AppDataMigrationTests.
+- Phase C2 Meta-prompting — DONE | 1c66ecb9 | Cortex creates a strict, bounded,
+  schema-validated immutable JSON plan artifact under the app-owned plans directory.
+  The GUI exposes an explicit Plan first mode only for validated CODING routing;
+  a single-use approval bound to the plan UUID starts a separate text-only Syntax
+  request. Targets are informational and never reach FileAgent; no file changes are
+  applied by either step. Proof: BlueprintValidationTests, PlanPersistenceTests,
+  PlanReviewGateTests, PlanGuiLifecycleTests; 306/306 unit tests green.
 - Phase C6 Codebase-scale semantic context — DONE | a96eb888 | Separate persistent
   `steward_code` collection provides explicit-root, bounded, read-only symbol retrieval for
   Syntax, with denylisting, containment, incremental replacement, GUI lifecycle controls,
@@ -275,12 +283,14 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       delegation start and each specialist completion are visible in Live Feed; worker count is
       bounded to eight; failure of one worker does not kill the run. Proof: HierarchicalSwarmTests,
       CodingAgentTests, and GUI delegation-routing tests; 236/236 unit tests green.
-- C2  BACKLOG | Meta-prompting: architect produces a plan, builder implements it, as
-      separate routed steps. Accept: plan artifact exists and is reviewable before any
-      edit. Est 5-10h.
-- C3  BACKLOG | AST-based surgical patches: model emits structured patch; applied via AST
-      preserving comments and formatting. Accept: patch applies to a real file without
-      destroying unrelated code; rejected cleanly on malformed patch. Est 15-25h.
+- C2  DONE | 1c66ecb9 | Meta-prompting: Cortex creates a schema-validated immutable
+      plan artifact; after explicit ID-bound review approval, a separate text-only Syntax
+      request elaborates it. Accept: plan artifact exists and is reviewable before any
+      builder request; no file changes are applied. Proof: 306/306 unit tests green.
+- C3  BACKLOG | AST-based surgical patches: a separate future execution worker may apply
+      a user-approved plan through structured AST patches, preserving comments and formatting.
+      C2 does not apply files. Accept: patch applies to a real file without destroying
+      unrelated code; rejected cleanly on malformed patch. Est 15-25h.
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.

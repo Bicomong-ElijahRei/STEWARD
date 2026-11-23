@@ -10,6 +10,10 @@ preview, explicit approval, and undo/redo.
   4,000 characters per message. Clearing chat erases that memory and rejects stale responses.
 - Syntax assistance: generation, debugging, refactoring, review, and explanation use providers
   bound to the Syntax role. Syntax is text-only: it has no file, process, or tool-execution surface.
+- Meta-prompting: in explicit **Plan first** mode for validated coding requests, Cortex writes a
+  strict schema-validated plan artifact. After you approve that exact plan ID, a separate
+  text-only Syntax request elaborates it. Neither step applies file changes. Implemented locally
+  in commit `1c66ecb9`.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - Code context: an explicitly selected project root can be indexed in a separate persistent
@@ -89,12 +93,12 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-281 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+306 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval, GUI lifecycle, no-overwrite filesystem publication,
 whole-plan collision preflight, partial-outcome journal truthfulness, durable journal recovery,
-and cross-process journal serialization.
+cross-process journal serialization, and schema-validated meta-prompting review gates.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -106,6 +110,8 @@ confirmation and a verified database/key/operation-log backup set.
 ## Known limitations
 - Click (PC control) is a registered persona but is not implemented.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
+- Plan first produces an approval-gated plan and text-only elaboration only; it does not apply
+  the plan. Automated application remains Phase C3.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
   the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
 - Code context currently retrieves symbol-sized semantic snippets; import/call dependency
@@ -123,5 +129,5 @@ confirmation and a verified database/key/operation-log backup set.
 v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
 generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
 Syntax with review/explanation intents, and bounded read-only code-context retrieval);
-dependency-graph context, meta-prompting, surgical file patches, self-healing execution, MCP,
+dependency-graph context, surgical file patches, self-healing execution, MCP,
 vision, voice, and remote control remain future work tracked in PLAN.md.

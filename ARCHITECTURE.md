@@ -6,9 +6,10 @@ Read this FIRST. It exists so no session ever re-discovers the system by reading
 Desktop AI file organizer. CustomTkinter GUI (`main.py` -> `gui/main_window.py`) drives a
 Supervisor (`agents/supervisor.py`) that classifies intent, a Router (`core/router.py`) that
 picks a provider, a FileAgent (`agents/file_agent.py`) that previews, gets approval for, and
-executes sandboxed file operations with undo/redo, and a text-only CodingAgent
-(`agents/coding_agent.py`) for provider-backed coding suggestions, grounded by a bounded
-read-only CodeIndexAgent (`agents/code_index_agent.py`). SQLite + Fernet
+executes sandboxed file operations with undo/redo, a text-only CodingAgent
+(`agents/coding_agent.py`) for provider-backed coding suggestions, and a PlanAgent
+(`agents/plan_agent.py`) for approval-gated, text-only meta-prompting. Code context is
+provided by a bounded read-only CodeIndexAgent (`agents/code_index_agent.py`). SQLite + Fernet
 (`core/database.py`) stores providers/usage/traces in `%APPDATA%\STEWARD`. A watchdog daemon
 (`agent/daemon.py`) watches a folder, and a restart-safe scheduled scanner handles recurring
 file categorization.
@@ -24,6 +25,7 @@ file categorization.
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
 - `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, incremental replacement, scoped retrieval
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
+- `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
@@ -48,6 +50,11 @@ Syntax coding: supervisor.route -> AGENT_CODING -> CodeIndexAgent.search (only w
   explicit root has been indexed) -> CodingAgent.handle_request with <=5 path/line snippets
   -> APIManager.route_request(agent_name="Syntax", require_tools=False, no tools) -> text-only result
   -> one of five intent instructions: generation, debugging, refactoring, review, explanation
+Meta-prompting: Chat **Plan first** -> validated supervisor CODING category
+  -> PlanAgent.architect -> Cortex strict JSON blueprint -> app-assigned UUID
+  -> immutable artifact under `%APPDATA%\STEWARD\plans` -> explicit plan-ID approval
+  -> PlanAgent.build_plan -> separate Syntax text-only request -> suggestion bubble
+  Targets remain informational; no FileAgent call or file change occurs in C2.
 Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
@@ -85,6 +92,11 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   one concurrent request's provider to another request.
 - Delegated Syntax original-request context is thread-local, so overlapping requests cannot
   replace one another's intent context.
+- Plan artifacts are app-assigned UUID JSON files under `%APPDATA%\STEWARD\plans`,
+  written once through a same-directory temporary file, flush, fsync, and atomic replace.
+  Blueprint keys, types, lengths, list counts, and total size are bounded before persistence.
+  A plan ID is approved once; unknown, stale, superseded, replayed, and cleared IDs share
+  one refusal contract. Plan targets are informational and never passed to FileAgent.
 - Syntax is deliberately text-only. It sends `agent_name="Syntax"` with `require_tools=False`
   and no tool definitions, and has no filesystem or process-execution API. Empty, malformed,
   and tool-bearing provider responses are rejected.
@@ -177,7 +189,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
 - test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
 - test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
-- Total discovery count is 281
+- Total discovery count is 306
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
