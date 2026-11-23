@@ -187,10 +187,11 @@ class ScheduledScanner:
         with self._state_lock:
             if self._running:
                 return False
-            if self._thread is not None and self._thread.is_alive():
-                return False
-            if self._active_scans:
-                return False
+            # A previous scheduler thread may still be winding down after
+            # stop(), and a previous scan may still be unwinding. Starting a
+            # new generation is safe because the scan mutex serializes scan
+            # bodies, while generation/event ownership prevents the old worker
+            # from committing into the new state.
             self._generation += 1
             generation = self._generation
             cancel_event = threading.Event()
@@ -212,11 +213,16 @@ class ScheduledScanner:
     def stop(self):
         """Stop scheduling, wait briefly for the worker, and return its state."""
         with self._state_lock:
-            self._running = False
+            # Cancellation and commit ownership share this lock. Setting the
+            # event before releasing it makes stop linearize against a scan's
+            # commit boundary: a commit that acquired the lock first is a
+            # completed scan; a commit that acquires it afterwards is
+            # cancelled and cannot publish state.
             cancel_event = self._cancel_event
+            if cancel_event is not None:
+                cancel_event.set()
+            self._running = False
             thread = self._thread
-        if cancel_event is not None:
-            cancel_event.set()
         self._scheduler.clear()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self.stop_timeout)
@@ -284,14 +290,14 @@ class ScheduledScanner:
             }
             if not os.path.isdir(incoming):
                 summary["error"] = "incoming_folder_not_found"
-                self._commit_scan(summary, generation)
+                self._commit_scan(summary, generation, cancel_event)
                 return summary
 
             try:
                 filenames = sorted(os.listdir(incoming))
             except OSError as exc:
                 summary["error"] = str(exc)
-                self._commit_scan(summary, generation)
+                self._commit_scan(summary, generation, cancel_event)
                 return summary
 
             for filename in filenames:
@@ -334,7 +340,7 @@ class ScheduledScanner:
                     summary["error"] = "scan_cancelled"
                     break
 
-            self._commit_scan(summary, generation)
+            self._commit_scan(summary, generation, cancel_event)
             return summary
         finally:
             with self._state_lock:
@@ -353,12 +359,29 @@ class ScheduledScanner:
             "cancelled": cancelled,
         }
 
-    def _commit_scan(self, summary, generation):
-        """Atomically commit and notify state for the owning generation."""
+    def _commit_scan(self, summary, generation, cancel_event):
+        """Atomically commit and notify state for the owning generation.
+
+        The generation and cancellation event are both part of the commit
+        token.  This prevents a cancelled or superseded worker from publishing
+        state after its ownership has ended.
+        """
         with self._state_lock:
             if generation != self._generation:
                 summary["skipped"] = True
                 summary["error"] = "stale_generation"
+                return False
+            if (
+                cancel_event is None
+                or cancel_event.is_set()
+                or (
+                    self._cancel_event is not None
+                    and cancel_event is not self._cancel_event
+                )
+            ):
+                summary["skipped"] = True
+                summary["cancelled"] = True
+                summary["error"] = "scan_cancelled"
                 return False
             self.last_error = summary["error"]
             self.last_scan_time = datetime.now().isoformat(timespec="seconds")

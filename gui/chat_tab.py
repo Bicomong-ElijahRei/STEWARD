@@ -238,6 +238,7 @@ class ChatTab(ctk.CTkFrame):
         self._processing = False
         self._general_chat_history = []
         self._conversation_epoch = 0
+        self._delegation_context = threading.local()
         self._conversation_lock = threading.RLock()
         self.dialog_timeout = 600
         self._register_swarm_handlers()
@@ -359,12 +360,35 @@ class ChatTab(ctk.CTkFrame):
         self.clear_btn.pack(side="right", padx=(0, 8))
 
     def clear_chat(self):
-        """Remove visible chat bubbles and the bounded Cortex conversation."""
+        """Remove visible chat bubbles and the bounded Cortex conversation.
+
+        Clearing creates a new conversation generation.  The old provider
+        request may still be running, but it no longer owns input controls or
+        conversation state and a new request can be admitted immediately.
+        """
         with self._conversation_state_lock():
             self._conversation_epoch = getattr(self, "_conversation_epoch", 0) + 1
             self._general_chat_history = []
+            self._processing = False
+            # Invalidate a pending or in-flight preview in the same critical
+            # section that publishes the new conversation generation. This
+            # prevents a newer preview started immediately after Clear from
+            # being discarded by this cleanup.
+            file_agent = getattr(self, "file_agent", None)
+            discard_pending_plan = getattr(file_agent, "discard_pending_plan", None)
+            if callable(discard_pending_plan):
+                discard_pending_plan()
         for widget in self.chat_display.winfo_children():
             widget.destroy()
+        # The cleared generation has no active request, so restore the input
+        # controls for the new epoch.  Stale workers cannot perform this
+        # restoration because their cleanup is guarded by the old epoch.
+        send_btn = getattr(self, "send_btn", None)
+        if send_btn is not None:
+            send_btn.configure(state="normal")
+        chat_entry = getattr(self, "chat_entry", None)
+        if chat_entry is not None:
+            chat_entry.bind("<Return>", lambda e: self.send_chat())
 
     def _conversation_state_lock(self):
         """Return the lock protecting Cortex epoch and conversation history."""
@@ -445,13 +469,19 @@ class ChatTab(ctk.CTkFrame):
             return False
 
     def _safe_after(self, callback):
-        """Schedule on Tk only while this tab still exists."""
+        """Schedule on Tk only while this tab still exists.
+
+        Returns ``True`` when the callback was scheduled. Callers that wait
+        for a UI acknowledgement can use this to release their event when the
+        widget has already been destroyed.
+        """
         if not self._is_alive():
-            return
+            return False
         try:
             self.after(0, callback)
+            return True
         except Exception:
-            pass
+            return False
 
     def _safe_after_if_epoch(self, callback, epoch):
         """Schedule UI work only if the owning conversation is still current."""
@@ -461,9 +491,14 @@ class ChatTab(ctk.CTkFrame):
             callback()
         self._safe_after(guarded_callback)
 
-    def _restore_return_key(self):
-        self.chat_entry.bind("<Return>", lambda e: self.send_chat())
-        self._processing = False
+    def _restore_return_key(self, epoch=None):
+        """Restore controls only when the finishing request still owns them."""
+        with self._conversation_state_lock():
+            if epoch is not None and epoch != getattr(self, "_conversation_epoch", 0):
+                return
+            self.chat_entry.bind("<Return>", lambda e: self.send_chat())
+            if epoch is None or epoch == getattr(self, "_conversation_epoch", 0):
+                self._processing = False
 
     def _restore_input(self, message):
         """Restore an unfinished request without overwriting newer typing."""
@@ -491,11 +526,17 @@ class ChatTab(ctk.CTkFrame):
 
         def process():
             try:
-                routing = self.supervisor.route(user_msg)
+                cortex_provider = {}
+                routing = self.supervisor.route(
+                    user_msg,
+                    provider_callback=cortex_provider.update,
+                )
                 if request_epoch != getattr(self, "_conversation_epoch", 0):
                     logger.info("[Chat] discarded stale request after conversation clear")
                     return
-                self._report_provider("Cortex")
+                self._report_provider(
+                    "Cortex", request_epoch, provider_info=cortex_provider
+                )
                 agent_type = routing.get("agent", "UNKNOWN")
                 action = routing.get("action", user_msg)
 
@@ -504,7 +545,10 @@ class ChatTab(ctk.CTkFrame):
 
                 # Trigger visual handoff animation
                 if agent_type != AGENT_UNKNOWN:
-                    self._safe_after(lambda: self.handoff_canvas.trigger_handoff("Cortex", agent_name))
+                    self._safe_after_if_epoch(
+                        lambda: self.handoff_canvas.trigger_handoff("Cortex", agent_name),
+                        request_epoch,
+                    )
 
                 self._safe_after_if_epoch(
                     lambda: self._add_bubble(
@@ -515,16 +559,22 @@ class ChatTab(ctk.CTkFrame):
                 )
 
                 if self.live_feed:
-                    self._safe_after(lambda: self.live_feed.agent_working(
-                        agent_name, f"Routing: {action}"
-                    ))
+                    self._safe_after_if_epoch(
+                        lambda: self.live_feed.agent_working(
+                            agent_name, f"Routing: {action}"
+                        ),
+                        request_epoch,
+                    )
 
                 if agent_type == AGENT_FILE_OP:
                     foldy_bubble = [None]
-                    self._safe_after(lambda: foldy_bubble.__setitem__(0, self._add_bubble(
-                        "STEWARD", "Generating dry-run preview…",
-                        NEON_CYAN, align="left", state="THINKING",
-                    )))
+                    self._safe_after_if_epoch(
+                        lambda: foldy_bubble.__setitem__(0, self._add_bubble(
+                            "STEWARD", "Generating dry-run preview…",
+                            NEON_CYAN, align="left", state="THINKING",
+                        )),
+                        request_epoch,
+                    )
 
                     dialog_timeout = getattr(self, "dialog_timeout", 600)
                     confirm_timed_out = [False]
@@ -534,106 +584,175 @@ class ChatTab(ctk.CTkFrame):
                         evt = threading.Event()
                         user_choice = [False]
                         def ask():
+                            if not self._is_current_conversation_epoch(request_epoch):
+                                evt.set()
+                                return
                             user_choice[0] = messagebox.askyesno(
                                 "Confirm File Operation",
                                 f"The agent wants to execute:\n{preview}\n\nExecute?",
                             )
                             evt.set()
-                        self._safe_after(ask)
+                        if not self._safe_after(ask):
+                            evt.set()
                         if not evt.wait(timeout=dialog_timeout):
                             confirm_timed_out[0] = True
                             return False
                         return user_choice[0]
 
+                    pending_plan_id = [None]
+                    foldy_provider = {}
                     preview_result = self.file_agent.run(
-                        action, dry_run=True, confirm_callback=confirm_callback
+                        action,
+                        dry_run=True,
+                        confirm_callback=confirm_callback,
+                        plan_id_callback=lambda plan_id: pending_plan_id.__setitem__(0, plan_id),
+                        provider_callback=foldy_provider.update,
                     )
+                    if not self._is_current_conversation_epoch(request_epoch):
+                        logger.info("[Chat] discarded stale file preview after conversation clear")
+                        return
                     if confirm_timed_out[0]:
                         restore_input[0] = True
                         self.file_agent.discard_pending_plan()
                         logger.info("[Chat] approval dialog timed out; input restored")
                         if foldy_bubble[0]:
-                            self._safe_after(lambda: foldy_bubble[0].update_state("ERROR"))
+                            self._safe_after_if_epoch(
+                                lambda: foldy_bubble[0].update_state("ERROR"),
+                                request_epoch,
+                            )
                         return
 
-                    self._pending_plan_id = self.file_agent.get_pending_plan_id()
-                    foldy_detail = self._report_provider("Foldy")
+                    foldy_detail = self._report_provider(
+                        "Foldy", request_epoch, provider_info=foldy_provider
+                    )
                     preview_message = preview_result
                     if foldy_detail:
                         preview_message += f"\n\nHandled by {foldy_detail}"
                     
                     if foldy_bubble[0]:
-                        self._safe_after(lambda: foldy_bubble[0].set_message(preview_message))
-                        self._safe_after(lambda: foldy_bubble[0].update_state("DONE"))
+                        self._safe_after_if_epoch(
+                            lambda: foldy_bubble[0].set_message(preview_message),
+                            request_epoch,
+                        )
+                        self._safe_after_if_epoch(
+                            lambda: foldy_bubble[0].update_state("DONE"),
+                            request_epoch,
+                        )
                     else:
-                        self._safe_after(lambda: self._add_bubble(
-                            "STEWARD", preview_message, NEON_CYAN, align="left", state="DONE",
-                        ))
+                        self._safe_after_if_epoch(
+                            lambda: self._add_bubble(
+                                "STEWARD", preview_message, NEON_CYAN, align="left", state="DONE",
+                            ),
+                            request_epoch,
+                        )
 
                     if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done(
-                            "Foldy", foldy_detail or "Dry-run preview generated"
-                        ))
+                        self._safe_after_if_epoch(
+                            lambda: self.live_feed.agent_done(
+                                "Foldy", foldy_detail or "Dry-run preview generated"
+                            ),
+                            request_epoch,
+                        )
 
-                    if self._pending_plan_id is None:
+                    if pending_plan_id[0] is None:
                         logger.info("[Chat] No tool plan produced; awaiting user reply")
                         return
 
                     exec_evt = threading.Event()
                     exec_choice = [False]
                     def ask_exec():
+                        if not self._is_current_conversation_epoch(request_epoch):
+                            exec_evt.set()
+                            return
                         exec_choice[0] = messagebox.askyesno(
                             "Execute Operations?",
                             "The above is a dry-run preview.\nExecute these operations?",
                         )
                         exec_evt.set()
-                    self._safe_after(ask_exec)
+                    if not self._safe_after(ask_exec):
+                        exec_evt.set()
                     if not exec_evt.wait(timeout=dialog_timeout):
                         restore_input[0] = True
                         self.file_agent.discard_pending_plan()
                         logger.info("[Chat] approval dialog timed out; input restored")
                         return
+                    if not self._is_current_conversation_epoch(request_epoch):
+                        logger.info("[Chat] discarded stale file approval after conversation clear")
+                        return
 
                     if exec_choice[0]:
                         exec_bubble = [None]
-                        self._safe_after(lambda: exec_bubble.__setitem__(0, self._add_bubble(
-                            "STEWARD", "Executing operations…", NEON_CYAN, align="left", state="TOOL_USE",
-                        )))
+                        self._safe_after_if_epoch(
+                            lambda: exec_bubble.__setitem__(0, self._add_bubble(
+                                "STEWARD", "Executing operations…", NEON_CYAN, align="left", state="TOOL_USE",
+                            )),
+                            request_epoch,
+                        )
                         try:
-                            exec_result = self.file_agent.execute_pending_plan(
-                                self._pending_plan_id
-                            )
+                            # Serialize the final epoch check with the plan claim.
+                            # Clear takes the same lock before invalidating the
+                            # pending plan, so a cleared conversation cannot pass
+                            # the check and then begin a filesystem mutation.
+                            with self._conversation_state_lock():
+                                if not self._is_current_conversation_epoch(request_epoch):
+                                    logger.info(
+                                        "[Chat] discarded stale file execution after conversation clear"
+                                    )
+                                    return
+                                exec_result = self.file_agent.execute_pending_plan(
+                                    pending_plan_id[0]
+                                )
                         except Exception as exc:
                             exec_result = f"Error: {exc}"
-                        
+
                         if exec_bubble[0]:
-                            self._safe_after(lambda: exec_bubble[0].set_message(exec_result))
-                            self._safe_after(lambda: exec_bubble[0].update_state("DONE" if not exec_result.startswith("Error") else "ERROR"))
+                            self._safe_after_if_epoch(
+                                lambda: exec_bubble[0].set_message(exec_result),
+                                request_epoch,
+                            )
+                            self._safe_after_if_epoch(
+                                lambda: exec_bubble[0].update_state(
+                                    "DONE" if not exec_result.startswith("Error") else "ERROR"
+                                ),
+                                request_epoch,
+                            )
                         else:
-                            self._safe_after(lambda: self._add_bubble(
-                                "STEWARD", exec_result, NEON_CYAN, align="left", 
-                                state="DONE" if not exec_result.startswith("Error") else "ERROR",
-                            ))
-                            
+                            self._safe_after_if_epoch(
+                                lambda: self._add_bubble(
+                                    "STEWARD", exec_result, NEON_CYAN, align="left",
+                                    state="DONE" if not exec_result.startswith("Error") else "ERROR",
+                                ),
+                                request_epoch,
+                            )
+
                         if self.live_feed:
-                            self._safe_after(lambda: self.live_feed.agent_done(
-                                "Foldy", foldy_detail or "Operations executed"
-                            ))
+                            self._safe_after_if_epoch(
+                                lambda: self.live_feed.agent_done(
+                                    "Foldy", foldy_detail or "Operations executed"
+                                ),
+                                request_epoch,
+                            )
                     else:
                         self.file_agent.discard_pending_plan()
-                        self._safe_after(lambda: self._add_bubble(
-                            "STEWARD", "Execution cancelled by user.",
-                            TEXT_MUTED, align="left", state="DONE",
-                        ))
+                        self._safe_after_if_epoch(
+                            lambda: self._add_bubble(
+                                "STEWARD", "Execution cancelled by user.",
+                                TEXT_MUTED, align="left", state="DONE",
+                            ),
+                            request_epoch,
+                        )
 
                 elif agent_type == AGENT_PC_CONTROL:
-                    self._safe_after(lambda: self._add_bubble(
+                    self._safe_after_if_epoch(lambda: self._add_bubble(
                         "STEWARD",
                         f"[Click] PC control requested: {action}\n(Coming soon)",
                         NEON_LIME, align="left",
-                    ))
+                    ), request_epoch)
                     if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done("Click"))
+                        self._safe_after_if_epoch(
+                            lambda: self.live_feed.agent_done("Click"),
+                            request_epoch,
+                        )
                 elif agent_type == AGENT_RAG:
                     action_lower = action.lower()
                     is_ingest = any(kw in action_lower for kw in (
@@ -643,15 +762,15 @@ class ChatTab(ctk.CTkFrame):
 
                     scout_bubble = [None]
                     if is_ingest:
-                        self._safe_after(lambda: scout_bubble.__setitem__(0, self._add_bubble(
+                        self._safe_after_if_epoch(lambda: scout_bubble.__setitem__(0, self._add_bubble(
                             "STEWARD", "Scout is ingesting documents...", NEON_BLUE,
                             align="left", state="THINKING",
-                        )))
+                        )), request_epoch)
                     else:
-                        self._safe_after(lambda: scout_bubble.__setitem__(0, self._add_bubble(
+                        self._safe_after_if_epoch(lambda: scout_bubble.__setitem__(0, self._add_bubble(
                             "STEWARD", "Scout is searching the archives...", NEON_BLUE,
                             align="left", state="THINKING",
-                        )))
+                        )), request_epoch)
 
                     def finish_scout(message, state="DONE"):
                         bubble = scout_bubble[0]
@@ -673,7 +792,9 @@ class ChatTab(ctk.CTkFrame):
                                 f"Ingested {result.get('files_processed', 0)} files, "
                                 f"created {result.get('chunks_created', 0)} chunks."
                             )
-                            self._safe_after(lambda: finish_scout(msg))
+                            self._safe_after_if_epoch(
+                                lambda: finish_scout(msg), request_epoch
+                            )
                         else:
                             results = rag_agent.search(action, n_results=5)
                             if results:
@@ -722,7 +843,9 @@ class ChatTab(ctk.CTkFrame):
                                         f"📚 **Answer:**\n\n{answer}\n\n"
                                         f"**Sources:**\n{source_list}"
                                     )
-                                    self._safe_after(lambda: finish_scout(formatted_answer))
+                                    self._safe_after_if_epoch(
+                                        lambda: finish_scout(formatted_answer), request_epoch
+                                    )
                                 except Exception as synth_error:
                                     logger.warning(
                                         "Synthesis failed, falling back to raw results: %s",
@@ -737,53 +860,75 @@ class ChatTab(ctk.CTkFrame):
                                         formatted += (
                                             f"{index}. **{source}**\n{content}...\n\n"
                                         )
-                                    self._safe_after(lambda: finish_scout(formatted))
+                                    self._safe_after_if_epoch(
+                                        lambda: finish_scout(formatted), request_epoch
+                                    )
                             else:
-                                self._safe_after(lambda: finish_scout(
+                                self._safe_after_if_epoch(lambda: finish_scout(
                                     "No relevant documents found in the knowledge base."
-                                ))
+                                ), request_epoch)
                     except Exception as exc:
                         logger.error("RAG error: %s", exc)
-                        self._safe_after(lambda: finish_scout(f"RAG Error: {exc}", "ERROR"))
+                        self._safe_after_if_epoch(
+                            lambda: finish_scout(f"RAG Error: {exc}", "ERROR"),
+                            request_epoch,
+                        )
 
                     if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done(
+                        self._safe_after_if_epoch(lambda: self.live_feed.agent_done(
                             "Scout", "Ingestion/Search complete"
-                        ))
+                        ), request_epoch)
                 elif agent_type == AGENT_CODING:
                     syntax_bubble = [None]
-                    self._safe_after(lambda: syntax_bubble.__setitem__(0, self._add_bubble(
+                    self._safe_after_if_epoch(lambda: syntax_bubble.__setitem__(0, self._add_bubble(
                         "STEWARD", "Syntax is working on your request...",
                         NEON_ORANGE, align="left", state="THINKING",
-                    )))
+                    )), request_epoch)
                     try:
+                        syntax_provider = {}
                         syntax_response = self._get_coding_agent().handle_request(
-                            action, original_request=user_msg
+                            action,
+                            original_request=user_msg,
+                            provider_callback=syntax_provider.update,
                         )
-                        syntax_detail = self._report_provider("Syntax")
+                        syntax_detail = self._report_provider(
+                            "Syntax", request_epoch, provider_info=syntax_provider
+                        )
                         if syntax_bubble[0]:
-                            self._safe_after(lambda: syntax_bubble[0].set_message(syntax_response))
-                            self._safe_after(lambda: syntax_bubble[0].update_state("DONE"))
+                            self._safe_after_if_epoch(
+                                lambda: syntax_bubble[0].set_message(syntax_response),
+                                request_epoch,
+                            )
+                            self._safe_after_if_epoch(
+                                lambda: syntax_bubble[0].update_state("DONE"),
+                                request_epoch,
+                            )
                         else:
-                            self._safe_after(lambda: self._add_bubble(
+                            self._safe_after_if_epoch(lambda: self._add_bubble(
                                 "STEWARD", syntax_response, NEON_ORANGE,
                                 align="left", state="DONE",
-                            ))
+                            ), request_epoch)
                         if self.live_feed:
-                            self._safe_after(lambda: self.live_feed.agent_done(
+                            self._safe_after_if_epoch(lambda: self.live_feed.agent_done(
                                 "Syntax", syntax_detail or "Coding assistance generated"
-                            ))
+                            ), request_epoch)
                     except Exception as exc:
                         logger.error("Syntax coding error: %s", exc)
                         error_message = f"Syntax could not complete the coding request: {exc}"
                         if syntax_bubble[0]:
-                            self._safe_after(lambda: syntax_bubble[0].set_message(error_message))
-                            self._safe_after(lambda: syntax_bubble[0].update_state("ERROR"))
+                            self._safe_after_if_epoch(
+                                lambda: syntax_bubble[0].set_message(error_message),
+                                request_epoch,
+                            )
+                            self._safe_after_if_epoch(
+                                lambda: syntax_bubble[0].update_state("ERROR"),
+                                request_epoch,
+                            )
                         else:
-                            self._safe_after(lambda: self._add_bubble(
+                            self._safe_after_if_epoch(lambda: self._add_bubble(
                                 "STEWARD", error_message, NEON_ORANGE,
                                 align="left", state="ERROR",
-                            ))
+                            ), request_epoch)
                 elif agent_type == AGENT_GENERAL_CHAT:
                     # Send to Cortex for natural conversation.
                     cortex_bubble = [None]
@@ -829,10 +974,11 @@ class ChatTab(ctk.CTkFrame):
 
                         self._safe_after_if_epoch(finish_conversation, request_epoch)
                         if self.live_feed:
-                            self._safe_after(
+                            self._safe_after_if_epoch(
                                 lambda: self.live_feed.agent_done(
                                     "Cortex", "Response generated"
-                                )
+                                ),
+                                request_epoch,
                             )
                     except Exception as e:
                         logger.error(f"Cortex conversation error: {e}")
@@ -855,19 +1001,23 @@ class ChatTab(ctk.CTkFrame):
                 else:
                     feed = self.live_feed
                     if feed:
-                        self._safe_after(lambda feed=feed: feed.agent_working(
+                        self._safe_after_if_epoch(lambda feed=feed: feed.agent_working(
                             "Cortex", "Delegating complex task"
-                        ))
+                        ), request_epoch)
+                    delegation_context = getattr(self, "_delegation_context", None)
+                    if delegation_context is None:
+                        delegation_context = threading.local()
+                        self._delegation_context = delegation_context
                     previous_delegation_request = getattr(
-                        self, "_delegation_original_request", None
+                        delegation_context, "original_request", None
                     )
-                    self._delegation_original_request = user_msg
+                    delegation_context.original_request = user_msg
                     try:
                         delegation_result = self.supervisor.delegate_task(
                             user_msg, ["Foldy", "Scout", "Click", "Syntax"]
                         )
                     finally:
-                        self._delegation_original_request = previous_delegation_request
+                        delegation_context.original_request = previous_delegation_request
                     delegated_response = str(
                         delegation_result.get("response")
                         or delegation_result.get("final_response")
@@ -876,23 +1026,24 @@ class ChatTab(ctk.CTkFrame):
                     delegation_state = (
                         "ERROR" if delegation_result.get("error") else "DONE"
                     )
-                    self._safe_after(lambda response=delegated_response,
+                    self._safe_after_if_epoch(lambda response=delegated_response,
                                     state=delegation_state: self._add_bubble(
                         "STEWARD", response, NEON_PURPLE, align="left", state=state,
-                    ))
+                    ), request_epoch)
                     delegation_results = delegation_result.get("results") or []
                     for result in delegation_results:
                         agent_name = result.get("agent", "Cortex")
                         detail = str(result.get("result", "Task complete"))
                         if feed:
-                            self._safe_after(
+                            self._safe_after_if_epoch(
                                 lambda feed=feed, agent_name=agent_name,
-                                detail=detail: feed.agent_done(agent_name, detail)
+                                detail=detail: feed.agent_done(agent_name, detail),
+                                request_epoch,
                             )
                     if feed:
-                        self._safe_after(lambda feed=feed: feed.agent_done(
+                        self._safe_after_if_epoch(lambda feed=feed: feed.agent_done(
                             "Cortex", "Hierarchical delegation complete"
-                        ))
+                        ), request_epoch)
 
             except Exception as e:
                 restore_input[0] = True
@@ -904,12 +1055,22 @@ class ChatTab(ctk.CTkFrame):
                     request_epoch,
                 )
             finally:
-                # Always re-enable input once preview/approval is complete,
-                # regardless of which agent branch ran or whether it errored.
-                self._safe_after(lambda: self.send_btn.configure(state="normal"))
+                # Cleanup belongs to the request epoch.  A request that was
+                # superseded by Clear must not re-enable controls or restore
+                # text that now belong to the new conversation generation.
+                self._safe_after_if_epoch(
+                    lambda: self.send_btn.configure(state="normal"),
+                    request_epoch,
+                )
                 if restore_input[0]:
-                    self._safe_after(lambda: self._restore_input(user_msg))
-                self._safe_after(self._restore_return_key)
+                    self._safe_after_if_epoch(
+                        lambda: self._restore_input(user_msg),
+                        request_epoch,
+                    )
+                self._safe_after_if_epoch(
+                    lambda: self._restore_return_key(request_epoch),
+                    request_epoch,
+                )
 
         threading.Thread(target=process, daemon=True).start()
 
@@ -933,7 +1094,12 @@ class ChatTab(ctk.CTkFrame):
 
     def _delegate_syntax_task(self, task):
         """Delegate coding work to the provider-backed, text-only Syntax agent."""
-        original_request = getattr(self, "_delegation_original_request", "") or task
+        delegation_context = getattr(self, "_delegation_context", None)
+        original_request = (
+            getattr(delegation_context, "original_request", None)
+            if delegation_context is not None
+            else None
+        ) or getattr(self, "_delegation_original_request", "") or task
         return self._get_coding_agent().handle_request(
             task, original_request=original_request
         )
@@ -973,21 +1139,32 @@ class ChatTab(ctk.CTkFrame):
             lines.append("")
         return "\n".join(lines).rstrip()
 
-    def _report_provider(self, agent_name):
-        """Publish router metadata and return a short UI status string."""
-        if agent_name == "Cortex":
-            source = self.supervisor
-        elif agent_name == "Syntax":
-            source = self._get_coding_agent()
-        else:
-            source = self.file_agent
-        provider_info = getattr(source, "last_provider", None)
+    def _report_provider(self, agent_name, epoch=None, provider_info=None):
+        """Publish router metadata and return a short UI status string.
+
+        ``provider_info`` is request-local metadata captured by the owning
+        operation. The shared-agent fallback keeps direct helper calls and
+        third-party integrations backward compatible.
+        """
+        if provider_info is None:
+            if agent_name == "Cortex":
+                source = self.supervisor
+            elif agent_name == "Syntax":
+                source = self._get_coding_agent()
+            else:
+                source = self.file_agent
+            provider_info = getattr(source, "last_provider", None)
         if not provider_info:
             return ""
         provider = provider_info.get("provider", "Unknown")
         model = provider_info.get("model", "default")
+        schedule = (
+            (lambda callback: self._safe_after_if_epoch(callback, epoch))
+            if epoch is not None
+            else self._safe_after
+        )
         if self.provider_callback:
-            self._safe_after(
+            schedule(
                 lambda agent_name=agent_name, provider_info=provider_info:
                 self.provider_callback(agent_name, provider_info)
             )
@@ -995,7 +1172,7 @@ class ChatTab(ctk.CTkFrame):
             for failover in provider_info.get("failovers", []):
                 failed = failover.get("failed_provider", "Unknown")
                 fallback = failover.get("fallback_provider", "Unknown")
-                self._safe_after(
+                schedule(
                     lambda failed=failed, fallback=fallback:
                     self.live_feed.provider_failover(failed, fallback),
                 )

@@ -1211,7 +1211,9 @@ class ChatWorkflowTests(unittest.TestCase):
         )
 
         def preview(*args, **kwargs):
-            chat.file_agent.get_pending_plan_id.return_value = "preview-plan-id"
+            plan_id_callback = kwargs.get("plan_id_callback")
+            if plan_id_callback:
+                plan_id_callback("preview-plan-id")
             return "Preview ready"
 
         chat.file_agent.run.side_effect = preview
@@ -1224,7 +1226,6 @@ class ChatWorkflowTests(unittest.TestCase):
 
         def approve(*args, **kwargs):
             # A later preview must not change what this approval executes.
-            chat.file_agent.get_pending_plan_id.return_value = "superseded-plan-id"
             return True
 
         chat.after.side_effect = schedule
@@ -1246,8 +1247,13 @@ class ChatWorkflowTests(unittest.TestCase):
         )
         chat.dialog_timeout = 0.05
         chat.chat_entry.get.side_effect = ["organize this", ""]
-        chat.file_agent.run.return_value = "Preview ready"
-        chat.file_agent.get_pending_plan_id.return_value = "preview-plan-id"
+        def preview(*_args, **kwargs):
+            plan_id_callback = kwargs.get("plan_id_callback")
+            if plan_id_callback:
+                plan_id_callback("preview-plan-id")
+            return "Preview ready"
+
+        chat.file_agent.run.side_effect = preview
 
         worker_thread = None
         orig_thread = threading.Thread
@@ -3484,9 +3490,11 @@ class CodingAgentTests(unittest.TestCase):
         for callback in callbacks:
             callback()
 
-        chat.coding_agent.handle_request.assert_called_once_with(
-            "write a parser", original_request="write a parser"
-        )
+        chat.coding_agent.handle_request.assert_called_once()
+        call = chat.coding_agent.handle_request.call_args
+        self.assertEqual(call.args, ("write a parser",))
+        self.assertEqual(call.kwargs["original_request"], "write a parser")
+        self.assertTrue(callable(call.kwargs["provider_callback"]))
         chat.file_agent.run.assert_not_called()
         chat.file_agent.execute_pending_plan.assert_not_called()
 
@@ -4137,7 +4145,7 @@ class ScheduledScannerTests(unittest.TestCase):
             )
             self.assertFalse(scanner.running)
             self.assertIsNotNone(scanner.last_scan_time)
-    def test_stop_cancels_between_files_and_refuses_overlapping_restart(self):
+    def test_stop_cancels_between_files_and_isolates_overlapping_restart(self):
         from agent.daemon import ScheduledScanner
 
         with tempfile.TemporaryDirectory(prefix="steward_scan_cancel_") as tmp:
@@ -4180,15 +4188,18 @@ class ScheduledScannerTests(unittest.TestCase):
             self.assertTrue(entered.wait(timeout=1.0))
 
             self.assertFalse(scanner.stop(), "stop must not claim completion while scan is active")
-            self.assertFalse(scanner.start(), "restart must refuse while old scan is alive")
+            self.assertTrue(scanner.start(), "restart must create an isolated generation")
+            new_generation = scanner._generation
             release.set()
             scan_thread.join(timeout=2.0)
             self.assertFalse(scan_thread.is_alive())
 
             self.assertEqual(calls, ["01-first.txt"])
             self.assertTrue(result["summary"]["cancelled"])
+            self.assertTrue(result["summary"]["skipped"])
+            self.assertEqual(result["summary"]["error"], "stale_generation")
             self.assertEqual(result["summary"]["processed"], 1)
-            self.assertTrue(scanner.start(), "a later valid start must be allowed")
+            self.assertGreater(new_generation, 1)
             self.assertTrue(scanner.stop())
 
     def test_old_scheduler_generation_cannot_resume_after_restart(self):
@@ -4243,13 +4254,13 @@ class ScheduledScannerTests(unittest.TestCase):
             self.assertTrue(controlled.entered.wait(timeout=1.0))
             old_thread = scanner._thread
             self.assertFalse(scanner.stop())
-            self.assertFalse(scanner.start())
+            self.assertTrue(scanner.start())
+            new_thread = scanner._thread
+            self.assertIsNot(new_thread, old_thread)
 
             controlled.release.set()
             old_thread.join(timeout=2.0)
             self.assertFalse(old_thread.is_alive())
-            self.assertTrue(scanner.start())
-            self.assertIsNot(scanner._thread, old_thread)
             self.assertTrue(scanner.stop())
 
     def test_failed_scan_does_not_prevent_later_valid_start(self):

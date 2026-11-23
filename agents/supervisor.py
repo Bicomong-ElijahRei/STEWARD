@@ -36,7 +36,7 @@ DELEGATION_AGENT_ROLES = {
     "Foldy": "File operations: inspect and organize files safely.",
     "Scout": "Document research: search and summarize indexed documents.",
     "Click": "PC control: plan desktop and application automation actions.",
-    "Syntax": "Code generation, debugging, and refactoring.",
+    "Syntax": "Code generation, debugging, refactoring, review, and explanation.",
 }
 
 
@@ -49,7 +49,7 @@ Available agents:
   containing search, find, recall, ingest, index, learn, remember, scan, "read all",
   "process folder", "add to knowledge base", or "what does my file say" here unless
   the user explicitly requests a filesystem mutation or file listing.
-- CODING: Code generation, debugging, refactoring
+- CODING: Code generation, debugging, refactoring, code review, and code explanation
 - GENERAL_CHAT: General conversation, greetings, casual chat, and questions that
   do not require a specialist agent. This includes questions about STEWARD's
   capabilities and requests such as "hello", "how are you?", or "what can you do?"
@@ -117,13 +117,16 @@ class SupervisorAgent:
         # falls back to a provider-backed request using that agent's role.
         self._sub_agent_handlers: Dict[str, Callable[[str], str]] = {}
 
-    def route(self, user_input: str) -> Dict[str, Any]:
+    def route(self, user_input: str, provider_callback=None) -> Dict[str, Any]:
         """
         Classify user input and return routing decision.
 
         Returns:
             Dict with keys: agent (str), action (str)
             Example: {"agent": "FILE_OP", "action": "move file.txt to Sorted/Docs"}
+
+        ``provider_callback`` optionally receives this request's provider
+        metadata without changing the routing decision's public shape.
         """
         self.last_provider = None
         if self._is_complex_delegation_request(user_input):
@@ -149,7 +152,13 @@ class SupervisorAgent:
             response = self.api_manager.route_request(
                 messages=messages, agent_name="Cortex"
             )
-            self.last_provider = response.get("_steward")
+            provider_info = response.get("_steward")
+            self.last_provider = provider_info
+            if provider_callback is not None and provider_info:
+                try:
+                    provider_callback(dict(provider_info))
+                except Exception as exc:
+                    logger.warning("Cortex provider callback failed: %s", exc)
             content = response["choices"][0]["message"]["content"].strip()
 
             # Parse JSON from response

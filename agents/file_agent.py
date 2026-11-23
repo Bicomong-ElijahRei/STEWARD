@@ -90,7 +90,8 @@ class FileAgent:
         self.dry_run = dry_run
         self.rules_path = rules_path or os.path.join(self.root_path, "rules.yaml")
         self._lock = threading.Lock()
-        self._plan_lock = threading.Lock()
+        self._plan_lock = threading.RLock()
+        self._plan_generation = 0
         self._pending_plan = None
         self._pending_plan_id = None
         self.last_provider = None
@@ -503,10 +504,26 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         task_description: str,
         dry_run: bool = True,
         confirm_callback: Optional[Callable[[str, dict], bool]] = None,
+        plan_id_callback: Optional[Callable[[str], None]] = None,
+        provider_callback: Optional[Callable[[dict], None]] = None,
     ) -> str:
-        """Process a task and retain its dry-run plan for immutable approval."""
-        self.discard_pending_plan()
-        self.last_provider = None
+        """Process a task and retain its dry-run plan for immutable approval.
+
+        ``plan_id_callback`` receives the identifier only when this invocation
+        still owns the current preview generation. ``provider_callback``
+        receives request-local provider metadata under the same ownership
+        rule. Callers can therefore keep both values local instead of reading
+        shared state after the provider call returns.
+        """
+        # Each preview owns a generation. A newer preview or an explicit
+        # discard invalidates the generation, so an older provider response
+        # cannot publish an executable plan after it has been superseded.
+        with self._plan_lock:
+            self._plan_generation += 1
+            plan_generation = self._plan_generation
+            self._pending_plan = None
+            self._pending_plan_id = None
+        provider_info = None
         failovers = []
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -523,14 +540,24 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 tools=tools,
             )
             failovers.extend(response.get("_steward", {}).get("failovers", []))
-            self.last_provider = response.get("_steward")
+            provider_info = response.get("_steward")
             assistant_msg = response["choices"][0]["message"]
             messages.append(assistant_msg)
 
             tool_calls = assistant_msg.get("tool_calls", [])
             if not tool_calls:
-                if self.last_provider:
-                    self.last_provider = {**self.last_provider, "failovers": failovers}
+                if provider_info:
+                    provider_info = {**provider_info, "failovers": failovers}
+                    with self._plan_lock:
+                        if plan_generation == self._plan_generation:
+                            self.last_provider = provider_info
+                            if provider_callback:
+                                try:
+                                    provider_callback(dict(provider_info))
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[FileAgent] provider callback failed: %s", exc
+                                    )
                 return assistant_msg.get("content", "No action needed.")
 
             parsed_plan = self._parse_tool_plan(tool_calls)
@@ -554,9 +581,12 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 failovers.extend(
                     (final_response.get("_steward") or {}).get("failovers", [])
                 )
-                provider_info = final_response.get("_steward")
-                if provider_info:
-                    self.last_provider = {**provider_info, "failovers": failovers}
+                final_provider_info = final_response.get("_steward")
+                if final_provider_info:
+                    provider_info = {
+                        **final_provider_info,
+                        "failovers": failovers,
+                    }
                 final_content = final_response["choices"][0]["message"].get("content", "")
             except Exception as e:
                 logger.warning(f"Failed to get final LLM explanation: {e}")
@@ -564,10 +594,47 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
             if dry_run:
                 with self._plan_lock:
-                    self._pending_plan = copy.deepcopy(parsed_plan)
-                    self._pending_plan_id = str(uuid.uuid4())
+                    if plan_generation != self._plan_generation:
+                        logger.info(
+                            "[FileAgent] discarded stale preview generation %s",
+                            plan_generation,
+                        )
+                    else:
+                        self._pending_plan = copy.deepcopy(parsed_plan)
+                        self._pending_plan_id = str(uuid.uuid4())
+                        if provider_info:
+                            self.last_provider = provider_info
+                            if provider_callback:
+                                try:
+                                    provider_callback(dict(provider_info))
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[FileAgent] provider callback failed: %s", exc
+                                    )
+                        # Deliver the request-local ID while the generation lock
+                        # is held so discard/supersede cannot interleave between
+                        # publication and notification. Callback failures are
+                        # observational and must not corrupt the preview.
+                        if plan_id_callback:
+                            try:
+                                plan_id_callback(self._pending_plan_id)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[FileAgent] plan ID callback failed: %s", exc
+                                )
                 if final_content:
                     return "\n".join(results) + "\n\n" + final_content
+            else:
+                with self._plan_lock:
+                    if plan_generation == self._plan_generation and provider_info:
+                        self.last_provider = provider_info
+                        if provider_callback:
+                            try:
+                                provider_callback(dict(provider_info))
+                            except Exception as exc:
+                                logger.warning(
+                                    "[FileAgent] provider callback failed: %s", exc
+                                )
             return final_content if final_content else "\n".join(results)
 
         except Exception as e:
@@ -721,8 +788,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         return "\n".join(results)
 
     def discard_pending_plan(self) -> None:
-        """Invalidate a preview when it is declined or superseded."""
+        """Invalidate a preview and any in-flight older preview publication."""
         with self._plan_lock:
+            self._plan_generation += 1
             self._pending_plan = None
             self._pending_plan_id = None
 
