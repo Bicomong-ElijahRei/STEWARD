@@ -227,10 +227,11 @@ class ChatTab(ctk.CTkFrame):
     MAX_CHAT_MESSAGE_CHARS = 4000
 
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
-                 provider_callback=None):
+                 provider_callback=None, coding_agent=None):
         super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
+        self.coding_agent = coding_agent
         self.rag_agent = None
         self.live_feed = live_feed
         self.provider_callback = provider_callback
@@ -687,13 +688,37 @@ class ChatTab(ctk.CTkFrame):
                             "Scout", "Ingestion/Search complete"
                         ))
                 elif agent_type == AGENT_CODING:
-                    self._safe_after(lambda: self._add_bubble(
-                        "STEWARD",
-                        f"[Syntax] Coding task: {action}\n(Coming soon)",
-                        NEON_ORANGE, align="left",
-                    ))
-                    if self.live_feed:
-                        self._safe_after(lambda: self.live_feed.agent_done("Syntax"))
+                    syntax_bubble = [None]
+                    self._safe_after(lambda: syntax_bubble.__setitem__(0, self._add_bubble(
+                        "STEWARD", "Syntax is working on your request...",
+                        NEON_ORANGE, align="left", state="THINKING",
+                    )))
+                    try:
+                        syntax_response = self._get_coding_agent().generate_code(action)
+                        syntax_detail = self._report_provider("Syntax")
+                        if syntax_bubble[0]:
+                            self._safe_after(lambda: syntax_bubble[0].set_message(syntax_response))
+                            self._safe_after(lambda: syntax_bubble[0].update_state("DONE"))
+                        else:
+                            self._safe_after(lambda: self._add_bubble(
+                                "STEWARD", syntax_response, NEON_ORANGE,
+                                align="left", state="DONE",
+                            ))
+                        if self.live_feed:
+                            self._safe_after(lambda: self.live_feed.agent_done(
+                                "Syntax", syntax_detail or "Coding assistance generated"
+                            ))
+                    except Exception as exc:
+                        logger.error("Syntax coding error: %s", exc)
+                        error_message = f"Syntax could not complete the coding request: {exc}"
+                        if syntax_bubble[0]:
+                            self._safe_after(lambda: syntax_bubble[0].set_message(error_message))
+                            self._safe_after(lambda: syntax_bubble[0].update_state("ERROR"))
+                        else:
+                            self._safe_after(lambda: self._add_bubble(
+                                "STEWARD", error_message, NEON_ORANGE,
+                                align="left", state="ERROR",
+                            ))
                 elif agent_type == AGENT_GENERAL_CHAT:
                     # Send to Cortex for natural conversation.
                     cortex_bubble = [None]
@@ -826,6 +851,7 @@ class ChatTab(ctk.CTkFrame):
             return
         register("Foldy", self._delegate_file_task)
         register("Scout", self._delegate_scout_task)
+        register("Syntax", self._delegate_syntax_task)
 
     def _delegate_file_task(self, task):
         """Delegate file work as a non-mutating preview for later approval."""
@@ -835,6 +861,17 @@ class ChatTab(ctk.CTkFrame):
         """Delegate document research to the persistent RAG index."""
         results = self._get_rag_agent().search(task, n_results=5)
         return self._format_rag_results(task, results)
+
+    def _delegate_syntax_task(self, task):
+        """Delegate coding work to the provider-backed, text-only Syntax agent."""
+        return self._get_coding_agent().generate_code(task)
+
+    def _get_coding_agent(self):
+        """Return the injected Syntax agent or create one from the shared router."""
+        if getattr(self, "coding_agent", None) is None:
+            from agents.coding_agent import CodingAgent
+            self.coding_agent = CodingAgent(api_manager=self.supervisor.api_manager)
+        return self.coding_agent
 
     def _get_rag_agent(self):
         """Create the persistent RAG index lazily on the first Scout query."""
@@ -866,7 +903,12 @@ class ChatTab(ctk.CTkFrame):
 
     def _report_provider(self, agent_name):
         """Publish router metadata and return a short UI status string."""
-        source = self.supervisor if agent_name == "Cortex" else self.file_agent
+        if agent_name == "Cortex":
+            source = self.supervisor
+        elif agent_name == "Syntax":
+            source = self._get_coding_agent()
+        else:
+            source = self.file_agent
         provider_info = getattr(source, "last_provider", None)
         if not provider_info:
             return ""

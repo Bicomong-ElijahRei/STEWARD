@@ -23,6 +23,7 @@ from agents.supervisor import (
     AGENT_PC_CONTROL,
     AGENT_RAG,
     AGENT_GENERAL_CHAT,
+    AGENT_CODING,
     AGENT_UNKNOWN,
     SupervisorAgent,
 )
@@ -3256,6 +3257,92 @@ class MigrationCLITests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Confirmation timed out"):
                 migration_cli.confirm("execute", logger)
 
+
+
+class CodingAgentTests(unittest.TestCase):
+    def test_provider_backed_generation_is_text_only(self):
+        from agents.coding_agent import CodingAgent
+
+        manager = Mock()
+        manager.route_request.return_value = {
+            "choices": [{"message": {"content": "def greet():\n    return 'hi'"}}],
+            "_steward": {"provider": "CodeProvider", "model": "code-model"},
+        }
+        agent = CodingAgent(api_manager=manager)
+
+        result = agent.generate_code("write a greeting", language="python")
+
+        self.assertIn("def greet", result)
+        request = manager.route_request.call_args.kwargs
+        self.assertEqual(request["agent_name"], "Syntax")
+        self.assertFalse(request["require_tools"])
+        self.assertNotIn("tools", request)
+        self.assertEqual(request["messages"][-1]["role"], "user")
+        self.assertIn("write a greeting", request["messages"][-1]["content"])
+        self.assertEqual(agent.last_provider["provider"], "CodeProvider")
+
+    def test_debug_and_refactor_use_provider_text_only(self):
+        from agents.coding_agent import CodingAgent
+
+        manager = Mock()
+        manager.route_request.side_effect = [
+            {"choices": [{"message": {"content": "fix the null check"}}]},
+            {"choices": [{"message": {"content": "use a dataclass"}}]},
+        ]
+        agent = CodingAgent(api_manager=manager)
+
+        debug = agent.debug_code("value = None", "AttributeError")
+        refactor = agent.refactor_code("class User: pass", "use a dataclass")
+
+        self.assertEqual(debug, "fix the null check")
+        self.assertEqual(refactor, "use a dataclass")
+        for call in manager.route_request.call_args_list:
+            self.assertEqual(call.kwargs["agent_name"], "Syntax")
+            self.assertFalse(call.kwargs["require_tools"])
+            self.assertNotIn("tools", call.kwargs)
+            self.assertTrue(
+                all(message["role"] in ("system", "user") for message in call.kwargs["messages"])
+            )
+
+    def test_coding_agent_has_no_mutation_surface(self):
+        import ast
+        from agents.coding_agent import CodingAgent
+
+        source = Path(__file__).resolve().parent / "agents" / "coding_agent.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        forbidden_modules = {"os", "pathlib", "shutil", "subprocess"}
+        forbidden_calls = {
+            "open", "remove", "unlink", "rename", "replace", "write_text",
+            "write_bytes", "mkdir", "rmdir", "run", "Popen",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotIn(alias.name.split(".")[0], forbidden_modules)
+            if isinstance(node, ast.ImportFrom) and node.module:
+                self.assertNotIn(node.module.split(".")[0], forbidden_modules)
+            if isinstance(node, ast.Call):
+                function = node.func
+                name = function.attr if isinstance(function, ast.Attribute) else (
+                    function.id if isinstance(function, ast.Name) else ""
+                )
+                self.assertNotIn(name, forbidden_calls)
+
+    def test_chat_coding_branch_uses_coding_agent_without_file_tools(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_CODING, "action": "write a parser"}
+        )
+        chat.coding_agent = Mock()
+        chat.coding_agent.generate_code.return_value = "parser source"
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        for callback in callbacks:
+            callback()
+
+        chat.coding_agent.generate_code.assert_called_once_with("write a parser")
+        chat.file_agent.run.assert_not_called()
+        chat.file_agent.execute_pending_plan.assert_not_called()
 
 
 class GeneralConversationTests(unittest.TestCase):
