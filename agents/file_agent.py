@@ -20,6 +20,7 @@ import logging
 import threading
 import copy
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Callable
 
@@ -52,6 +53,9 @@ from agent.tools import (
 from core.router import APIManager
 
 logger = logging.getLogger(__name__)
+
+_JOURNAL_LOCKS_GUARD = threading.Lock()
+_JOURNAL_LOCKS = {}
 
 
 def migrate_legacy_operation_log(
@@ -89,14 +93,16 @@ class FileAgent:
         self.api_manager = api_manager
         self.dry_run = dry_run
         self.rules_path = rules_path or os.path.join(self.root_path, "rules.yaml")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._plan_lock = threading.RLock()
         self._plan_generation = 0
         self._pending_plan = None
         self._pending_plan_id = None
+        self._mutation_hook = None
         self.last_provider = None
         self.last_categorized_by_rule = False
         self.last_rule_pattern = None
+        self._journal_recovery_error = None
         self._migrate_legacy_operation_log()
         self._operation_log = self._load_operation_log()
 
@@ -205,22 +211,128 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 with open(self.OPERATION_LOG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, list):
-                    return [e for e in data if isinstance(e, dict)]
-                logger.warning("Operation log is not a list; starting fresh.")
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Could not load operation log: {e}")
+                    entries = [e for e in data if isinstance(e, dict)]
+                    seen_ids = set()
+                    for entry in entries:
+                        entry_id = entry.get("id")
+                        if entry_id in seen_ids:
+                            entry["id"] = f"{entry_id}-{uuid.uuid4().hex}"
+                            logger.warning("Assigned a unique ID to a duplicate operation-log entry.")
+                        seen_ids.add(entry.get("id"))
+                        if entry.get("state") == "intent":
+                            entry["state"] = "uncertain"
+                            entry["result"] = (
+                                "Interrupted or uncertain operation; manual reconciliation required."
+                            )
+                        transition = entry.get("transition")
+                        if isinstance(transition, dict) and transition.get("state") == "intent":
+                            entry["state"] = "uncertain"
+                            entry["result"] = (
+                                "Interrupted or uncertain history transition; manual "
+                                "reconciliation required."
+                            )
+                        entry.setdefault("success", bool(entry.get("operation")))
+                        entry.setdefault("undone", False)
+                    return entries
+                self._journal_recovery_error = (
+                    "Operation history has an unsupported format. Mutations are disabled "
+                    "to preserve the existing history file."
+                )
+                logger.warning(self._journal_recovery_error)
+            except (json.JSONDecodeError, IOError, OSError) as e:
+                self._journal_recovery_error = (
+                    f"Operation history could not be loaded: {e}. "
+                    "Mutations are disabled to preserve the existing history file."
+                )
+                logger.warning(self._journal_recovery_error)
         return []
 
-    def _save_operation_log(self):
-        tmp_path = self.OPERATION_LOG_PATH + ".tmp"
+    @contextmanager
+    def _journal_process_lock(self):
+        """Serialize writers that share the same operation-log path."""
+        key = os.path.normcase(os.path.abspath(self.OPERATION_LOG_PATH))
+        with _JOURNAL_LOCKS_GUARD:
+            process_lock = _JOURNAL_LOCKS.setdefault(key, threading.RLock())
+        with process_lock:
+            yield
+
+    def _merge_disk_log(self) -> List[Dict[str, Any]]:
+        """Merge entries written by another agent sharing this journal."""
+        if not os.path.exists(self.OPERATION_LOG_PATH):
+            return list(self._operation_log)
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._operation_log, f, indent=2, default=str)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.OPERATION_LOG_PATH)
-        except IOError as e:
-            logger.error(f"Could not save operation log: {e}")
+            with open(self.OPERATION_LOG_PATH, "r", encoding="utf-8") as f:
+                disk_entries = json.load(f)
+        except (json.JSONDecodeError, IOError, OSError):
+            raise
+        if not isinstance(disk_entries, list):
+            raise ValueError("Operation log is not a list.")
+        disk_by_id = {
+            e.get("id"): e for e in disk_entries if isinstance(e, dict)
+        }
+        for entry in self._operation_log:
+            disk_entry = disk_by_id.get(entry.get("id"))
+            if disk_entry and disk_entry.get("revision", 0) > entry.get("revision", 0):
+                raise RuntimeError(
+                    "Operation history was concurrently updated; refusing stale write."
+                )
+        merged = dict(disk_by_id)
+        for entry in self._operation_log:
+            merged[entry.get("id")] = entry
+        return list(merged.values())
+
+    def _save_operation_log(self):
+        """Atomically persist the operation log, surfacing every failure."""
+        directory = os.path.dirname(os.path.abspath(self.OPERATION_LOG_PATH))
+        os.makedirs(directory, exist_ok=True)
+        tmp_path = os.path.join(
+            directory,
+            f".{os.path.basename(self.OPERATION_LOG_PATH)}.{os.getpid()}.{uuid.uuid4().hex}.tmp",
+        )
+        try:
+            with self._journal_process_lock():
+                merged = self._merge_disk_log()
+                with open(tmp_path, "x", encoding="utf-8") as f:
+                    json.dump(merged, f, indent=2, default=str)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self.OPERATION_LOG_PATH)
+                self._operation_log = merged
+                if os.name != "nt":
+                    directory_fd = os.open(directory, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            logger.exception("Could not save operation log")
+            raise
+
+    def _new_operation_entry(
+        self,
+        operation: str,
+        source: str,
+        destination: Optional[str] = None,
+        result: str = "",
+        success: bool = True,
+    ) -> Dict[str, Any]:
+        now = datetime.now().isoformat()
+        return {
+            "id": f"{now}-{uuid.uuid4().hex}",
+            "timestamp": now,
+            "operation": operation,
+            "source": source,
+            "destination": destination,
+            "result": result,
+            "success": success,
+            "undone": False,
+            "state": "committed",
+            "revision": 1,
+        }
 
     def _record_operation(
         self,
@@ -229,25 +341,194 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         destination: Optional[str] = None,
         result: str = "",
         success: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
-        entry = {
-            "id": datetime.now().isoformat(),
-            "timestamp": datetime.now().isoformat(),
-            "operation": operation,
-            "source": source,
-            "destination": destination,
-            "result": result,
-            "success": success,
-            "undone": False,
-        }
+        entry = self._new_operation_entry(
+            operation, source, destination, result, success
+        )
+        if metadata:
+            entry.update(metadata)
         with self._lock:
             self._operation_log.append(entry)
             self._save_operation_log()
+
+    def _begin_mutation(
+        self,
+        operation: str,
+        source: str,
+        destination: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist an intent entry before changing the filesystem."""
+        with self._lock:
+            entry = self._new_operation_entry(
+                operation, source, destination, "Intent recorded", False
+            )
+            entry["state"] = "intent"
+            self._operation_log.append(entry)
+            try:
+                self._save_operation_log()
+            except Exception:
+                self._operation_log.pop()
+                raise
+            return entry
+
+    def _complete_mutation(
+        self,
+        entry: Dict[str, Any],
+        result: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._lock:
+            entry["result"] = result
+            entry["success"] = True
+            entry["state"] = "committed"
+            entry["revision"] = entry.get("revision", 0) + 1
+            if metadata:
+                entry.update(metadata)
+            self._save_operation_log()
+
+    @staticmethod
+    def _folder_ownership(paths: List[str]) -> List[Dict[str, Any]]:
+        """Record exact directory identities for safe later undo/redo."""
+        ownership = []
+        for path in paths:
+            stat = os.stat(path)
+            ownership.append({
+                "path": path,
+                "device": stat.st_dev,
+                "inode": stat.st_ino,
+            })
+        return ownership
+
+    def _execute_mutation(
+        self,
+        func_name: str,
+        safe_args: Dict[str, Any],
+        operation: str,
+        source: str,
+        destination: Optional[str],
+        callback: Optional[Callable[..., str]] = None,
+    ) -> str:
+        """Run one mutation with a durable intent before disk changes."""
+        if self._journal_recovery_error:
+            return f"Error: {self._journal_recovery_error}"
+        try:
+            entry = self._begin_mutation(operation, source, destination)
+        except Exception as exc:
+            return (
+                "Error: operation was not started because durable operation "
+                f"history could not be recorded: {exc}"
+            )
+        try:
+            if callback is None:
+                result = _legacy_tool_functions[func_name](**safe_args)
+            else:
+                result = callback(**safe_args)
+            if isinstance(result, str) and result.startswith("Error"):
+                entry["result"] = result
+                entry["success"] = False
+                entry["state"] = "failed"
+                entry["revision"] = entry.get("revision", 0) + 1
+                try:
+                    self._save_operation_log()
+                except Exception as journal_error:
+                    return f"{result} (operation history could not be finalized: {journal_error})"
+                return result
+
+            metadata = dict(getattr(result, "metadata", {}) or {})
+            if operation == "create_folder":
+                created_paths = metadata.get("created_paths", [])
+                if not created_paths:
+                    entry["result"] = result
+                    entry["success"] = False
+                    entry["state"] = "no_op"
+                    entry["revision"] = entry.get("revision", 0) + 1
+                    self._save_operation_log()
+                    return result
+                metadata["folder_ownership"] = self._folder_ownership(created_paths)
+            actual_destination = metadata.get("actual_destination")
+            if actual_destination and operation == "move":
+                entry["destination"] = actual_destination
+            try:
+                self._complete_mutation(entry, result, metadata)
+            except Exception as journal_error:
+                entry["success"] = False
+                entry["state"] = "uncertain"
+                entry["result"] = (
+                    "Filesystem mutation completed, but durable history could not be "
+                    f"finalized: {journal_error}"
+                )
+                return f"Error: {entry['result']}"
+            return result
+        except Exception as exc:
+            entry["result"] = f"Error: {exc}"
+            entry["success"] = False
+            entry["state"] = "failed"
+            try:
+                self._save_operation_log()
+            except Exception as journal_error:
+                return f"Error: {exc} (operation history could not be finalized: {journal_error})"
+            return f"Error: {exc}"
+
+    def _begin_transition(self, entry: Dict[str, Any], kind: str) -> None:
+        with self._lock:
+            previous = entry.get("transition")
+            entry["transition"] = {"kind": kind, "state": "intent"}
+            entry["revision"] = entry.get("revision", 0) + 1
+            try:
+                self._save_operation_log()
+            except Exception:
+                if previous is None:
+                    entry.pop("transition", None)
+                else:
+                    entry["transition"] = previous
+                raise
+
+    def _complete_transition(self, entry: Dict[str, Any], kind: str) -> None:
+        with self._lock:
+            entry["transition"] = {"kind": kind, "state": "committed"}
+            entry["revision"] = entry.get("revision", 0) + 1
+            self._save_operation_log()
+
+    def _mark_transition_uncertain(self, entry: Dict[str, Any], kind: str) -> None:
+        with self._lock:
+            entry["transition"] = {"kind": kind, "state": "uncertain"}
+            entry["state"] = "uncertain"
+            entry["revision"] = entry.get("revision", 0) + 1
+            try:
+                self._save_operation_log()
+            except Exception:
+                pass
+
+    def _mark_transition_failed(self, entry: Dict[str, Any], kind: str) -> None:
+        with self._lock:
+            entry["transition"] = {"kind": kind, "state": "failed"}
+            entry["revision"] = entry.get("revision", 0) + 1
+            try:
+                self._save_operation_log()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _same_owned_folder(path: str, ownership: Dict[str, Any]) -> bool:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return False
+        return (
+            stat.st_dev == ownership.get("device")
+            and stat.st_ino == ownership.get("inode")
+        )
 
     def undo_last(self) -> str:
         with self._lock:
             saw_delete = False
             for entry in reversed(self._operation_log):
+                if entry.get("state") == "uncertain":
+                    return (
+                        "Undo blocked: operation history contains an interrupted or "
+                        "uncertain transition requiring manual reconciliation."
+                    )
                 if entry.get("undone", False) or not entry.get("success", False):
                     continue
                 operation = entry["operation"]
@@ -258,50 +539,80 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     continue
                 source = entry["source"]
                 destination = entry.get("destination")
+                mutation_started = False
                 try:
+                    self._begin_transition(entry, "undo")
                     if operation == "move":
                         safe = self._validate_mutation(
                             "move_file", {"source": source, "destination": destination}
                         )
                         src, dst = safe["source"], safe["destination"]
-                        if not os.path.exists(dst):
-                            return f"Undo failed: '{dst}' no longer exists"
-                        if os.path.exists(src):
-                            return f"Undo failed: refusing to overwrite existing '{src}'"
-                        shutil.move(dst, src)
+                        if not os.path.isfile(dst):
+                            raise FileNotFoundError(f"'{dst}' no longer exists")
+                        if os.path.lexists(src):
+                            raise FileExistsError(
+                                f"refusing to overwrite existing '{src}'"
+                            )
+                        mutation_started = True
+                        undo_result = _move_file(dst, src)
+                        if undo_result.startswith("Error"):
+                            raise RuntimeError(undo_result)
                         result = f"Undid move: '{destination}' → '{source}'"
                     elif operation == "rename":
                         if not destination:
-                            continue
+                            raise ValueError("rename history has no destination")
                         safe = self._validate_mutation(
                             "rename_file", {"old_path": source, "new_name": destination}
                         )
                         new_path = os.path.join(
                             os.path.dirname(safe["old_path"]), safe["new_name"]
                         )
-                        if not os.path.exists(new_path):
-                            return f"Undo failed: '{new_path}' no longer exists"
-                        if os.path.exists(safe["old_path"]):
-                            return f"Undo failed: refusing to overwrite existing '{safe['old_path']}'"
-                        os.rename(new_path, safe["old_path"])
+                        if not os.path.isfile(new_path):
+                            raise FileNotFoundError(f"'{new_path}' no longer exists")
+                        if os.path.lexists(safe["old_path"]):
+                            raise FileExistsError(
+                                f"refusing to overwrite existing '{safe['old_path']}'"
+                            )
+                        mutation_started = True
+                        undo_result = _rename_file(
+                            new_path, os.path.basename(safe["old_path"])
+                        )
+                        if undo_result.startswith("Error"):
+                            raise RuntimeError(undo_result)
                         result = f"Undid rename: '{destination}' → '{os.path.basename(source)}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
-                        if os.path.exists(safe["path"]) and os.path.isdir(safe["path"]):
-                            try:
-                                os.rmdir(safe["path"])
-                            except OSError:
-                                return f"Could not remove '{safe['path']}' (not empty)"
-                            result = f"Undid create_folder: removed '{safe['path']}'"
-                        else:
-                            entry["undone"] = True
-                            self._save_operation_log()
-                            return f"Folder '{safe['path']}' no longer exists"
+                        ownership = entry.get("folder_ownership")
+                        if not ownership:
+                            raise PermissionError(
+                                "legacy folder creation has no ownership evidence; "
+                                "refusing destructive undo"
+                            )
+                        for item in sorted(
+                            ownership, key=lambda value: len(value["path"]), reverse=True
+                        ):
+                            path = item["path"]
+                            if not os.path.isdir(path):
+                                raise FileNotFoundError(f"'{path}' no longer exists")
+                            if not self._same_owned_folder(path, item):
+                                raise PermissionError(
+                                    f"'{path}' was replaced or modified; refusing to remove it"
+                                )
+                        mutation_started = True
+                        for item in sorted(
+                            ownership, key=lambda value: len(value["path"]), reverse=True
+                        ):
+                            os.rmdir(item["path"])
+                        result = f"Undid create_folder: removed '{safe['path']}'"
                     entry["undone"] = True
-                    self._save_operation_log()
+                    self._complete_transition(entry, "undo")
                     return result
-                except Exception as e:
-                    return f"Undo failed: {e}"
+                except Exception as exc:
+                    if mutation_started:
+                        self._mark_transition_uncertain(entry, "undo")
+                    else:
+                        self._mark_transition_failed(entry, "undo")
+                    return f"Undo failed: {exc}"
             if saw_delete:
                 return "Cannot undo delete (sent to recycle bin)"
             return "No operations to undo."
@@ -309,6 +620,11 @@ Absolute paths supplied by the user or model never bypass this sandbox.
     def redo_last(self) -> str:
         with self._lock:
             for entry in self._operation_log:
+                if entry.get("state") == "uncertain":
+                    return (
+                        "Redo blocked: operation history contains an interrupted or "
+                        "uncertain transition requiring manual reconciliation."
+                    )
                 if not entry.get("undone", False):
                     continue
                 operation = entry["operation"]
@@ -316,42 +632,73 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     continue
                 source = entry["source"]
                 destination = entry.get("destination")
+                mutation_started = False
                 try:
+                    self._begin_transition(entry, "redo")
                     if operation == "move":
                         safe = self._validate_mutation(
                             "move_file", {"source": source, "destination": destination}
                         )
                         src, dst = safe["source"], safe["destination"]
-                        if not os.path.exists(src):
-                            return f"Redo failed: '{src}' no longer exists"
-                        if os.path.exists(dst):
-                            return f"Redo failed: refusing to overwrite existing '{dst}'"
-                        shutil.move(src, dst)
+                        if not os.path.isfile(src):
+                            raise FileNotFoundError(f"'{src}' no longer exists")
+                        if os.path.lexists(dst):
+                            raise FileExistsError(
+                                f"refusing to overwrite existing '{dst}'"
+                            )
+                        mutation_started = True
+                        redo_result = _move_file(src, dst)
+                        if redo_result.startswith("Error"):
+                            raise RuntimeError(redo_result)
                         result = f"Redid move: '{source}' → '{destination}'"
                     elif operation == "rename":
                         if not destination:
-                            continue
+                            raise ValueError("rename history has no destination")
                         safe = self._validate_mutation(
                             "rename_file", {"old_path": source, "new_name": destination}
                         )
                         new_path = os.path.join(
                             os.path.dirname(safe["old_path"]), safe["new_name"]
                         )
-                        if not os.path.exists(safe["old_path"]):
-                            return f"Redo failed: '{safe['old_path']}' no longer exists"
-                        if os.path.exists(new_path):
-                            return f"Redo failed: refusing to overwrite existing '{new_path}'"
-                        os.rename(safe["old_path"], new_path)
+                        if not os.path.isfile(safe["old_path"]):
+                            raise FileNotFoundError(f"'{safe['old_path']}' no longer exists")
+                        if os.path.lexists(new_path):
+                            raise FileExistsError(
+                                f"refusing to overwrite existing '{new_path}'"
+                            )
+                        mutation_started = True
+                        redo_result = _rename_file(safe["old_path"], safe["new_name"])
+                        if redo_result.startswith("Error"):
+                            raise RuntimeError(redo_result)
                         result = f"Redid rename: '{source}' → '{destination}'"
                     else:
                         safe = self._validate_mutation("create_folder", {"path": source})
-                        os.makedirs(safe["path"], exist_ok=True)
+                        ownership = entry.get("folder_ownership")
+                        if not ownership:
+                            raise PermissionError(
+                                "legacy folder creation has no ownership evidence; "
+                                "refusing redo"
+                            )
+                        if any(os.path.lexists(item["path"]) for item in ownership):
+                            raise FileExistsError(
+                                "one or more owned folders already exist; refusing redo"
+                            )
+                        mutation_started = True
+                        created = []
+                        for item in sorted(ownership, key=lambda value: len(value["path"])):
+                            os.mkdir(item["path"])
+                            created.append(item["path"])
+                        entry["folder_ownership"] = self._folder_ownership(created)
                         result = f"Redid create_folder: '{source}'"
                     entry["undone"] = False
-                    self._save_operation_log()
+                    self._complete_transition(entry, "redo")
                     return result
-                except Exception as e:
-                    return f"Redo failed: {e}"
+                except Exception as exc:
+                    if mutation_started:
+                        self._mark_transition_uncertain(entry, "redo")
+                    else:
+                        self._mark_transition_failed(entry, "redo")
+                    return f"Redo failed: {exc}"
             return "No operations to redo."
 
     # ------------------------------------------------------------------
@@ -668,6 +1015,57 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         except (OSError, TypeError, ValueError) as exc:
             return str(exc)
         return None
+
+    def _planned_destination(self, func_name: str, safe_args: Dict[str, Any]) -> Optional[str]:
+        """Return the concrete file path affected by a planned mutation."""
+        if func_name == "move_file":
+            destination = safe_args["destination"]
+            if os.path.isdir(destination):
+                return os.path.join(destination, os.path.basename(safe_args["source"]))
+            return destination
+        if func_name == "rename_file":
+            return os.path.join(
+                os.path.dirname(safe_args["old_path"]), safe_args["new_name"]
+            )
+        return None
+
+    def _preflight_tool_plan(self, tool_calls: List[Dict[str, Any]]) -> None:
+        """Reject destination conflicts before the first operation mutates disk."""
+        approved = {t["function"]["name"] for t in self._get_tool_definitions()}
+        planned_destinations = {}
+        produced_sources = set()
+        for index, tool_call in enumerate(tool_calls):
+            func_name = tool_call["function"]["name"]
+            if func_name not in approved:
+                raise ValueError(f"Unapproved tool: {func_name}")
+            safe_args = self._validate_mutation(
+                func_name, tool_call["function"]["arguments"]
+            )
+            destination = self._planned_destination(func_name, safe_args)
+            if destination is None:
+                continue
+            key = os.path.normcase(os.path.abspath(destination))
+            if key in planned_destinations:
+                previous = planned_destinations[key]
+                raise ValueError(
+                    f"Plan conflict: operations {previous + 1} and {index + 1} "
+                    f"both target '{destination}'."
+                )
+            if os.path.lexists(destination):
+                raise ValueError(
+                    f"Plan conflict: destination already exists: '{destination}'."
+                )
+            planned_destinations[key] = index
+            source = safe_args.get("source") or safe_args.get("old_path")
+            if source:
+                source_key = os.path.normcase(os.path.abspath(source))
+                if source_key in produced_sources:
+                    raise ValueError(
+                        "Plan conflict: a later operation depends on the output of "
+                        "an earlier operation."
+                    )
+                produced_sources.add(source_key)
+            produced_sources.add(key)
     def _execute_tool_plan(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -690,6 +1088,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         func_name,
                         tool_call["function"]["arguments"],
                     )
+                self._preflight_tool_plan(tool_calls)
             except (OSError, TypeError, ValueError) as exc:
                 return [f"Error: {exc}"]
 
@@ -727,33 +1126,29 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             try:
                 # Re-resolve immediately before mutation as well as during preflight.
                 safe_args = self._validate_mutation(func_name, args)
-                result = _legacy_tool_functions[func_name](**safe_args)
-                results.append(f"  → {result}")
-                if result.startswith("Error"):
-                    continue
+                if self._mutation_hook is not None:
+                    self._mutation_hook(func_name, safe_args)
                 if func_name == "move_file":
-                    # shutil.move(destination_dir) resolves to
-                    # destination_dir/basename(source); log the concrete file path
-                    # so undo moves exactly one file and never a directory.
-                    actual_dest = safe_args["destination"]
-                    if os.path.isdir(safe_args["destination"]):
-                        actual_dest = os.path.join(
-                            safe_args["destination"],
-                            os.path.basename(safe_args["source"]),
-                        )
-                    self._record_operation(
-                        "move", safe_args["source"], actual_dest, result,
+                    result = self._execute_mutation(
+                        func_name, safe_args, "move",
+                        safe_args["source"], safe_args["destination"],
                     )
                 elif func_name == "rename_file":
-                    self._record_operation(
-                        "rename", safe_args["old_path"], safe_args["new_name"], result,
+                    result = self._execute_mutation(
+                        func_name, safe_args, "rename",
+                        safe_args["old_path"], safe_args["new_name"],
                     )
                 elif func_name == "delete_file":
-                    self._record_operation("delete", safe_args["path"], None, result)
-                elif func_name == "create_folder":
-                    self._record_operation(
-                        "create_folder", safe_args["path"], None, result,
+                    result = self._execute_mutation(
+                        func_name, safe_args, "delete", safe_args["path"], None,
                     )
+                elif func_name == "create_folder":
+                    result = self._execute_mutation(
+                        func_name, safe_args, "create_folder", safe_args["path"], None,
+                    )
+                else:
+                    result = _legacy_tool_functions[func_name](**safe_args)
+                results.append(f"  → {result}")
             except Exception as e:
                 results.append(f"  → Error: {e}")
 
@@ -805,28 +1200,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             )
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        result = _move_file(**safe_args)
-        if not result.startswith("Error"):
-            actual_dest = safe_args["destination"]
-            if os.path.isdir(safe_args["destination"]):
-                actual_dest = os.path.join(
-                    safe_args["destination"],
-                    os.path.basename(safe_args["source"]),
-                )
-            self._record_operation(
-                "move", safe_args["source"], actual_dest, result
-            )
-        return result
+        return self._execute_mutation(
+            "move_file", safe_args, "move",
+            safe_args["source"], safe_args["destination"], callback=_move_file,
+        )
 
     def delete_file(self, path: str) -> str:
         try:
             safe_args = self._validate_mutation("delete_file", {"path": path})
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        result = _delete_file(**safe_args)
-        if not result.startswith("Error"):
-            self._record_operation("delete", safe_args["path"], None, result)
-        return result
+        return self._execute_mutation(
+            "delete_file", safe_args, "delete", safe_args["path"], None,
+            callback=_delete_file,
+        )
 
     def rename_file(self, old_path: str, new_name: str) -> str:
         try:
@@ -835,22 +1222,20 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             )
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        result = _rename_file(**safe_args)
-        if not result.startswith("Error"):
-            self._record_operation(
-                "rename", safe_args["old_path"], safe_args["new_name"], result
-            )
-        return result
+        return self._execute_mutation(
+            "rename_file", safe_args, "rename",
+            safe_args["old_path"], safe_args["new_name"], callback=_rename_file,
+        )
 
     def create_folder(self, path: str) -> str:
         try:
             safe_args = self._validate_mutation("create_folder", {"path": path})
         except (OSError, TypeError, ValueError) as exc:
             return f"Error: {exc}"
-        result = _create_folder(**safe_args)
-        if not result.startswith("Error"):
-            self._record_operation("create_folder", safe_args["path"], None, result)
-        return result
+        return self._execute_mutation(
+            "create_folder", safe_args, "create_folder", safe_args["path"], None,
+            callback=_create_folder,
+        )
 
     def list_directory(self, directory: str) -> str:
         try:
