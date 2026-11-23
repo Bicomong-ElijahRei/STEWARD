@@ -222,6 +222,10 @@ class ChatBubble(ctk.CTkFrame):
         super().destroy()
 
 class ChatTab(ctk.CTkFrame):
+    MAX_CHAT_TURNS = 6
+    MAX_CHAT_CONTEXT_CHARS = 12000
+    MAX_CHAT_MESSAGE_CHARS = 4000
+
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
                  provider_callback=None):
         super().__init__(parent, fg_color="transparent")
@@ -231,6 +235,8 @@ class ChatTab(ctk.CTkFrame):
         self.live_feed = live_feed
         self.provider_callback = provider_callback
         self._processing = False
+        self._general_chat_history = []
+        self._conversation_epoch = 0
         self.dialog_timeout = 600
         self._register_swarm_handlers()
         self.build()
@@ -351,9 +357,29 @@ class ChatTab(ctk.CTkFrame):
         self.clear_btn.pack(side="right", padx=(0, 8))
 
     def clear_chat(self):
-        """Remove all visible chat bubbles without affecting the live feed."""
+        """Remove visible chat bubbles and the bounded Cortex conversation."""
+        self._conversation_epoch = getattr(self, "_conversation_epoch", 0) + 1
+        self._general_chat_history = []
         for widget in self.chat_display.winfo_children():
             widget.destroy()
+
+    def _remember_general_chat(self, role, content):
+        """Append one bounded message to the in-memory Cortex conversation."""
+        text = str(content or "")
+        if len(text) > self.MAX_CHAT_MESSAGE_CHARS:
+            text = text[-self.MAX_CHAT_MESSAGE_CHARS:]
+        history = getattr(self, "_general_chat_history", None)
+        if history is None:
+            history = []
+            self._general_chat_history = history
+        history.append({"role": role, "content": text})
+        max_messages = self.MAX_CHAT_TURNS * 2
+        if len(history) > max_messages:
+            del history[:-max_messages]
+        while history and sum(
+            len(message["content"]) for message in history
+        ) > self.MAX_CHAT_CONTEXT_CHARS:
+            history.pop(0)
 
     def _clear_live_feed(self):
         """Clear visible live-feed activity cards from the chat header."""
@@ -393,6 +419,7 @@ class ChatTab(ctk.CTkFrame):
         user_msg = self.chat_entry.get().strip()
         if not user_msg:
             return
+        request_epoch = getattr(self, "_conversation_epoch", 0)
         self._processing = True
         restore_input = [False]
         self.chat_entry.delete(0, "end")
@@ -404,6 +431,9 @@ class ChatTab(ctk.CTkFrame):
         def process():
             try:
                 routing = self.supervisor.route(user_msg)
+                if request_epoch != getattr(self, "_conversation_epoch", 0):
+                    logger.info("[Chat] discarded stale request after conversation clear")
+                    return
                 self._report_provider("Cortex")
                 agent_type = routing.get("agent", "UNKNOWN")
                 action = routing.get("action", user_msg)
@@ -686,6 +716,7 @@ class ChatTab(ctk.CTkFrame):
                                     "management). Keep responses concise and helpful."
                                 ),
                             },
+                            *list(getattr(self, "_general_chat_history", [])),
                             {"role": "user", "content": user_msg},
                         ]
 
@@ -696,6 +727,12 @@ class ChatTab(ctk.CTkFrame):
                         )
 
                         cortex_response = response["choices"][0]["message"].get("content", "")
+                        if request_epoch != getattr(self, "_conversation_epoch", 0):
+                            logger.info("[Chat] discarded stale Cortex conversation response")
+                            return
+
+                        self._remember_general_chat("user", user_msg)
+                        self._remember_general_chat("assistant", cortex_response)
 
                         def finish_conversation():
                             bubble = cortex_bubble[0]
@@ -798,7 +835,6 @@ class ChatTab(ctk.CTkFrame):
         """Delegate document research to the persistent RAG index."""
         results = self._get_rag_agent().search(task, n_results=5)
         return self._format_rag_results(task, results)
-
 
     def _get_rag_agent(self):
         """Create the persistent RAG index lazily on the first Scout query."""

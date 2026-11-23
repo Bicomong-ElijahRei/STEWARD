@@ -3259,6 +3259,95 @@ class MigrationCLITests(unittest.TestCase):
 
 
 class GeneralConversationTests(unittest.TestCase):
+    def test_general_chat_reuses_prior_cortex_turns(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "friendly reply"},
+        )
+        chat.chat_entry.get.side_effect = ["first question", "second question"]
+        chat.supervisor.api_manager = Mock()
+        chat.supervisor.api_manager.route_request.side_effect = [
+            {
+                "choices": [{"message": {"content": "first answer"}}],
+                "_steward": {"provider": "TestProvider", "model": "test-model"},
+            },
+            {
+                "choices": [{"message": {"content": "second answer"}}],
+                "_steward": {"provider": "TestProvider", "model": "test-model"},
+            },
+        ]
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        for callback in callbacks:
+            callback()
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        for callback in callbacks:
+            callback()
+
+        calls = chat.supervisor.api_manager.route_request.call_args_list
+        self.assertEqual(len(calls), 2)
+        second_messages = calls[1].kwargs["messages"]
+        self.assertEqual(second_messages[1], {"role": "user", "content": "first question"})
+        self.assertEqual(second_messages[2], {"role": "assistant", "content": "first answer"})
+        self.assertEqual(second_messages[3], {"role": "user", "content": "second question"})
+
+    def test_general_chat_memory_is_bounded(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat._general_chat_history = []
+        chat._conversation_epoch = 0
+
+        for index in range(20):
+            chat._remember_general_chat("user", "x" * 1000 + str(index))
+            chat._remember_general_chat("assistant", "y" * 1000 + str(index))
+
+        self.assertLessEqual(len(chat._general_chat_history), chat.MAX_CHAT_TURNS * 2)
+        total_chars = sum(
+            len(message["content"]) for message in chat._general_chat_history
+        )
+        self.assertLessEqual(total_chars, chat.MAX_CHAT_CONTEXT_CHARS)
+
+    def test_clear_chat_erases_cortex_memory(self):
+        chat = ChatTab.__new__(ChatTab)
+        chat.chat_display = Mock()
+        chat.chat_display.winfo_children.return_value = []
+        chat._general_chat_history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        chat._conversation_epoch = 3
+
+        chat.clear_chat()
+
+        self.assertEqual(chat._general_chat_history, [])
+        self.assertEqual(chat._conversation_epoch, 4)
+
+    def test_cleared_conversation_ignores_in_flight_response(self):
+        chat, callbacks = ChatWorkflowTests().make_chat(
+            routing={"agent": AGENT_GENERAL_CHAT, "action": "friendly reply"},
+        )
+        chat.chat_display = Mock()
+        chat.chat_display.winfo_children.return_value = []
+        chat._general_chat_history = []
+        chat._conversation_epoch = 0
+        chat.supervisor.api_manager = Mock()
+
+        def clear_during_request(*_args, **_kwargs):
+            chat.clear_chat()
+            return {
+                "choices": [{"message": {"content": "stale answer"}}],
+                "_steward": {"provider": "TestProvider", "model": "test-model"},
+            }
+
+        chat.supervisor.api_manager.route_request.side_effect = clear_during_request
+
+        with patch("gui.chat_tab.threading.Thread", ChatWorkflowTests.ImmediateThread):
+            chat.send_chat()
+        for callback in callbacks:
+            callback()
+
+        self.assertEqual(chat._general_chat_history, [])
+
     def test_general_chat_routes_to_cortex(self):
         chat, callbacks = ChatWorkflowTests().make_chat(
             routing={"agent": AGENT_GENERAL_CHAT, "action": "hello how are you"},
