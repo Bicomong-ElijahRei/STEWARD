@@ -131,30 +131,48 @@ class ChatBubble(ctk.CTkFrame):
         )
         self.icon_label.pack(side="right")
         
-        self.msg_label = ctk.CTkLabel(
+        # A Text widget wraps at word boundaries and grows with its content,
+        # avoiding the fixed-width clipping caused by CTkLabel's wraplength.
+        self.msg_text = ctk.CTkTextbox(
             self,
-            text=render_markdown_text(message),
             font=FONT_MONO,
             text_color=TEXT_BRIGHT,
-            anchor="w",
-            justify="left",
-            wraplength=500,
+            fg_color="transparent",
+            border_width=0,
+            wrap="word",
+            state="disabled",
         )
-        self.msg_label.pack(fill="x", padx=10, pady=(0, 6))
-        self.msg_label.bind("<Configure>", self._on_resize)
+        self.msg_text.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self.msg_text.configure(state="normal")
+        self.msg_text.insert("1.0", render_markdown_text(message))
+        self.msg_text.configure(state="disabled")
+        self.msg_text.bind("<Configure>", self._schedule_message_fit)
+        self.msg_text.after_idle(self._fit_message_textbox)
 
-    def _on_resize(self, event):
-        """Keep message wrapping responsive to the available bubble width."""
-        width = int(getattr(event, "width", 0) or 0)
-        if width <= 0:
-            return
-        target = max(120, width - 20)
+    def _schedule_message_fit(self, event=None):
+        """Recalculate the textbox height after its available width changes."""
         try:
-            current = int(self.msg_label.cget("wraplength"))
+            self.after_idle(self._fit_message_textbox)
         except Exception:
-            current = 0
-        if current != target:
-            self.msg_label.configure(wraplength=target)
+            self._fit_message_textbox()
+
+    def _fit_message_textbox(self):
+        """Size the textbox to all wrapped lines so the bubble can grow."""
+        try:
+            textbox = self.msg_text._textbox
+            line_count = textbox.count("1.0", "end-1c", "displaylines")
+            if isinstance(line_count, (tuple, list)):
+                line_count = line_count[0] if line_count else 1
+            line_info = textbox.dlineinfo("1.0")
+            if not line_info:
+                return
+            line_height = max(1, int(line_info[3]))
+            scaling = max(1.0, float(self.msg_text._get_widget_scaling()))
+            desired_height = max(1, math.ceil((line_count * line_height + 24) / scaling))
+            if self.msg_text._desired_height != desired_height:
+                self.msg_text.configure(height=desired_height)
+        except Exception:
+            pass  # Widget may not be realized yet or may have been destroyed
 
     def update_state(self, state):
         if self._tick:
@@ -190,7 +208,11 @@ class ChatBubble(ctk.CTkFrame):
         self._tick = SafeTick(self, 50, on_tick).start()
 
     def set_message(self, message):
-        self.msg_label.configure(text=render_markdown_text(message))
+        self.msg_text.configure(state="normal")
+        self.msg_text.delete("1.0", "end")
+        self.msg_text.insert("1.0", render_markdown_text(message))
+        self.msg_text.configure(state="disabled")
+        self._fit_message_textbox()
 
     def destroy(self):
         """Cancel bubble animation before Tk destroys the widget tree."""
@@ -243,6 +265,7 @@ class ChatTab(ctk.CTkFrame):
             self.chat_panel, fg_color="transparent", corner_radius=CORNER_RADIUS
         )
         self.chat_display.pack(fill="both", expand=True, padx=10, pady=10)
+        self._update_chat_scrollregion()
 
         # Right: Live Feed
         self.feed_panel = ctk.CTkFrame(
@@ -833,8 +856,19 @@ class ChatTab(ctk.CTkFrame):
         bubble = ChatBubble(
             self.chat_display, sender, clean_message, color, align, state
         )
+        self.after_idle(self._update_chat_scrollregion)
         self.after_idle(self._scroll_chat)
         return bubble
+
+    def _update_chat_scrollregion(self):
+        """Keep the scrollable canvas region aligned with its content."""
+        try:
+            canvas = self.chat_display._parent_canvas
+            bbox = canvas.bbox("all")
+            if bbox:
+                canvas.configure(scrollregion=bbox)
+        except Exception:
+            pass  # Widget may not be realized yet or may have been destroyed
 
     def _scroll_chat(self):
         try:

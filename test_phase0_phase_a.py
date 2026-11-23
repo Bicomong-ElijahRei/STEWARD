@@ -1241,13 +1241,6 @@ class GUIPresentationTests(unittest.TestCase):
         self.assertNotIn("```", rendered)
         self.assertNotIn('{"ok": true}', rendered)
 
-    def test_chat_bubble_wrap_follows_available_width(self):
-        bubble = ChatBubble.__new__(ChatBubble)
-        bubble.msg_label = Mock()
-        bubble.msg_label.cget.return_value = 500
-        bubble._on_resize(SimpleNamespace(width=440))
-        bubble.msg_label.configure.assert_called_once_with(wraplength=420)
-
     def test_chat_animations_cancel_before_destroy(self):
         bubble = ChatBubble.__new__(ChatBubble)
         bubble_tick = Mock()
@@ -3646,6 +3639,67 @@ class ScheduledScannerTests(unittest.TestCase):
         dropdown_source = source[dropdown_start:dropdown_end]
         self.assertNotIn("hover_color", dropdown_source)
 
+
+
+class ChatBubbleTextTests(unittest.TestCase):
+    """Chat bubbles use a wrapping text widget and support dynamic updates."""
+
+    class FakeTextbox:
+        def __init__(self, *args, **kwargs):
+            self.state = kwargs.get("state")
+            self.content = ""
+
+        def configure(self, **kwargs):
+            if "state" in kwargs:
+                self.state = kwargs["state"]
+
+        def insert(self, index, text):
+            self.content = text
+
+        def delete(self, start, end):
+            self.content = ""
+
+        def get(self, start, end):
+            return self.content
+
+        def pack(self, *args, **kwargs):
+            pass
+
+        def bind(self, *args, **kwargs):
+            pass
+
+        def after_idle(self, callback):
+            pass
+
+    def make_bubble(self, message):
+        bubble = ChatBubble.__new__(ChatBubble)
+        bubble.sender = "Test"
+        bubble.color = "#FFFFFF"
+        bubble.align = "left"
+        bubble.pack = Mock()
+
+        textbox = self.FakeTextbox()
+        with patch("gui.chat_tab.ctk.CTkFrame"), \
+             patch("gui.chat_tab.ctk.CTkLabel"), \
+             patch("gui.chat_tab.ctk.CTkTextbox", return_value=textbox) as textbox_class:
+            bubble.build(message)
+
+        self.assertEqual(textbox_class.call_args.kwargs["wrap"], "word")
+        return bubble, textbox
+
+    def test_bubble_text_widget_created(self):
+        """Verify ChatBubble uses a Text widget for proper wrapping."""
+        bubble, _ = self.make_bubble("A" * 1000)
+        self.assertTrue(hasattr(bubble, "msg_text"))
+        self.assertFalse(hasattr(bubble, "msg_label"))
+
+    def test_set_message_updates_text_widget(self):
+        """Verify set_message() works with the new Text widget."""
+        bubble, textbox = self.make_bubble("Initial message")
+        bubble.set_message("Updated message")
+        content = textbox.get("1.0", "end").strip()
+        self.assertEqual(content, "Updated message")
+        self.assertEqual(textbox.state, "disabled")
 
 
 if __name__ == "__main__":
