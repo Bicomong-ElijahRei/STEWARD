@@ -8,6 +8,7 @@ import logging
 from agents.supervisor import SupervisorAgent
 from agents.file_agent import FileAgent
 from agents.coding_agent import CodingAgent
+from agents.plan_agent import PlanAgent
 from core.router import APIManager
 from core.theme import (
     apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE,
@@ -39,6 +40,7 @@ class StewardGUI:
         self.supervisor = SupervisorAgent(api_manager=self.api_manager)
         self.file_agent = FileAgent(api_manager=self.api_manager, dry_run=True)
         self.coding_agent = CodingAgent(api_manager=self.api_manager)
+        self.plan_agent = PlanAgent(api_manager=self.api_manager)
 
         self.observer = None
         self.daemon_running = False
@@ -104,6 +106,7 @@ class StewardGUI:
             None,
             provider_callback=self.show_provider_used,
             coding_agent=self.coding_agent,
+            plan_agent=self.plan_agent,
         )
         self.tabs["organizer"] = OrganizerTab(self.content, self.file_agent, self)
         self.tabs["settings"] = SettingsTab(self.content, main_app=self)

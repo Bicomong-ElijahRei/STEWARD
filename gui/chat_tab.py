@@ -228,11 +228,13 @@ class ChatTab(ctk.CTkFrame):
     MAX_CHAT_MESSAGE_CHARS = 4000
 
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
-                 provider_callback=None, coding_agent=None):
+                 provider_callback=None, coding_agent=None, plan_agent=None):
         super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
         self.coding_agent = coding_agent
+        self.plan_agent = plan_agent
+        self.plan_first_var = ctk.BooleanVar(master=self, value=False)
         self.rag_agent = None
         self.live_feed = live_feed
         self.provider_callback = provider_callback
@@ -353,6 +355,17 @@ class ChatTab(ctk.CTkFrame):
         )
         self.chat_entry.pack(side="left", fill="both", expand=True, padx=(0, 8))
         self.chat_entry.bind("<Return>", lambda e: self.send_chat())
+
+        self.plan_first_check = ctk.CTkCheckBox(
+            input_frame,
+            text="Plan first",
+            variable=self.plan_first_var,
+            width=92,
+            font=("Nunito", 11),
+            fg_color=NEON_PURPLE,
+            hover_color="#A56EEA",
+        )
+        self.plan_first_check.pack(side="right", padx=(0, 8))
 
         self.send_btn = ctk.CTkButton(
             input_frame,
@@ -587,6 +600,12 @@ class ChatTab(ctk.CTkFrame):
             discard_pending_plan = getattr(file_agent, "discard_pending_plan", None)
             if callable(discard_pending_plan):
                 discard_pending_plan()
+            plan_agent = getattr(self, "plan_agent", None)
+            invalidate_pending_plan = getattr(
+                plan_agent, "invalidate_pending_plan", None
+            )
+            if callable(invalidate_pending_plan):
+                invalidate_pending_plan()
         for widget in self.chat_display.winfo_children():
             widget.destroy()
         # The cleared generation has no active request, so restore the input
@@ -751,6 +770,14 @@ class ChatTab(ctk.CTkFrame):
 
                 agent_name = AGENT_ROUTING_KEYS.get(agent_type, "Cortex")
                 color = AGENT_CONFIG.get(agent_name, {}).get("color", TEXT_MUTED)
+
+                if agent_type == AGENT_CODING and self._plan_first_enabled():
+                    self._run_plan_first_workflow(
+                        user_msg,
+                        request_epoch=request_epoch,
+                        action=action,
+                    )
+                    return
 
                 # Trigger visual handoff animation
                 if agent_type != AGENT_UNKNOWN:
@@ -1288,6 +1315,191 @@ class ChatTab(ctk.CTkFrame):
                 )
 
         threading.Thread(target=process, daemon=True).start()
+
+    @staticmethod
+    def _is_plan_first_request(agent_type):
+        """Return whether a validated supervisor category may use Plan first."""
+        return agent_type == AGENT_CODING
+
+    def _plan_first_enabled(self):
+        variable = getattr(self, "plan_first_var", None)
+        if variable is None:
+            return False
+        try:
+            return bool(variable.get())
+        except Exception:
+            return False
+
+    def _get_plan_agent(self):
+        """Return the injected plan agent or create one from the shared router."""
+        if getattr(self, "plan_agent", None) is None:
+            from agents.plan_agent import PlanAgent
+            self.plan_agent = PlanAgent(api_manager=self.supervisor.api_manager)
+        return self.plan_agent
+
+    def _run_plan_first_workflow(self, user_msg, request_epoch, action):
+        """Run Cortex architect work and publish a reviewable artifact."""
+        try:
+            self._safe_after_if_epoch(
+                lambda: self._add_bubble(
+                    "STEWARD", "Cortex is drafting a reviewable plan…",
+                    NEON_PURPLE, align="left", state="THINKING",
+                ),
+                request_epoch,
+            )
+            if self.live_feed:
+                self._safe_after_if_epoch(
+                    lambda: self.live_feed.agent_working(
+                        "Cortex", "Architecting implementation plan"
+                    ),
+                    request_epoch,
+                )
+            context = self._code_index_context(action)
+            provider_info = {}
+            created = self._get_plan_agent().architect(
+                action,
+                code_context=context,
+                provider_callback=provider_info.update,
+                is_current=lambda: self._is_current_conversation_epoch(request_epoch),
+            )
+            if not self._is_current_conversation_epoch(request_epoch):
+                return
+            self._report_provider(
+                "Cortex", request_epoch, provider_info=provider_info
+            )
+            if self.live_feed:
+                self._safe_after_if_epoch(
+                    lambda: self.live_feed.agent_done(
+                        "Cortex", f"Plan {created['plan_id']} ready for review"
+                    ),
+                    request_epoch,
+                )
+            self._safe_after_if_epoch(
+                lambda: self._show_plan_review(
+                    created["plan_id"], created["blueprint"], request_epoch
+                ),
+                request_epoch,
+            )
+        except Exception as exc:
+            logger.error("Cortex architect error: %s", exc)
+            self._safe_after_if_epoch(
+                lambda exc=exc: self._add_bubble(
+                    "STEWARD", f"Plan creation failed: {exc}",
+                    "#FF5555", align="left", state="ERROR",
+                ),
+                request_epoch,
+            )
+
+    def _show_plan_review(self, plan_id, blueprint, request_epoch):
+        """Render the plan and explicit approval controls on the UI thread."""
+        self._add_bubble(
+            "STEWARD", self._format_plan_review(plan_id, blueprint),
+            NEON_PURPLE, align="left", state="DONE",
+        )
+        controls = ctk.CTkFrame(self.chat_display, fg_color="transparent")
+        controls.pack(fill="x", padx=10, pady=4, anchor="w")
+
+        def approve():
+            if not self._is_current_conversation_epoch(request_epoch):
+                return
+            try:
+                self._get_plan_agent().approve_plan(plan_id)
+            except Exception as exc:
+                self._add_bubble(
+                    "STEWARD", f"Plan approval failed: {exc}",
+                    "#FF5555", align="left", state="ERROR",
+                )
+                return
+            approve_btn.configure(state="disabled")
+            decline_btn.configure(state="disabled")
+            threading.Thread(
+                target=self._run_approved_plan_builder,
+                args=(plan_id, request_epoch),
+                daemon=True,
+            ).start()
+
+        def decline():
+            if not self._is_current_conversation_epoch(request_epoch):
+                return
+            self._get_plan_agent().decline_plan(plan_id)
+            approve_btn.configure(state="disabled")
+            decline_btn.configure(state="disabled")
+            self._add_bubble(
+                "STEWARD", "Plan declined. No builder request was sent.",
+                TEXT_MUTED, align="left", state="DONE",
+            )
+
+        approve_btn = ctk.CTkButton(
+            controls, text="Approve", width=90, height=30,
+            fg_color=NEON_LIME, hover_color="#8BD44C", command=approve,
+        )
+        approve_btn.pack(side="left", padx=(0, 8))
+        decline_btn = ctk.CTkButton(
+            controls, text="Decline", width=90, height=30,
+            fg_color="#4A4A5A", hover_color="#5A5A6A", command=decline,
+        )
+        decline_btn.pack(side="left")
+
+    @staticmethod
+    def _format_plan_review(plan_id, blueprint):
+        """Render a readable review summary without treating targets as paths."""
+        lines = [f"Plan {plan_id}", f"Goal: {blueprint['goal']}", "Steps:"]
+        for index, step in enumerate(blueprint["steps"], start=1):
+            lines.append(f"{index}. {step['title']} — {step['detail']}")
+            if step["targets"]:
+                lines.append(
+                    "   Informational targets: " + ", ".join(step["targets"])
+                )
+        lines.append("Risks: " + ("; ".join(blueprint["risks"]) or "None"))
+        lines.append(
+            "Validation: " + ("; ".join(blueprint["validation"]) or "None")
+        )
+        lines.append("Review this plan before any text-only builder request.")
+        return "\n".join(lines)
+
+    def _run_approved_plan_builder(self, plan_id, request_epoch):
+        """Run the separate Syntax builder request after explicit approval."""
+        if not self._is_current_conversation_epoch(request_epoch):
+            return
+        try:
+            if self.live_feed:
+                self._safe_after_if_epoch(
+                    lambda: self.live_feed.agent_working(
+                        "Syntax", f"Building reviewed plan {plan_id}"
+                    ),
+                    request_epoch,
+                )
+            provider_info = {}
+            response = self._get_plan_agent().build_plan(
+                plan_id, provider_callback=provider_info.update
+            )
+            self._report_provider(
+                "Syntax", request_epoch, provider_info=provider_info
+            )
+            if not self._is_current_conversation_epoch(request_epoch):
+                return
+            self._safe_after_if_epoch(
+                lambda: self._add_bubble(
+                    "STEWARD", response, NEON_ORANGE, align="left", state="DONE",
+                ),
+                request_epoch,
+            )
+            if self.live_feed:
+                self._safe_after_if_epoch(
+                    lambda: self.live_feed.agent_done(
+                        "Syntax", f"Reviewed plan {plan_id} elaborated as text"
+                    ),
+                    request_epoch,
+                )
+        except Exception as exc:
+            logger.error("Syntax builder error: %s", exc)
+            self._safe_after_if_epoch(
+                lambda exc=exc: self._add_bubble(
+                    "STEWARD", f"Builder failed: {exc}",
+                    "#FF5555", align="left", state="ERROR",
+                ),
+                request_epoch,
+            )
 
     def _register_swarm_handlers(self):
         """Bind local specialist APIs to Cortex's delegation workflow."""
