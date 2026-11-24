@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-25 | b1878548 | C3-F1 provider tier label correction: corrected Patch Review's caller tier literal from "Tier1" to "Tier 1" and added real-matcher structural and focused provider-selection regressions. | Make Patch Review proposals eligible for existing Tier 1 validator providers without changing router semantics, validator labels, or GUI behavior.
 2026-11-25 | 6c9017ed, 0da71eda | C3-I3 user-integrated exact-diff patch review: added immutable artifact persistence, epoch/plan/workspace/hash/diff-bound single-use approval, guarded real-file apply, Patch Review GUI, lifecycle invalidation, and 37 focused acceptance regressions. | Complete the §13 one-file review/approval acceptance path without granting target execution or weakening the organizer sandbox.
 2026-11-24 | 8546e051 | C3-I1 pure AST patch staging foundation: added strict one-file artifact validation, definition AST anchors, byte-preserving replace/insert staging, exact outside-range proofs and deterministic diffs, 36 focused tests, and five mutation proofs; no filesystem, execution, approval, or persistence surface was added. | Establish a reviewable deterministic staging core while keeping C3 mutation and C4 execution in BACKLOG.
 2026-11-24 | 279023e7 | C3-I2 admitted content replacement: added one-file workspace/target admission, exact engine-proof and source revalidation, same-directory atomic replacement, durable intent/completion/failure journal states, exact pre/post backups, hash-guarded undo/redo, and 39 focused regressions. | Add a safe internal mutation/recovery surface for one explicitly selected Python file without execution, linting, target tests, or UI integration.
@@ -65,11 +66,11 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: C3-I3 user-integrated exact-diff patch review commit 6c9017ed
-Acceptance baseline: C3-I3 focused acceptance suite commit 0da71eda
+Implementation baseline: C3-F1 provider tier label correction commit b1878548
+Acceptance baseline: C3-F1 real-matcher provider-tier regression suite commit b1878548
 Review baseline: C3-R AST patch safety review commit fbfb42fc
-Suite: 428/428 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, and C3-I3 acceptance suite `0da71eda` are local and await human push; no push is claimed.
+Suite: 430/430 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, and C3-I3 review-state closure `a1664a8` are confirmed pushed ancestors of `origin/main`. C3-F1 implementation `b1878548` is local and awaits human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -434,6 +435,18 @@ Files: agents/patch_review.py, gui/patch_review_dialog.py, gui/chat_tab.py, gui/
       compileall, BOM, and diff checks green. Six targeted C3-I3 mutation proofs each produced RED
       with the relevant guard weakened and GREEN after restoration, supplementing the inherited
       C3-I1/C3-I2 mutation proofs.
+
+## BATCH C3-F1 — provider tier label correction (IMPLEMENTED)
+Files: agents/patch_review.py, test_provider_tier_labels.py, ARCHITECTURE.md, README.md, PLAN.md
+- C3-F1  DONE | b1878548 | Corrected the Patch Review proposal caller's required tier from
+      `Tier1` to the existing validator-compatible `Tier 1`. The real matcher rejected `Tier1`
+      against `Tier 1: Genius`, so the fix changes only the caller and does not alter router
+      semantics, validator labels, or GUI behavior. Added an AST structural guard over tracked
+      Python sources and a focused real-router regression with a realistic eligible provider row.
+      Proof: focused RED produced two failures, including the exact `agents/patch_review.py:207`
+      finding; focused GREEN passed 2/2; 430/430 discovery tests passed with the one known Windows
+      symlink-privilege skip; validator 5/5; compileall and diff checks passed.
+- BACKLOG | Patch Review propose/apply run synchronously on the Tk main thread; a provider attempt can block the dialog for up to the router's 30-second timeout. Move to a bounded background worker with epoch-guarded marshaling. Est 3-6h.
 
 ## BATCH C3-R — AST patch safety review (CLOSED)
 Files: docs/ast_patch_review.md, PLAN.md

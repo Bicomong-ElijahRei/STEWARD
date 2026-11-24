@@ -265,7 +265,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
 - test_patch_applier.py — C3-I2 workspace/target admission, proof/source revalidation, atomic replacement, journal/backup states, and guarded undo/redo regressions
 - test_patch_review.py — C3-I3 exact-diff artifact/approval, lifecycle invalidation, hostile input, workspace isolation, truthful recovery, GUI, and real-process contention regressions
-- Total discovery count is 428
+- Total discovery count is 430
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
