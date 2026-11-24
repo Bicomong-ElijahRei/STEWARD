@@ -519,4 +519,3 @@ def stage_patch(source_bytes, patch, encoded_artifact):
     }
     diff = _unified_diff(source_bytes, output_bytes, file_object["relative_path"])
     return PatchResult(output_bytes=output_bytes, unified_diff=diff, proof=proof)
-

@@ -26,6 +26,7 @@ file categorization.
 - `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, static import/call graph derivation and traversal, incremental replacement, scoped semantic/dependency retrieval
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
+- `agents/patch_engine.py` C3-I1 pure patch staging: strict one-file artifact/schema validation, definition AST anchors, byte-preserving replace/insert splicing, deterministic diff, and outside-edit byte proof; no I/O, mutation, approval, persistence, or execution
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
@@ -56,6 +57,10 @@ Meta-prompting: Chat **Plan first** -> validated supervisor CODING category
   -> immutable artifact under `%APPDATA%\STEWARD\plans` -> explicit plan-ID approval
   -> PlanAgent.build_plan -> separate Syntax text-only request -> suggestion bubble
   Targets remain informational; no FileAgent call or file change occurs in C2.
+Patch staging (not user-integrated): already-admitted source bytes + strict raw artifact
+  -> `decode_patch_artifact` -> `stage_patch` -> staged bytes + deterministic diff + proof.
+  This path performs no workspace/path resolution, file access, mutation, approval, artifact
+  persistence, target import, execution, lint, or test.
 Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
@@ -105,6 +110,21 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   snippet, and 8,000 total characters including headers are formatted with relative path,
   line range, and symbol. With no index, the existing Syntax prompt is unchanged. Indexing
   never imports, executes, or modifies source.
+
+## AST patch staging rules
+- C3-I1 is a pure internal staging foundation, not an applied-patch feature. It accepts one
+  already-admitted source file and performs no path resolution, filesystem access, mutation,
+  approval, persistence, journal, undo, target import, execution, lint, or test.
+- The raw artifact is strict UTF-8 JSON with duplicate keys rejected. Top-level, file, edit,
+  and anchor key sets are exact; the decoded artifact and supplied object must agree.
+- V1 admits one file and at most 20 edits using only `replace_node`, `insert_before`, and
+  `insert_after` over function/class definitions. `delete_node` is unsupported.
+- Bounds are 16 KiB per edit (replacement plus anchor metadata), 256 KiB per raw artifact,
+  and 1 MiB for each input and output file.
+- Only UTF-8 is accepted. A UTF-8 BOM and the declared LF/CRLF mode are preserved; invalid
+  UTF-8, UTF-16, mixed newline modes, and final-newline changes are refused.
+- Original and output are parsed with `ast` only. Proof is exact byte equality outside the
+  declared edited ranges, not AST equivalence. The output diff and proof are deterministic.
 
 ## Code-index safety rules
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
@@ -201,7 +221,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_filesystem_journal_hardening.py — collision, ownership, write-ahead, partial-outcome, no-op, and journal-failure regressions
 - test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
 - test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
-- Total discovery count is 307
+- test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
+- Total discovery count is 352
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

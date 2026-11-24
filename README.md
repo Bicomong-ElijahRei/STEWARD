@@ -14,6 +14,9 @@ preview, explicit approval, and undo/redo.
   strict schema-validated plan artifact. After you approve that exact plan ID, a separate
   text-only Syntax request elaborates it. Neither step applies file changes. Implemented locally
   in commit `1c66ecb9`.
+- Internal AST patch staging: a pure, I/O-free engine validates one strict Python patch artifact,
+  resolves definition anchors, and stages byte-preserving replace/insert edits with a deterministic
+  diff and exact unrelated-byte proof. It is not connected to the UI and does not apply patches.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - Code context: an explicitly selected project root can be indexed in a separate persistent
@@ -72,6 +75,11 @@ preview, explicit approval, and undo/redo.
   operations, and restarting creates an isolated generation whose old worker cannot commit
   state or notifications into the replacement.
 - Syntax receives text-only provider requests and cannot mutate files or execute code.
+- The internal AST patch staging engine accepts already-admitted bytes only. It rejects duplicate
+  JSON keys, malformed schemas/paths/anchors, overlapping edits, invalid encodings, and oversized
+  artifacts; preserves BOM/newline mode and final-newline state; and proves bytes outside edited
+  ranges are identical. It does not read/write files, resolve workspace paths, approve or persist
+  patches, import/execute targets, lint, test, or mutate source.
 - Code indexing is read-only: it never imports or runs indexed source, denies secret/key/
   database/state paths and dependency caches, refuses symlink/junction targets outside the
   selected root, and bounds traversal to 2,000 files and 256 KiB per file. The local index
@@ -95,13 +103,14 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-316 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+352 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
 no-overwrite filesystem publication, whole-plan collision preflight, partial-outcome journal
-truthfulness, durable journal recovery,
-cross-process journal serialization, and schema-validated meta-prompting review gates.
+truthfulness, durable journal recovery, cross-process journal serialization,
+schema-validated meta-prompting review gates, and pure AST patch artifact/anchor/splicing/
+encoding/proof/determinism/purity safety.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -113,6 +122,9 @@ confirmation and a verified database/key/operation-log backup set.
 ## Known limitations
 - Click (PC control) is a registered persona but is not implemented.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
+- The internal AST patch staging engine can produce proposed bytes for one already-admitted file,
+  but there is no user workflow that selects a code workspace, previews/approves an immutable
+  patch artifact, applies bytes to disk, journals recovery, or supports content undo/redo.
 - Plan first produces an approval-gated plan and text-only elaboration only; it does not apply
   the plan. Automated application remains Phase C3.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
@@ -132,6 +144,7 @@ confirmation and a verified database/key/operation-log backup set.
 ## Roadmap
 v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
 generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
-Syntax with review/explanation intents, and bounded read-only code-context retrieval with
-static dependency expansion); surgical file patches, self-healing execution, MCP, vision,
-voice, and remote control remain future work tracked in PLAN.md.
+Syntax with review/explanation intents, bounded read-only code-context retrieval with
+static dependency expansion, and a pure internal AST patch staging foundation); applied
+surgical file patches, self-healing execution, MCP, vision, voice, and remote control remain
+future work tracked in PLAN.md.
