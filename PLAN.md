@@ -19,7 +19,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 ## Changelog
 2026-11-24 | 8546e051 | C3-I1 pure AST patch staging foundation: added strict one-file artifact validation, definition AST anchors, byte-preserving replace/insert staging, exact outside-range proofs and deterministic diffs, 36 focused tests, and five mutation proofs; no filesystem, execution, approval, or persistence surface was added. | Establish a reviewable deterministic staging core while keeping C3 mutation and C4 execution in BACKLOG.
 2026-11-24 | 279023e7 | C3-I2 admitted content replacement: added one-file workspace/target admission, exact engine-proof and source revalidation, same-directory atomic replacement, durable intent/completion/failure journal states, exact pre/post backups, hash-guarded undo/redo, and 39 focused regressions. | Add a safe internal mutation/recovery surface for one explicitly selected Python file without execution, linting, target tests, or UI integration.
-2026-11-24 | pending | C3-I2 documentation closure: record the admitted replacement/recovery boundary, safety contract, exact 391-test baseline, implementation commit 279023e7, and remaining approval/UI limitations. | Align PLAN, ARCHITECTURE, and README without changing ROADMAP or claiming user-integrated C3 completion.
+2026-11-24 | 1c59da0f | C3-I2 documentation closure: record the admitted replacement/recovery boundary, safety contract, exact 391-test baseline, implementation commit 279023e7, and remaining approval/UI limitations. | Align PLAN, ARCHITECTURE, and README without changing ROADMAP or claiming user-integrated C3 completion.
 2026-11-24 | fbfb42fc | C3-R AST patch safety review: documented a 13-section threat/design review and RE-SCOPE decision; C3 and C4 remain BACKLOG, with eventual C3 requiring a separate explicitly selected code-workspace mutation root. | Establish bounded exact-approval and content-recovery criteria without introducing a code mutation surface or weakening Incoming/Sorted.
 2026-11-24 | 883347bf | Phase C7 static dependency-graph context: added identifier-only import/call edge derivation from the existing bounded C6 admission reads, root-scoped graph persistence/traversal, bounded semantic retrieval expansion, changed/deleted-file edge reconciliation, and header-inclusive provider context accounting with 316/316 unit tests green. | Expand repository context across statically visible dependencies without executing code, reading denied/external paths, or changing provider payload limits.
 2026-11-24 | 8e8d4f34 | C6 code-index review hardening: deny selected roots whose own basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules. | Close the C6 review finding without weakening existing secret-path exclusions.
@@ -67,7 +67,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 Implementation baseline: C3-I2 admitted content replacement and recovery commit 279023e7
 Review baseline: C3-R AST patch safety review commit fbfb42fc
 Suite: 391/391 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, and C3-I2 implementation `279023e7` are local and await human push; no push is claimed.
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, and its documentation closure `1c59da0f` are local and await human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -402,7 +402,7 @@ Files: agent/content_replace.py, agents/patch_applier.py, test_patch_applier.py,
 
 ## BATCH C3-I2-DOCS — C3-I2 documentation closure (IMPLEMENTED)
 Files: PLAN.md, ARCHITECTURE.md, README.md
-- C3-I2-DOCS  DONE | pending | Record C3-I2's admitted replacement/recovery boundary,
+- C3-I2-DOCS  DONE | 1c59da0f | Record C3-I2's admitted replacement/recovery boundary,
   safety rules, journal/backup states, exact 391-test baseline, implementation commit
   `279023e7`, and remaining user-integration limitations. Accept: architecture, README,
   and plan agree; no immutable approval/UI or user-integrated C3 completion is claimed;
