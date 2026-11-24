@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-25 | 6c9017ed, 0da71eda | C3-I3 user-integrated exact-diff patch review: added immutable artifact persistence, epoch/plan/workspace/hash/diff-bound single-use approval, guarded real-file apply, Patch Review GUI, lifecycle invalidation, and 37 focused acceptance regressions. | Complete the §13 one-file review/approval acceptance path without granting target execution or weakening the organizer sandbox.
 2026-11-24 | 8546e051 | C3-I1 pure AST patch staging foundation: added strict one-file artifact validation, definition AST anchors, byte-preserving replace/insert staging, exact outside-range proofs and deterministic diffs, 36 focused tests, and five mutation proofs; no filesystem, execution, approval, or persistence surface was added. | Establish a reviewable deterministic staging core while keeping C3 mutation and C4 execution in BACKLOG.
 2026-11-24 | 279023e7 | C3-I2 admitted content replacement: added one-file workspace/target admission, exact engine-proof and source revalidation, same-directory atomic replacement, durable intent/completion/failure journal states, exact pre/post backups, hash-guarded undo/redo, and 39 focused regressions. | Add a safe internal mutation/recovery surface for one explicitly selected Python file without execution, linting, target tests, or UI integration.
 2026-11-24 | 1c59da0f | C3-I2 documentation closure: record the admitted replacement/recovery boundary, safety contract, exact 391-test baseline, implementation commit 279023e7, and remaining approval/UI limitations. | Align PLAN, ARCHITECTURE, and README without changing ROADMAP or claiming user-integrated C3 completion.
@@ -64,10 +65,11 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: C3-I2 admitted content replacement and recovery commit 279023e7
+Implementation baseline: C3-I3 user-integrated exact-diff patch review commit 6c9017ed
+Acceptance baseline: C3-I3 focused acceptance suite commit 0da71eda
 Review baseline: C3-R AST patch safety review commit fbfb42fc
-Suite: 391/391 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, and its documentation closure `1c59da0f` are local and await human push; no push is claimed.
+Suite: 428/428 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, and C3-I3 acceptance suite `0da71eda` are local and await human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -310,15 +312,16 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       request elaborates it. Accept: plan artifact exists and is reviewable before any
       builder request; no file changes are applied. Proof: 306/306 unit tests green.
 - C3  IN-PROGRESS | AST-based surgical patches: C3-I1 adds the pure one-file staging
-      foundation (commit 8546e051), and C3-I2 adds an internal admitted content-replacement
-      and recovery surface for one explicitly selected Python file. These are not yet
-      user-integrated: immutable exact-diff single-use approval, UI selection, and the
-      final real-file acceptance path remain required. C3-R RE-SCOPE requires a new
+      foundation (commit 8546e051), C3-I2 adds admitted content replacement/recovery for
+      one explicitly selected Python file (commit 279023e7), and C3-I3 integrates immutable
+      exact-diff review, epoch/workspace/hash-bound single-use approval, GUI workspace/target
+      selection, and the final guarded real-file apply path. C3-R RE-SCOPE requires a new
       explicitly user-selected code-workspace mutation root disjoint from Incoming/Sorted,
       formatting-preserving stdlib AST/token splicing, bounded files/edits, journaled
       content undo/redo, and no execution in v1. Review: docs/ast_patch_review.md. Accept:
       patch applies to a real file without destroying unrelated code; rejected cleanly on
-      malformed patch.
+      malformed patch. C3-I3 completes the one-file review/approval slice; multi-file and
+      self-healing C3/C4 work remains future scope.
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.
@@ -407,6 +410,30 @@ Files: PLAN.md, ARCHITECTURE.md, README.md
   `279023e7`, and remaining user-integration limitations. Accept: architecture, README,
   and plan agree; no immutable approval/UI or user-integrated C3 completion is claimed;
   ROADMAP remains unchanged.
+
+## BATCH C3-I3 — user-integrated exact-diff review and approval (IMPLEMENTED)
+Files: agents/patch_review.py, gui/patch_review_dialog.py, gui/chat_tab.py, gui/main_window.py, agents/agent_config.py, test_patch_review.py, README.md, ARCHITECTURE.md, ROADMAP.md, PLAN.md
+- C3-I3  DONE | 6c9017ed, 0da71eda | Added a shared PatchReviewManager and Patch Review GUI
+      for the latest reviewed C2 plan. The user explicitly selects a separate code workspace and one
+      admitted Python target; a text-only Syntax proposal is staged through C3-I1 and persisted as an
+      immutable exact-diff artifact. A distinct single-use approval binds conversation epoch,
+      reviewed plan ID, canonical workspace fingerprint, relative target, source/output hashes,
+      exact-diff SHA-256, and artifact SHA-256. Changed source/workspace/artifact/diff/plan/epoch,
+      stale/replayed approval, hostile provider paths/diffs, malformed responses, and journal-lock
+      contention fail closed. Failed apply clears pending proposal/approval state; clearing chat
+      invalidates the state and closes the dialog; an unapproved preview may be replaced but an
+      approved proposal cannot be stranded. Apply and recovery use the shared operation journal lock
+      and C3-I2 hash-guarded, workspace-scoped backup/undo/redo path. The target is never executed,
+      imported, linted, or tested.
+      Accept: all §13 criteria applicable to the bounded one-file v1 are covered, including a
+      real-file apply, unrelated-byte preservation, exact artifact/diff identity, workspace
+      isolation, hostile path/diff refusal, mutation resistance, epoch cancellation/invalidation,
+      single-use approval, cross-process contention, truthful uncertain recovery, and no target
+      execution. The multi-file partial-apply branch is inapplicable because C3-I3 admits exactly
+      one file. Proof: 37 focused regressions and 428/428 discovery tests green; validator 5/5,
+      compileall, BOM, and diff checks green. Six targeted C3-I3 mutation proofs each produced RED
+      with the relevant guard weakened and GREEN after restoration, supplementing the inherited
+      C3-I1/C3-I2 mutation proofs.
 
 ## BATCH C3-R — AST patch safety review (CLOSED)
 Files: docs/ast_patch_review.md, PLAN.md

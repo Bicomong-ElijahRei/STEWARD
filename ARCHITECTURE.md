@@ -27,11 +27,13 @@ file categorization.
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
 - `agents/patch_engine.py` C3-I1 pure patch staging: strict one-file artifact/schema validation, definition AST anchors, byte-preserving replace/insert splicing, deterministic diff, and outside-edit byte proof; no I/O, mutation, approval, persistence, or execution
-- `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo; internal only, with no target execution or UI integration
+- `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo
+- `agents/patch_review.py` C3-I3 review facade: provider proposal, immutable exact-diff artifact, epoch/workspace/hash-bound single-use approval, guarded apply, and fail-closed lifecycle invalidation
+- `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, and truthful recovery states
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
-- `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
+- `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent/PlanAgent/PatchReviewManager; passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
 - `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop, scheduled-scan controls
 - `gui/settings_tab.py`  API Hub: provider CRUD, validation, discovery, assigned_agent dropdown, explicit credential rotation
@@ -63,12 +65,16 @@ Patch staging (not user-integrated): already-admitted source bytes + strict raw 
   -> `decode_patch_artifact` -> `stage_patch` -> staged bytes + deterministic diff + proof.
   This path performs no workspace/path resolution, file access, mutation, approval, artifact
   persistence, target import, execution, lint, or test.
-C3-I2 admitted replacement (internal, not user-integrated): explicit workspace + one `.py`
+C3-I2 admitted replacement: explicit workspace + one `.py`
   target -> path/reparse/root/size admission -> C3-I1 staging -> re-derived proof and source
   identity/hash checks -> durable journal intent -> exact app-owned pre/post backup ->
   same-directory hash-checked staging -> `os.replace` -> durable completion. Undo/redo is
-  journal-locked and hash-guarded. This path never executes, imports, lints, or tests the
-  target and has no immutable approval or GUI selection surface yet.
+  journal-locked and hash-guarded. This path never executes, imports, lints, or tests the target.
+C3-I3 user-integrated review: Chat **Patch Review** -> latest reviewed plan ID + explicit
+  workspace/target -> text-only Syntax structural proposal -> C3-I1/C3-I2 staging -> immutable
+  write-once exact-diff artifact -> epoch/workspace/source/output/artifact-bound single-use
+  approval -> journal-locked C3-I2 apply. Clearing chat invalidates the proposal/approval and
+  closes the dialog; stale provider or UI continuations cannot publish a patch.
 Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
@@ -133,9 +139,9 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   UTF-8, UTF-16, mixed newline modes, and final-newline changes are refused.
 - Original and output are parsed with `ast` only. Proof is exact byte equality outside the
   declared edited ranges, not AST equivalence. The output diff and proof are deterministic.
-- C3-I2 adds a separate, internal mutation/recovery surface for exactly one explicitly
-  selected existing `.py` file. It is not exposed by the GUI and does not yet consume an
-  immutable exact-diff, single-use approval artifact.
+- C3-I2 adds a separate mutation/recovery surface for exactly one explicitly selected existing
+  `.py` file. C3-I3 exposes it through the Patch Review dialog behind an immutable exact-diff,
+  single-use approval artifact.
 - Workspace admission rejects drive/home/app-data roots, overlap with Incoming or Sorted,
   and backup-root overlap with all three. Target admission rejects traversal/absolute paths,
   non-Python and denied names, symlink/junction/reparse components, non-regular files, and
@@ -153,6 +159,13 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   A proven pre-mutation refusal is retryable; a failure after the replacement boundary is
   uncertain. Redo preserves the existing FIFO order.
 - C3-I2 never executes, imports, lints, or tests target code.
+- C3-I3 writes the review artifact once under `%APPDATA%\STEWARD\patches`. A separate approval
+  ID binds the conversation epoch, reviewed plan ID, canonical workspace fingerprint, relative
+  target, source/output hashes, exact-diff SHA-256, and artifact SHA-256. Changed source/workspace/
+  artifact/diff/plan/epoch, stale/replayed approval, journal-lock contention, or failed apply
+  refuses and clears pending review state. A new proposal may replace only an unapproved preview;
+  it cannot strand an approved artifact. Content recovery is scoped to the selected workspace
+  fingerprint so one workspace cannot undo another workspace's operation.
 
 ## Code-index safety rules
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
@@ -251,7 +264,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
 - test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
 - test_patch_applier.py — C3-I2 workspace/target admission, proof/source revalidation, atomic replacement, journal/backup states, and guarded undo/redo regressions
-- Total discovery count is 391
+- test_patch_review.py — C3-I3 exact-diff artifact/approval, lifecycle invalidation, hostile input, workspace isolation, truthful recovery, GUI, and real-process contention regressions
+- Total discovery count is 428
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

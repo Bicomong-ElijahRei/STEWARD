@@ -23,9 +23,10 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   text-only Syntax assistance, durable write-ahead filesystem history, no-overwrite
   mutation publication, and persistent state relocated to `%APPDATA%\STEWARD`.
   These foundations intentionally do not grant Syntax file-write or code-execution capability.
-- **v3.0 — Advanced Code Intelligence & Phase D (Future):** surgical code workflows,
-  self-healing loops, and research-backed integrations such
-  as MCP, voice, and remote control.
+- **v3.0 — Advanced Code Intelligence & Phase D (Future):** self-healing loops and
+  research-backed integrations such as MCP, voice, and remote control. The current codebase
+  includes one-file AST patch staging, guarded replacement/recovery, and a user-integrated
+  exact-diff Patch Review workflow; C3 self-healing remains future work.
 
 ---
 
@@ -105,8 +106,12 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
   - **Review:** The GUI's explicit Plan first mode accepts only validated `CODING` routing and requires approval bound to the plan UUID before a separate text-only Syntax request.
   - **Implementation:** Commit `1c66ecb9`; confirmed pushed as an ancestor of `origin/main`.
   - **Scope:** Architect and builder remain text-only; automated application of the blueprint remains Phase C3.
-- [ ] **AST Parsing & JSON Patches:**
-  - **Future mutation worker:** A separate reviewed component will parse code and apply surgical patches to an approved plan; current `Syntax` remains text-only and cannot mutate files.
+- [x] **AST Parsing & JSON Patches (C3-I1 through C3-I3):**
+  - **Staging:** A pure one-file AST/byte-preserving engine validates strict artifacts, resolves definition anchors, and produces deterministic exact diffs.
+  - **Mutation:** A separate admitted workspace layer revalidates proofs and source identity, journals intent/completion, and supports hash-guarded undo/redo for one selected `.py` file.
+  - **Review/UI:** The Chat header's **Patch Review** workflow selects the workspace and target, persists an immutable artifact, and requires a distinct epoch-bound, single-use approval before guarded apply.
+  - **Implementation:** Commits `6c9017ed` and `0da71eda`; local and not pushed by this change.
+  - **Boundary:** Syntax remains text-only; C3 never executes, imports, lints, or tests the target. Multi-file patches and self-healing remain future work.
 - [ ] **Self-Healing Loop & Linter Integration:**
   - **Future execution worker:** A separately sandboxed worker will own lint/run/edit cycles with hard iteration bounds; current `Syntax` cannot execute code or edit files.
 - [x] **Persistent Document RAG (Scout):**
