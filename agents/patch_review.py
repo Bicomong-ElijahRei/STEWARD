@@ -204,7 +204,7 @@ class PatchReviewManager:
             context += "\n# SOURCE TRUNCATED FOR BOUNDED PROPOSAL"
         request = {
             "agent_name": "Syntax",
-            "required_tier": "Tier1",
+            "required_tier": "Tier 1",
             "require_tools": False,
             "messages": [
                 {"role": "system", "content": PROPOSAL_PROMPT},
