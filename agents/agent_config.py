@@ -53,6 +53,15 @@ AGENT_CONFIG = {
         "status_working": "Writing code…",
         "status_done": "Code generated.",
     },
+    "Patch": {
+        "role": "Patch Review",
+        "color": NEON_ORANGE,
+        "emoji": "🧩",
+        "description": "Reviews exact diffs before guarded file edits.",
+        "status_idle": "No pending patch.",
+        "status_working": "Reviewing patch…",
+        "status_done": "Patch review complete.",
+    },
 }
 
 AGENT_ROUTING_KEYS = {

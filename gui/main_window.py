@@ -9,6 +9,7 @@ from agents.supervisor import SupervisorAgent
 from agents.file_agent import FileAgent
 from agents.coding_agent import CodingAgent
 from agents.plan_agent import PlanAgent
+from agents.patch_review import PatchReviewManager
 from core.router import APIManager
 from core.theme import (
     apply_theme, BG_DEEP_SPACE, BG_PANEL, CORNER_RADIUS, NEON_PURPLE,
@@ -41,6 +42,16 @@ class StewardGUI:
         self.file_agent = FileAgent(api_manager=self.api_manager, dry_run=True)
         self.coding_agent = CodingAgent(api_manager=self.api_manager)
         self.plan_agent = PlanAgent(api_manager=self.api_manager)
+        # C3 uses the same FileAgent organizer roots and operation journal as
+        # the rest of the application; only the explicitly selected code
+        # workspace is a separate mutation root.
+        self.patch_review_manager = PatchReviewManager(
+            api_manager=self.api_manager,
+            plan_agent=self.plan_agent,
+            incoming_root=self.file_agent.allowed_roots[0],
+            sorted_root=self.file_agent.allowed_roots[1],
+            operation_log_path=self.file_agent.OPERATION_LOG_PATH,
+        )
 
         self.observer = None
         self.daemon_running = False
@@ -107,6 +118,7 @@ class StewardGUI:
             provider_callback=self.show_provider_used,
             coding_agent=self.coding_agent,
             plan_agent=self.plan_agent,
+            patch_review_manager=self.patch_review_manager,
         )
         self.tabs["organizer"] = OrganizerTab(self.content, self.file_agent, self)
         self.tabs["settings"] = SettingsTab(self.content, main_app=self)

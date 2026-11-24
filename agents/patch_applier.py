@@ -449,8 +449,22 @@ class PatchApplier(FileAgent):
         return content
 
 
-    def apply_patch(self, patch, encoded_artifact):
-        """Stage and atomically apply one admitted content patch."""
+    def apply_patch(
+        self,
+        patch,
+        encoded_artifact,
+        expected_output_sha256=None,
+        expected_unified_diff=None,
+        completion_callback=None,
+    ):
+        """Stage and atomically apply one admitted content patch.
+
+        When ``expected_output_sha256`` is supplied, it is the immutable
+        artifact's approved output hash. The staged bytes must match it before
+        replacement and the on-disk bytes must match it afterward. When
+        ``expected_unified_diff`` is supplied, the exact displayed diff must
+        also match the bytes staged from the approved artifact.
+        """
         try:
             file_object = patch["files"][0]
             relative_path = file_object["relative_path"]
@@ -472,6 +486,20 @@ class PatchApplier(FileAgent):
         post_sha256 = _sha256(output)
         if staged.proof.get("output_sha256") != post_sha256:
             raise PatchApplyError("Engine output hash does not match staged bytes")
+        if (
+            expected_output_sha256 is not None
+            and post_sha256 != expected_output_sha256
+        ):
+            raise PatchApplyError(
+                "Staged output does not match the approved artifact output hash"
+            )
+        if (
+            expected_unified_diff is not None
+            and staged.unified_diff != expected_unified_diff
+        ):
+            raise PatchApplyError(
+                "Staged diff does not match the approved artifact diff"
+            )
         operation_id = str(uuid.uuid4())
         metadata = {
             "operation_id": operation_id,
@@ -542,7 +570,7 @@ class PatchApplier(FileAgent):
                             pass
                         if observed == post_sha256:
                             try:
-                                self.complete_mutation(
+                                (completion_callback or self.complete_mutation)(
                                     entry,
                                     "Approved content bytes applied",
                                     {"backup_reference": backup},
@@ -574,13 +602,18 @@ class PatchApplier(FileAgent):
                                 entry,
                                 f"Replacement outcome is uncertain: {exc}",
                             )
-                            raise PatchApplyError(
-                                f"Content edit outcome is uncertain: {exc}"
-                            ) from exc
+                            return ApplyResult(
+                                "uncertain",
+                                operation_id,
+                                relative_path,
+                                pre_sha256,
+                                post_sha256,
+                                backup,
+                            )
                     self._mark_failed(entry, f"Content edit failed: {exc}")
                     raise PatchApplyError(f"Content edit failed: {exc}") from exc
                 try:
-                    self.complete_mutation(
+                    (completion_callback or self.complete_mutation)(
                         entry,
                         "Approved content bytes applied",
                         {"backup_reference": backup},
@@ -600,6 +633,37 @@ class PatchApplier(FileAgent):
                         backup,
                     )
                 self._prune_backups()
+                try:
+                    with open(admitted.canonical_path, "rb") as handle:
+                        on_disk_sha256 = _sha256(handle.read())
+                except OSError as exc:
+                    self._mark_uncertain(
+                        entry,
+                        "Approved bytes were applied, but the final hash could "
+                        f"not be verified: {exc}",
+                    )
+                    return ApplyResult(
+                        "uncertain",
+                        operation_id,
+                        relative_path,
+                        pre_sha256,
+                        post_sha256,
+                        backup,
+                    )
+                if on_disk_sha256 != post_sha256:
+                    self._mark_uncertain(
+                        entry,
+                        "Approved bytes were applied, but the final on-disk hash "
+                        "did not match the approved output hash.",
+                    )
+                    return ApplyResult(
+                        "uncertain",
+                        operation_id,
+                        relative_path,
+                        pre_sha256,
+                        post_sha256,
+                        backup,
+                    )
                 return ApplyResult(
                     "committed",
                     operation_id,
@@ -617,6 +681,7 @@ class PatchApplier(FileAgent):
             entry
             for entry in self._operation_log
             if entry.get("operation") == "content_edit"
+            and entry.get("workspace_fingerprint") == self.workspace.fingerprint
         ]
 
     def _blocked_by_uncertain(self):

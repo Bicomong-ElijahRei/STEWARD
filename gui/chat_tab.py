@@ -228,12 +228,14 @@ class ChatTab(ctk.CTkFrame):
     MAX_CHAT_MESSAGE_CHARS = 4000
 
     def __init__(self, parent, supervisor, file_agent, live_feed=None,
-                 provider_callback=None, coding_agent=None, plan_agent=None):
+                 provider_callback=None, coding_agent=None, plan_agent=None,
+                 patch_review_manager=None):
         super().__init__(parent, fg_color="transparent")
         self.supervisor = supervisor
         self.file_agent = file_agent
         self.coding_agent = coding_agent
         self.plan_agent = plan_agent
+        self.patch_review_manager = patch_review_manager
         self.plan_first_var = ctk.BooleanVar(master=self, value=False)
         self.rag_agent = None
         self.live_feed = live_feed
@@ -278,7 +280,20 @@ class ChatTab(ctk.CTkFrame):
             hover_color="#5A5A6A",
             command=self._show_code_index_dialog,
         )
-        self.code_index_btn.pack(side="right")
+        self.code_index_btn.pack(side="right", padx=(0, 8))
+
+        self.patch_review_btn = ctk.CTkButton(
+            header,
+            text="Patch Review",
+            width=108,
+            height=28,
+            corner_radius=8,
+            font=("Nunito", 11, "bold"),
+            fg_color="#4A4A5A",
+            hover_color="#5A5A6A",
+            command=self._show_patch_review_dialog,
+        )
+        self.patch_review_btn.pack(side="right")
 
         # Split container: chat (left) + live feed (right)
         self.split_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -409,6 +424,57 @@ class ChatTab(ctk.CTkFrame):
             agent = CodeIndexAgent()
             self._code_index_agent = agent
         return agent
+
+    def _show_patch_review_dialog(self):
+        """Open the C3 review surface for the most recent reviewed plan."""
+        existing = getattr(self, "_patch_review_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    return
+            except Exception:
+                pass
+            self._patch_review_dialog = None
+        manager = getattr(self, "patch_review_manager", None)
+        plan_agent = getattr(self, "plan_agent", None)
+        if manager is None or plan_agent is None:
+            messagebox.showinfo(
+                "Patch Review",
+                "Patch review is not available in this session.",
+            )
+            return
+        plan_ids = plan_agent.reviewed_plan_ids()
+        if not plan_ids:
+            messagebox.showinfo(
+                "Patch Review",
+                "Approve a plan first before generating a patch preview.",
+            )
+            return
+        plan_id = plan_ids[-1]
+        epoch = getattr(self, "_conversation_epoch", 0)
+
+        def is_current():
+            return self._is_current_conversation_epoch(epoch)
+
+        dialog = None
+
+        def on_close():
+            if getattr(self, "_patch_review_dialog", None) is dialog:
+                self._patch_review_dialog = None
+
+        from gui.patch_review_dialog import PatchReviewDialog
+
+        dialog = PatchReviewDialog(
+            self,
+            manager,
+            plan_id,
+            epoch,
+            live_feed=self.live_feed,
+            is_current=is_current,
+            on_close=on_close,
+        )
+        self._patch_review_dialog = dialog
 
     def _show_code_index_dialog(self):
         """Show explicit root selection and index/status/clear controls."""
@@ -606,6 +672,19 @@ class ChatTab(ctk.CTkFrame):
             )
             if callable(invalidate_pending_plan):
                 invalidate_pending_plan()
+            patch_manager = getattr(self, "patch_review_manager", None)
+            invalidate_pending_patch = getattr(
+                patch_manager, "invalidate_pending_patch", None
+            )
+            if callable(invalidate_pending_patch):
+                invalidate_pending_patch()
+            patch_dialog = getattr(self, "_patch_review_dialog", None)
+            if patch_dialog is not None:
+                try:
+                    patch_dialog.destroy()
+                except Exception:
+                    pass
+                self._patch_review_dialog = None
         for widget in self.chat_display.winfo_children():
             widget.destroy()
         # The cleared generation has no active request, so restore the input

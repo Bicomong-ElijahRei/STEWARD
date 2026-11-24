@@ -173,6 +173,8 @@ class PlanAgent:
         self._pending_plan_id = None
         self._approved_plan_id = None
         self._consumed_plan_ids = set()
+        self._reviewed_plan_ids = set()
+        self._reviewed_plan_order = []
 
     def architect(
         self, request, code_context=None, provider_callback=None,
@@ -216,6 +218,19 @@ class PlanAgent:
             if not plan_id or plan_id != self._pending_plan_id:
                 raise RuntimeError(PLAN_GATE_ERROR)
             self._approved_plan_id = plan_id
+            self._reviewed_plan_ids.add(plan_id)
+            if plan_id not in self._reviewed_plan_order:
+                self._reviewed_plan_order.append(plan_id)
+
+    def is_reviewed_plan(self, plan_id):
+        """Return whether this C2 artifact passed the explicit review gate."""
+        with self._lock:
+            return bool(plan_id) and plan_id in self._reviewed_plan_ids
+
+    def reviewed_plan_ids(self):
+        """Return reviewed C2 artifact IDs without exposing builder approval."""
+        with self._lock:
+            return list(self._reviewed_plan_order)
 
     def decline_plan(self, plan_id):
         """Invalidate the pending approval without touching the artifact."""

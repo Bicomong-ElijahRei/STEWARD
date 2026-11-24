@@ -236,6 +236,104 @@ def _validate_schema(patch):
             raise PatchEngineError("Replacement plus anchor metadata exceeds 16 KiB")
 
 
+PROPOSAL_KEYS = frozenset({"relative_path", "edits"})
+PROPOSAL_EDIT_KEYS = frozenset({"op", "anchor", "replacement"})
+PROPOSAL_ANCHOR_KEYS = frozenset({"node_kind", "qualified_name", "occurrence"})
+
+
+def materialize_proposal(
+    source_bytes, proposal, patch_id, plan_id, workspace_fingerprint, created_utc,
+):
+    """Resolve one strict structural proposal into an exact C3-I1 patch artifact.
+
+    The provider supplies only a workspace-relative path and structural edit
+    intent. This pure helper resolves the matching admitted definition span and
+    supplies all source hashes and offsets before the normal C3-I1 validator is
+    applied by ``stage_patch``.
+    """
+    if not isinstance(source_bytes, bytes):
+        raise PatchEngineError("Source must be bytes")
+    if len(source_bytes) > MAX_SOURCE_BYTES:
+        raise PatchEngineError("Original source exceeds 1 MiB")
+    _exact_keys(proposal, PROPOSAL_KEYS, "Proposal")
+    relative_path = proposal["relative_path"]
+    _relative_path(relative_path)
+    edits = proposal["edits"]
+    if not isinstance(edits, list) or not edits:
+        raise PatchEngineError("Proposal edits must be a non-empty array")
+    if len(edits) > MAX_EDITS:
+        raise PatchEngineError("Proposal edits exceeds the 20-edit limit")
+    source_text, bom, newline = _detect_source_encoding(source_bytes)
+    try:
+        tree = ast.parse(source_text)
+    except (SyntaxError, ValueError) as exc:
+        raise PatchEngineError("Original source must parse as Python") from exc
+    names = _qualified_names(tree)
+    materialized = []
+    for index, edit in enumerate(edits):
+        label = f"Proposal edits[{index}]"
+        _exact_keys(edit, PROPOSAL_EDIT_KEYS, label)
+        if edit["op"] not in SUPPORTED_OPS:
+            raise PatchEngineError(f"{label}.op is unsupported")
+        _text(edit["replacement"], f"{label}.replacement", MAX_EDIT_BYTES, nonempty=False)
+        if len(edit["replacement"].encode("utf-8")) > MAX_EDIT_BYTES:
+            raise PatchEngineError("Replacement text exceeds 16 KiB")
+        anchor = edit["anchor"]
+        _exact_keys(anchor, PROPOSAL_ANCHOR_KEYS, f"{label}.anchor")
+        node_kind = anchor["node_kind"]
+        if node_kind not in SUPPORTED_NODE_KINDS:
+            raise PatchEngineError(f"{label}.anchor.node_kind is unsupported")
+        qualified_name = anchor["qualified_name"]
+        _text(qualified_name, f"{label}.anchor.qualified_name", 512)
+        occurrence = anchor["occurrence"]
+        _integer(occurrence, f"{label}.anchor.occurrence", 0)
+        matches = [
+            node for node in ast.walk(tree)
+            if type(node).__name__ == node_kind
+            and names.get(id(node)) == qualified_name
+        ]
+        matches.sort(key=lambda node: (node.lineno, node.col_offset))
+        if occurrence >= len(matches):
+            raise PatchEngineError(f"{label}.anchor is missing or ambiguous")
+        start, end = _ast_char_span(source_text, matches[occurrence])
+        materialized.append({
+            "op": edit["op"],
+            "anchor": {
+                "node_kind": node_kind,
+                "qualified_name": qualified_name,
+                "occurrence": occurrence,
+                "source_start": start,
+                "source_end": end,
+            },
+            "replacement": edit["replacement"],
+            "expected_sha256": _sha256(source_text[start:end].encode("utf-8")),
+        })
+    patch = {
+        "schema_version": 1,
+        "patch_id": patch_id,
+        "plan_id": plan_id,
+        "workspace_fingerprint": workspace_fingerprint,
+        "files": [{
+            "relative_path": relative_path,
+            "source_sha256": _sha256(source_bytes),
+            "source_bytes": len(source_bytes),
+            "encoding": "utf-8",
+            "bom": bom,
+            "newline": newline,
+            "edits": materialized,
+        }],
+        "created_utc": created_utc,
+    }
+    encoded = json.dumps(
+        patch, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    decoded = decode_patch_artifact(encoded)
+    _validate_schema(decoded)
+    if decoded != patch:
+        raise PatchEngineError("Materialized patch does not match its artifact")
+    return patch, encoded
+
+
 def _detect_source_encoding(raw):
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         raise PatchEngineError("UTF-16 source is unsupported")
