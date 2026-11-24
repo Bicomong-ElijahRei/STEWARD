@@ -16,7 +16,11 @@ preview, explicit approval, and undo/redo.
   in commit `1c66ecb9`.
 - Internal AST patch staging: a pure, I/O-free engine validates one strict Python patch artifact,
   resolves definition anchors, and stages byte-preserving replace/insert edits with a deterministic
-  diff and exact unrelated-byte proof. It is not connected to the UI and does not apply patches.
+  diff and exact unrelated-byte proof.
+- Internal admitted patch replacement: a separate safety layer can replace exactly one explicitly
+  selected `.py` file under a separately selected workspace using verified same-directory staging
+  and `os.replace`, with durable journaling, exact backups, and hash-guarded undo/redo. It is not
+  connected to the UI and does not yet consume an immutable single-use approval artifact.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - Code context: an explicitly selected project root can be indexed in a separate persistent
@@ -80,6 +84,14 @@ preview, explicit approval, and undo/redo.
   artifacts; preserves BOM/newline mode and final-newline state; and proves bytes outside edited
   ranges are identical. It does not read/write files, resolve workspace paths, approve or persist
   patches, import/execute targets, lint, test, or mutate source.
+- The separate C3-I2 replacement layer admits exactly one existing `.py` file under an explicitly
+  selected workspace. It rejects traversal, non-Python/denied paths, symlink/junction/reparse
+  components, non-regular files, unsafe roots, and sources over 1 MiB. It revalidates source
+  identity/hash and engine proofs before a same-directory verified `os.replace`; persists journal
+  intent before the mutation and completion afterward; stores exact pre/post bytes outside the
+  workspace; and permits only hash-guarded undo/redo. Uncertain edits block blind recovery.
+  Target code is never executed, imported, linted, or tested. This layer remains internal: no
+  GUI selection or immutable exact-diff single-use approval is wired yet.
 - Code indexing is read-only: it never imports or runs indexed source, denies secret/key/
   database/state paths and dependency caches, refuses symlink/junction targets outside the
   selected root, and bounds traversal to 2,000 files and 256 KiB per file. The local index
@@ -103,14 +115,15 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-352 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+391 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
 no-overwrite filesystem publication, whole-plan collision preflight, partial-outcome journal
 truthfulness, durable journal recovery, cross-process journal serialization,
-schema-validated meta-prompting review gates, and pure AST patch artifact/anchor/splicing/
-encoding/proof/determinism/purity safety.
+schema-validated meta-prompting review gates, pure AST patch artifact/anchor/splicing/
+encoding/proof/determinism/purity safety, and C3-I2 workspace admission, atomic replacement,
+journal/backup, and guarded content recovery.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -122,11 +135,12 @@ confirmation and a verified database/key/operation-log backup set.
 ## Known limitations
 - Click (PC control) is a registered persona but is not implemented.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
-- The internal AST patch staging engine can produce proposed bytes for one already-admitted file,
-  but there is no user workflow that selects a code workspace, previews/approves an immutable
-  patch artifact, applies bytes to disk, journals recovery, or supports content undo/redo.
+- The internal AST patch staging engine can produce proposed bytes for one already-admitted file.
+  C3-I2 adds internal admitted replacement and recovery for one selected `.py` file, but there is
+  still no user workflow that selects a code workspace and target, previews/approves an immutable
+  exact-diff patch artifact, or exposes the replacement/recovery surface in the GUI.
 - Plan first produces an approval-gated plan and text-only elaboration only; it does not apply
-  the plan. Automated application remains Phase C3.
+  the plan. The final user-integrated C3 acceptance path remains incomplete.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
   the RAG API; the first production search may download ChromaDB's MiniLM embedding model.
 - Code context retrieves symbol-sized semantic snippets and statically derived import/call
@@ -145,6 +159,7 @@ confirmation and a verified database/key/operation-log backup set.
 v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe credential rotation,
 generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
 Syntax with review/explanation intents, bounded read-only code-context retrieval with
-static dependency expansion, and a pure internal AST patch staging foundation); applied
-surgical file patches, self-healing execution, MCP, vision, voice, and remote control remain
-future work tracked in PLAN.md.
+static dependency expansion, a pure internal AST patch staging foundation, and an internal
+admitted one-file replacement/recovery layer); user-integrated surgical file patches,
+self-healing execution, MCP, vision, voice, and remote control remain future work tracked
+in PLAN.md.

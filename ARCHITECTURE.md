@@ -27,6 +27,8 @@ file categorization.
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
 - `agents/patch_engine.py` C3-I1 pure patch staging: strict one-file artifact/schema validation, definition AST anchors, byte-preserving replace/insert splicing, deterministic diff, and outside-edit byte proof; no I/O, mutation, approval, persistence, or execution
+- `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo; internal only, with no target execution or UI integration
+- `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent, passes FileAgent to BOTH Chat and Organizer
@@ -61,6 +63,12 @@ Patch staging (not user-integrated): already-admitted source bytes + strict raw 
   -> `decode_patch_artifact` -> `stage_patch` -> staged bytes + deterministic diff + proof.
   This path performs no workspace/path resolution, file access, mutation, approval, artifact
   persistence, target import, execution, lint, or test.
+C3-I2 admitted replacement (internal, not user-integrated): explicit workspace + one `.py`
+  target -> path/reparse/root/size admission -> C3-I1 staging -> re-derived proof and source
+  identity/hash checks -> durable journal intent -> exact app-owned pre/post backup ->
+  same-directory hash-checked staging -> `os.replace` -> durable completion. Undo/redo is
+  journal-locked and hash-guarded. This path never executes, imports, lints, or tests the
+  target and has no immutable approval or GUI selection surface yet.
 Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
@@ -111,10 +119,10 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   line range, and symbol. With no index, the existing Syntax prompt is unchanged. Indexing
   never imports, executes, or modifies source.
 
-## AST patch staging rules
-- C3-I1 is a pure internal staging foundation, not an applied-patch feature. It accepts one
-  already-admitted source file and performs no path resolution, filesystem access, mutation,
-  approval, persistence, journal, undo, target import, execution, lint, or test.
+## AST patch staging and admitted replacement rules
+- C3-I1 is a pure internal staging foundation. It accepts one already-admitted source file
+  and performs no path resolution, filesystem access, mutation, approval, persistence,
+  journal, undo, target import, execution, lint, or test.
 - The raw artifact is strict UTF-8 JSON with duplicate keys rejected. Top-level, file, edit,
   and anchor key sets are exact; the decoded artifact and supplied object must agree.
 - V1 admits one file and at most 20 edits using only `replace_node`, `insert_before`, and
@@ -125,6 +133,26 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   UTF-8, UTF-16, mixed newline modes, and final-newline changes are refused.
 - Original and output are parsed with `ast` only. Proof is exact byte equality outside the
   declared edited ranges, not AST equivalence. The output diff and proof are deterministic.
+- C3-I2 adds a separate, internal mutation/recovery surface for exactly one explicitly
+  selected existing `.py` file. It is not exposed by the GUI and does not yet consume an
+  immutable exact-diff, single-use approval artifact.
+- Workspace admission rejects drive/home/app-data roots, overlap with Incoming or Sorted,
+  and backup-root overlap with all three. Target admission rejects traversal/absolute paths,
+  non-Python and denied names, symlink/junction/reparse components, non-regular files, and
+  sources over 1 MiB. The workspace fingerprint binds canonical path plus filesystem identity.
+- C3-I2 re-derives the C3-I1 output and outside-range byte proofs, verifies the output hash,
+  and revalidates target path, filesystem identity, and source hash before replacement.
+- The replacement primitive stages unique verified bytes in the target's own directory,
+  requires regular non-link target/staged files, verifies both pre- and post-image hashes,
+  and uses `os.replace`. It never creates a missing target directory.
+- Journal intent is durable before backup and replacement; completion is durable afterward.
+  Intent-write failure performs zero target writes. A post-boundary failure is classified by
+  observed target hash as committed, failed, or uncertain. Exact pre/post bytes are backed
+  up outside the workspace with a metadata-only manifest; partial backups are removed.
+- Undo and redo are journal-locked, hash-guarded, and blocked by uncertain content edits.
+  A proven pre-mutation refusal is retryable; a failure after the replacement boundary is
+  uncertain. Redo preserves the existing FIFO order.
+- C3-I2 never executes, imports, lints, or tests target code.
 
 ## Code-index safety rules
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear
@@ -222,7 +250,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_filesystem_journal_cross_process.py — real-process concurrent journal, undo/redo claim, timeout, and crash-release regressions
 - test_code_context.py — code-index traversal/bounds/retrieval, Syntax context, and GUI invalidation regressions
 - test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
-- Total discovery count is 352
+- test_patch_applier.py — C3-I2 workspace/target admission, proof/source revalidation, atomic replacement, journal/backup states, and guarded undo/redo regressions
+- Total discovery count is 391
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

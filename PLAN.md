@@ -18,6 +18,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 
 ## Changelog
 2026-11-24 | 8546e051 | C3-I1 pure AST patch staging foundation: added strict one-file artifact validation, definition AST anchors, byte-preserving replace/insert staging, exact outside-range proofs and deterministic diffs, 36 focused tests, and five mutation proofs; no filesystem, execution, approval, or persistence surface was added. | Establish a reviewable deterministic staging core while keeping C3 mutation and C4 execution in BACKLOG.
+2026-11-24 | 279023e7 | C3-I2 admitted content replacement: added one-file workspace/target admission, exact engine-proof and source revalidation, same-directory atomic replacement, durable intent/completion/failure journal states, exact pre/post backups, hash-guarded undo/redo, and 39 focused regressions. | Add a safe internal mutation/recovery surface for one explicitly selected Python file without execution, linting, target tests, or UI integration.
+2026-11-24 | pending | C3-I2 documentation closure: record the admitted replacement/recovery boundary, safety contract, exact 391-test baseline, implementation commit 279023e7, and remaining approval/UI limitations. | Align PLAN, ARCHITECTURE, and README without changing ROADMAP or claiming user-integrated C3 completion.
 2026-11-24 | fbfb42fc | C3-R AST patch safety review: documented a 13-section threat/design review and RE-SCOPE decision; C3 and C4 remain BACKLOG, with eventual C3 requiring a separate explicitly selected code-workspace mutation root. | Establish bounded exact-approval and content-recovery criteria without introducing a code mutation surface or weakening Incoming/Sorted.
 2026-11-24 | 883347bf | Phase C7 static dependency-graph context: added identifier-only import/call edge derivation from the existing bounded C6 admission reads, root-scoped graph persistence/traversal, bounded semantic retrieval expansion, changed/deleted-file edge reconciliation, and header-inclusive provider context accounting with 316/316 unit tests green. | Expand repository context across statically visible dependencies without executing code, reading denied/external paths, or changing provider payload limits.
 2026-11-24 | 8e8d4f34 | C6 code-index review hardening: deny selected roots whose own basename is in `DENIED_DIRECTORIES` before traversal while retaining filename secret rules. | Close the C6 review finding without weakening existing secret-path exclusions.
@@ -62,10 +64,10 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: C3-I1 pure AST patch staging foundation commit 8546e051
+Implementation baseline: C3-I2 admitted content replacement and recovery commit 279023e7
 Review baseline: C3-R AST patch safety review commit fbfb42fc
-Suite: 352/352 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051` and this documentation closure are local and await human push; no push is claimed.
+Suite: 391/391 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, and C3-R documentation closure `77f500af` are confirmed pushed ancestors of `origin/main`. C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, and C3-I2 implementation `279023e7` are local and await human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -307,16 +309,16 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       plan artifact; after explicit ID-bound review approval, a separate text-only Syntax
       request elaborates it. Accept: plan artifact exists and is reviewable before any
       builder request; no file changes are applied. Proof: 306/306 unit tests green.
-- C3  BACKLOG | AST-based surgical patches: a separate future execution worker may apply
-      a user-approved plan through structured AST patches, preserving comments and formatting.
-      C2 does not apply files. C3-R RE-SCOPE requires a new explicitly user-selected
-      code-workspace mutation root disjoint from Incoming/Sorted, immutable exact-diff
-      single-use approval, formatting-preserving stdlib AST/token splicing, bounded
-      files/edits, journaled content undo/redo, and no execution in v1. C3-I1 adds only
-      the pure one-file staging foundation (commit 8546e051); it does not satisfy the
-      real-file acceptance line by itself. Review: docs/ast_patch_review.md. Accept: patch
-      applies to a real file without destroying unrelated code; rejected cleanly on malformed
-      patch. Est 15-25h after the separate implementation/safety batch.
+- C3  IN-PROGRESS | AST-based surgical patches: C3-I1 adds the pure one-file staging
+      foundation (commit 8546e051), and C3-I2 adds an internal admitted content-replacement
+      and recovery surface for one explicitly selected Python file. These are not yet
+      user-integrated: immutable exact-diff single-use approval, UI selection, and the
+      final real-file acceptance path remain required. C3-R RE-SCOPE requires a new
+      explicitly user-selected code-workspace mutation root disjoint from Incoming/Sorted,
+      formatting-preserving stdlib AST/token splicing, bounded files/edits, journaled
+      content undo/redo, and no execution in v1. Review: docs/ast_patch_review.md. Accept:
+      patch applies to a real file without destroying unrelated code; rejected cleanly on
+      malformed patch.
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
       sandbox; every iteration logged. Est 15-30h + safety batch.
@@ -367,6 +369,44 @@ Files: agents/patch_engine.py, test_patch_engine.py, ARCHITECTURE.md, README.md,
   non-execution) each RED under a weakened guard and GREEN after restoration. Limitation:
   no workspace admission, path resolution, mutation, approval, persistence, journal, undo,
   or user-facing integration is implemented; C3 and C4 remain BACKLOG.
+
+## BATCH C3-I2 — admitted content replacement and recovery (IMPLEMENTED)
+Files: agent/content_replace.py, agents/patch_applier.py, test_patch_applier.py, ARCHITECTURE.md, README.md, PLAN.md
+- C3-I2  DONE | 279023e7 | Added an internal mutation surface for exactly one
+  explicitly selected existing `.py` file under a separately admitted workspace. Admission
+  rejects drive/home/app-data roots, organizer-root overlap, traversal/absolute paths,
+  non-Python targets, secret/cache/control paths, symlink/junction/reparse components,
+  non-regular files, and sources over 1 MiB. Backup storage must be disjoint from the
+  workspace, Incoming, and Sorted roots.
+  The C3-I1 engine remains pure and is called only after workspace fingerprint, source
+  hash/identity, and exact outside-edit byte proofs are verified. A same-directory unique
+  staging file is hash-checked and replaced with `os.replace`; target and staged paths must
+  be regular non-link files and the target must still match the recorded pre-image hash.
+  The target is never executed, imported, linted, or tested.
+  Durable journal state records intent before backup/replacement and completion afterward.
+  Intent-persistence failure causes zero target writes; failed pre-replacement work is
+  marked failed; a failure after the replacement boundary is classified by observed target
+  hash as committed, failed, or uncertain. Exact pre/post bytes are stored in an app-owned
+  backup outside the workspace with a metadata-only manifest; partial backups are removed.
+  Undo/redo is journal-locked, hash-guarded, blocked by uncertain content edits, restores
+  exact backup bytes, and preserves the existing FIFO redo order.
+  Accept: source revalidation precedes replacement; malformed/tampered proofs and changed
+  targets produce zero writes; intent precedes mutation and completion follows it; exact
+  backups and safe external-edit refusal are covered; separate processes cannot both
+  claim one undo. Proof: 39 focused regressions, 391/391 discovery tests, validator 5/5,
+  compileall and diff checks green, plus targeted mutation proofs for source revalidation,
+  outside-byte proof, pre-replacement hash guard, atomic replacement, uncertain-state
+  blocking, and recovery hash guard, each RED under a weakened guard and GREEN after
+  restoration. Limitation: no immutable exact-diff single-use approval, UI workspace/target
+  selection, or user-facing workflow is integrated in C3-I2; C3 remains IN-PROGRESS.
+
+## BATCH C3-I2-DOCS — C3-I2 documentation closure (IMPLEMENTED)
+Files: PLAN.md, ARCHITECTURE.md, README.md
+- C3-I2-DOCS  DONE | pending | Record C3-I2's admitted replacement/recovery boundary,
+  safety rules, journal/backup states, exact 391-test baseline, implementation commit
+  `279023e7`, and remaining user-integration limitations. Accept: architecture, README,
+  and plan agree; no immutable approval/UI or user-integrated C3 completion is claimed;
+  ROADMAP remains unchanged.
 
 ## BATCH C3-R — AST patch safety review (CLOSED)
 Files: docs/ast_patch_review.md, PLAN.md
