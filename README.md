@@ -145,7 +145,7 @@ Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires 
 confirmation and a verified database/key/operation-log backup set.
 
 ## Known limitations
-- Click (PC control) is a registered persona but is not implemented.
+- Click (PC control) remains an orphaned registered persona with no implementation; screen-aware automation/PC control is out of declared scope, and persona removal or repurposing is a separate backlog item.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
 - Patch Review applies only one explicitly selected Python file in an explicitly selected
   workspace, never executes or tests the target, and does not yet support multi-file patches,
@@ -176,6 +176,9 @@ v2.4 is complete. v3.0 has safe-intelligence foundations implemented (safe crede
 generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, text-only
 Syntax with review/explanation intents, bounded read-only code-context retrieval with
 static dependency expansion, pure AST patch staging, admitted one-file replacement/recovery,
-and a user-integrated exact-diff Patch Review workflow); self-healing execution, MCP, vision,
-voice, and remote control remain future work tracked in PLAN.md. The C4-I1 pure iteration
-controller is landed but not user-integrated and deliberately exposes no execution surface.
+and a user-integrated exact-diff Patch Review workflow); self-healing execution and MCP remain
+future work tracked in PLAN.md. Voice control, phone/remote control, and screen-aware
+automation/PC control were removed from declared scope and are recorded in PLAN.md and
+ROADMAP.md; no such running capability was added or removed by that documentation decision.
+The C4-I1 pure iteration controller is landed but not user-integrated and deliberately exposes
+no execution surface.

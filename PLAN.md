@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-25 | HEAD | SCOPE-R1 documentation-only scope amendment: moved voice control, phone/remote control, and screen-aware automation/PC control from active Phase D into a historical Removed from scope record, marked each item deferred and removed from declared scope with rationale, added the orphaned PC-control persona cleanup backlog line, and left C4, MCP, scheduled agents, and running behavior unchanged. Roadmap completion changed from 22/27 checked (81.48%) to 22/24 checked (91.67%), and active Phase D changed from 1/5 checked (20%) to 1/2 checked (50%), solely because three unchecked scope items were removed; no work was completed and no running capability was added or removed. | Remove authority-granting surfaces from declared scope where containment and proportionality cannot be proven, preserving history without changing runtime capability.
 2026-11-25 | 3afe56aa | C4-ISO Windows isolation research: documented exact read-only host findings, eight isolation candidates, an all-20-criterion capability matrix, conditional hash-bound artifact-transfer/provenance design, dependency decision, future proof plan, and fail-closed refusal policy; selected no baseline and DEFERRED C4-I2. | Convert the binding C4-R isolation gate into an evidence-backed host/candidate decision without introducing execution or silently weakening the review criteria; C4 itself remains BACKLOG.
 2026-11-25 | 4c794ec2 | C4-I1 pure iteration controller: added a bounded, injected-interface-only healing controller with a structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, truthful termination states, controller-owned timeouts, and 25 focused tests proving no execution and no auto-apply. | Establish the coordination layer C4 needs while keeping every execution surface out of the tree until the C4-R gate is satisfied; C4 itself remains BACKLOG.
 2026-11-25 | 8f3cb0da | C4-R execution safety review: documented an 11-section threat/design review deciding a fixed no-shell command allowlist, OS-level Windows isolation, a separate single-use execution grant in addition to C3's byte-only exact-diff approval, controller-owned bounds, bounded/redacted observations, truthful recovery, and future C4-I2 acceptance criteria. | Decide the safety gate before any C4 executor is written; C4 remains BACKLOG and real execution is deferred until OS-level isolation is proven.
@@ -74,8 +75,10 @@ Acceptance baseline: C4-I1 controller regression suite commit 4c794ec2
 Review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation closure: C4 documentation reconciliation commit 7b427437
-Suite: 455/455 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, C3-I3 review-state closure `a1664a8`, C3-F1 implementation `b1878548`, C3-F1 documentation closure `8dfd1a9d`, C4-R review `8f3cb0da`, C4-I1 implementation `4c794ec2`, C4 documentation closure `7b427437`, and push-state reconciliation `47162e82` are confirmed pushed ancestors of `origin/main` (verified with `git merge-base --is-ancestor` against `origin/main` at `47162e82`). C4-ISO research `3afe56aa` is local and awaits human push; no push is claimed.
+Suite unchanged: 455/455 unit tests green; validator 5/5; compileall and diff checks green
+Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
+Scope declaration baseline: SCOPE-R1 documentation-only amendment in this closing commit; no capability, code, test, dependency, GUI, provider, or runtime behavior change.
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, C3-I3 review-state closure `a1664a8`, C3-F1 implementation `b1878548`, C3-F1 documentation closure `8dfd1a9d`, C4-R review `8f3cb0da`, C4-I1 implementation `4c794ec2`, C4 documentation closure `7b427437`, push-state reconciliation `47162e82`, C4-ISO research `3afe56aa`, and C4 decision documentation `93deff5b` are confirmed pushed ancestors of `origin/main` (verified with `git merge-base --is-ancestor` against `origin/main` at `93deff5b`). This SCOPE-R1 closing commit is local and awaits human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -554,9 +557,6 @@ Files: docs/windows_isolation_research.md, ARCHITECTURE.md, PLAN.md
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server
       usable from chat; server failure isolated. Est 8-15h.
-- D2  BACKLOG | Screen-aware automation: screenshot -> vision analysis -> action.
-      Accept: correct action on a controlled target; refuses ambiguous targets.
-      Est 15-30h + safety batch.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
       scanner runs the real file categorization/move path at configurable 15-minute,
       30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
@@ -565,13 +565,24 @@ Files: docs/windows_isolation_research.md, ARCHITECTURE.md, PLAN.md
       commit state or notifications into the replacement.
       Proof: ScheduledScannerTests cover execution, interval validation, persistence,
       cancellation, generation isolation, and isolated overlap; full unit suite green.
-- D4  BACKLOG | Voice activation: wake word + speech-to-text command. Accept: hands-free
-      command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
-- D5  BACKLOG | Phone remote control: authenticated API server. Accept: remote command
-      executes only with valid auth; all remote actions sandboxed + logged.
-      Est 10-20h + safety batch.
+
+## Removed from scope — historical declared-scope decisions
+These items were removed from the active roadmap and from declared scope. Their historical titles, acceptance criteria, and estimates are preserved below; DEFERRED is a scope decision, not a failure or evidence of completed work.
+
+- D2  DEFERRED — REMOVED FROM DECLARED SCOPE | Screen-aware automation / PC control: screenshot -> vision analysis -> action.
+      Original declaration (BACKLOG): Screen-aware automation: screenshot -> vision analysis -> action. Accept: correct action on a controlled target; refuses ambiguous targets. Est 15-30h + safety batch.
+      Rationale: Screen-aware automation / PC control grants synthetic keyboard and mouse input across the ENTIRE desktop, not confined to Incoming/Sorted or the admitted code workspace. Unlike file operations, input has no path, so it cannot be contained by path admission or realpath rules at all. A single model error or hostile provider response could interact with any application, including credential dialogs, browsers, or system settings. This is a strictly larger blast radius than C3's admitted one-file byte replacement, with no equivalent containment mechanism.
+- D4  DEFERRED — REMOVED FROM DECLARED SCOPE | Voice control (historical title: Voice activation): wake word + speech-to-text command.
+      Original declaration (BACKLOG): Voice activation: wake word + speech-to-text command. Accept: hands-free command end-to-end; false-wake rate tolerable to owner. Est 10-20h.
+      Rationale: Voice control requires audio capture (a new privacy surface) plus STT/TTS dependencies (a new trust surface) to duplicate a capability already served by text chat. The C4-ISO host findings also recorded only 568–885 MB available physical memory on an 8 GB host, making model-bearing audio features impractical here independent of the security case.
+- D5  DEFERRED — REMOVED FROM DECLARED SCOPE | Phone / remote control (historical title: Phone remote control): authenticated API server.
+      Original declaration (BACKLOG): Phone remote control: authenticated API server. Accept: remote command executes only with valid auth; all remote actions sandboxed + logged. Est 10-20h + safety batch.
+      Rationale: Phone / remote control requires a network-reachable authenticated control plane. STEWARD already holds filesystem mutation authority (C3) and provider credentials. Exposing that authority to a network endpoint multiplies blast radius: one authentication flaw becomes remote file mutation and credential access. Disproportionate to the convenience for a local desktop tool.
+
+Common thread: each grants authority beyond the application's existing bounded mutation boundary, with no proportionate benefit for a local desktop tool. These decisions follow the same discipline as C4-R and C4-ISO, which deferred execution rather than claim a boundary that could not be proven.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
+- Remove or repurpose the orphaned PC-control persona now that screen-aware automation is out of declared scope. Est 1-2h.
 - Conversation memory DONE | 2b9e5031, 9641d1f1, HEAD | Supervisor retains bounded instance-local
   FILE_OP context; general Cortex chat retains at most 6 turns, 12,000 total characters, and
   4,000 characters per message. Clearing chat erases general-chat memory, invalidates pending

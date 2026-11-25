@@ -132,10 +132,16 @@ This document serves as the official technical roadmap for STEWARD. It outlines 
 *Goal: Bleeding-edge features that turn STEWARD into an enterprise-grade desktop assistant.*
 
 - [ ] **MCP (Model Context Protocol) Support:** Connect STEWARD to databases, web browsers, and third-party SaaS apps using Anthropic's open standard.
-- [ ] **Screen-Aware Automation:** `Click` (PC Agent) will use a vision model to analyze a screenshot and propose an action; ambiguous actions must be refused and no PC-control surface exists today.
 - [x] **Scheduled Agents:** A background scheduler (using the `schedule` library) runs recurring file scans from the Organizer tab at 15-minute, 30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state persist in AppData, the real categorization/move path is used, cancellation is checked between file operations, and restart creates an isolated generation whose old worker cannot commit state or notifications into the replacement.
-- [ ] **Voice Activation:** `pyaudio` + `whisper` integration for hands-free wake-word control.
-- [ ] **Phone Remote Control:** A lightweight authenticated `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi, with all remote actions sandboxed and logged.
+
+## Removed from scope
+These historical declarations are not active roadmap work and no corresponding running capability is present. Their original titles and descriptions are preserved for the decision record.
+
+- **Screen-Aware Automation** (PLAN D2; historical declaration: `Click` (PC Agent) will use a vision model to analyze a screenshot and propose an action; ambiguous actions must be refused and no PC-control surface exists today). **DEFERRED — REMOVED FROM DECLARED SCOPE.** Rationale: Screen-aware automation / PC control grants synthetic keyboard and mouse input across the ENTIRE desktop, not confined to Incoming/Sorted or the admitted code workspace. Unlike file operations, input has no path, so it cannot be contained by path admission or realpath rules at all. A single model error or hostile provider response could interact with any application, including credential dialogs, browsers, or system settings. This is a strictly larger blast radius than C3's admitted one-file byte replacement, with no equivalent containment mechanism.
+- **Voice Activation** (PLAN D4; historical declaration: `pyaudio` + `whisper` integration for hands-free wake-word control). **DEFERRED — REMOVED FROM DECLARED SCOPE.** Rationale: Voice control requires audio capture (a new privacy surface) plus STT/TTS dependencies (a new trust surface) to duplicate a capability already served by text chat. The C4-ISO host findings also recorded only 568–885 MB available physical memory on an 8 GB host, making model-bearing audio features impractical here independent of the security case.
+- **Phone Remote Control** (PLAN D5; historical declaration: a lightweight authenticated `FastAPI` server that lets you control your desktop STEWARD from your phone over Wi-Fi, with all remote actions sandboxed and logged). **DEFERRED — REMOVED FROM DECLARED SCOPE.** Rationale: Phone / remote control requires a network-reachable authenticated control plane. STEWARD already holds filesystem mutation authority (C3) and provider credentials. Exposing that authority to a network endpoint multiplies blast radius: one authentication flaw becomes remote file mutation and credential access. Disproportionate to the convenience for a local desktop tool.
+
+Common thread: each grants authority beyond the application's existing bounded mutation boundary, with no proportionate benefit for a local desktop tool. These decisions follow the same discipline as C4-R and C4-ISO, which deferred execution rather than claim a boundary that could not be proven.
 
 ---
 *Created with ❤️ by Elijah Rei Z. Bicomong*
