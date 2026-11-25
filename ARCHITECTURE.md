@@ -89,6 +89,9 @@ C4-I1 pure healing controller (not user-integrated): injected executor + injecte
   controller starts no process, applies no patch, and may only request that a
   proposal enter the existing C3 single-use exact-diff approval gate. No executor,
   sandbox, GUI wiring, or provider call exists; C4 remains BACKLOG.
+C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
+  evaluates all 20 C4-I2 criteria and defers execution because no supported
+  baseline is proven on this Windows Home host.
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
