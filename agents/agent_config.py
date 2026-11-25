@@ -5,7 +5,7 @@ Each agent has a name, role, color, emoji avatar, and personality description.
 Used by the LiveFeedWidget and AgentAvatar UI components.
 """
 
-from core.theme import NEON_PURPLE, NEON_CYAN, NEON_LIME, NEON_BLUE, NEON_ORANGE
+from core.theme import NEON_PURPLE, NEON_CYAN, NEON_BLUE, NEON_ORANGE
 
 AGENT_CONFIG = {
     "Cortex": {
@@ -25,15 +25,6 @@ AGENT_CONFIG = {
         "status_idle": "File system quiet.",
         "status_working": "Scanning and organizing files…",
         "status_done": "File operations complete.",
-    },
-    "Click": {
-        "role": "PC Control",
-        "color": NEON_LIME,
-        "emoji": "🖱️",
-        "description": "Desktop automation, mouse, keyboard, app launching.",
-        "status_idle": "Hands off the keyboard.",
-        "status_working": "Controlling the PC…",
-        "status_done": "PC action executed.",
     },
     "Scout": {
         "role": "Browser / RAG",
@@ -66,7 +57,6 @@ AGENT_CONFIG = {
 
 AGENT_ROUTING_KEYS = {
     "FILE_OP": "Foldy",
-    "PC_CONTROL": "Click",
     "RAG": "Scout",
     "CODING": "Syntax",
     "GENERAL_CHAT": "Cortex",

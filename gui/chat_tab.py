@@ -16,8 +16,8 @@ import os
 import re
 
 from agents.supervisor import (
-    AGENT_FILE_OP, AGENT_PC_CONTROL, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
-    AGENT_GENERAL_CHAT,
+    AGENT_FILE_OP, AGENT_RAG, AGENT_CODING, AGENT_UNKNOWN,
+    AGENT_GENERAL_CHAT, AGENT_OUT_OF_SCOPE,
 )
 from core.theme import (
     BG_INPUT, TEXT_BRIGHT, TEXT_MUTED, NEON_PURPLE, NEON_CYAN,
@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 AGENT_COLOR_MAP = {
     "Cortex": NEON_PURPLE,
     "Foldy": NEON_CYAN,
-    "Click": NEON_LIME,
     "Scout": NEON_BLUE,
     "Syntax": NEON_ORANGE,
 }
@@ -851,6 +850,15 @@ class ChatTab(ctk.CTkFrame):
                 agent_name = AGENT_ROUTING_KEYS.get(agent_type, "Cortex")
                 color = AGENT_CONFIG.get(agent_name, {}).get("color", TEXT_MUTED)
 
+                if agent_type == AGENT_OUT_OF_SCOPE:
+                    self._safe_after_if_epoch(lambda: self._add_bubble(
+                        "STEWARD",
+                        "That request is outside STEWARD's supported scope. "
+                        "No action was taken.",
+                        TEXT_MUTED, align="left", state="DONE",
+                    ), request_epoch)
+                    return
+
                 if agent_type == AGENT_CODING and self._plan_first_enabled():
                     self._run_plan_first_workflow(
                         user_msg,
@@ -1058,17 +1066,6 @@ class ChatTab(ctk.CTkFrame):
                             request_epoch,
                         )
 
-                elif agent_type == AGENT_PC_CONTROL:
-                    self._safe_after_if_epoch(lambda: self._add_bubble(
-                        "STEWARD",
-                        f"[Click] PC control requested: {action}\n(Coming soon)",
-                        NEON_LIME, align="left",
-                    ), request_epoch)
-                    if self.live_feed:
-                        self._safe_after_if_epoch(
-                            lambda: self.live_feed.agent_done("Click"),
-                            request_epoch,
-                        )
                 elif agent_type == AGENT_RAG:
                     action_lower = action.lower()
                     is_ingest = any(kw in action_lower for kw in (
@@ -1336,7 +1333,7 @@ class ChatTab(ctk.CTkFrame):
                     delegation_context.original_request = user_msg
                     try:
                         delegation_result = self.supervisor.delegate_task(
-                            user_msg, ["Foldy", "Scout", "Click", "Syntax"]
+                            user_msg, ["Foldy", "Scout", "Syntax"]
                         )
                     finally:
                         delegation_context.original_request = previous_delegation_request

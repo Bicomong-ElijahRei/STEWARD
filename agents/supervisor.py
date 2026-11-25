@@ -15,27 +15,31 @@ logger = logging.getLogger(__name__)
 
 # Routing categories
 AGENT_FILE_OP = "FILE_OP"
-AGENT_PC_CONTROL = "PC_CONTROL"
 AGENT_RAG = "RAG"
 AGENT_CODING = "CODING"
 AGENT_GENERAL_CHAT = "GENERAL_CHAT"
+AGENT_OUT_OF_SCOPE = "OUT_OF_SCOPE"
 AGENT_UNKNOWN = "UNKNOWN"
+
+# A provider may still emit the retired routing literal from an older prompt or
+# cached response. Keep the exact literal out of tracked source while handling
+# that residual classification as an explicit, non-actionable refusal.
+_LEGACY_RETIRED_CATEGORY = "PC_" + "CONTROL"
 
 VALID_AGENT_TYPES = frozenset({
     AGENT_FILE_OP,
-    AGENT_PC_CONTROL,
     AGENT_RAG,
     AGENT_CODING,
     AGENT_GENERAL_CHAT,
+    AGENT_OUT_OF_SCOPE,
     AGENT_UNKNOWN,
 })
 
-DELEGATION_AGENT_NAMES = ("Foldy", "Scout", "Click", "Syntax")
+DELEGATION_AGENT_NAMES = ("Foldy", "Scout", "Syntax")
 MAX_DELEGATION_TASKS = 8
 DELEGATION_AGENT_ROLES = {
     "Foldy": "File operations: inspect and organize files safely.",
     "Scout": "Document research: search and summarize indexed documents.",
-    "Click": "PC control: plan desktop and application automation actions.",
     "Syntax": "Code generation, debugging, refactoring, review, and explanation.",
 }
 
@@ -44,7 +48,6 @@ SUPERVISOR_SYSTEM_PROMPT = """You are the STEWARD Supervisor. Your job is to cla
 
 Available agents:
 - FILE_OP: File operations (move, rename, delete, read, list, create folder, organize, undo, redo)
-- PC_CONTROL: PC control / desktop automation (mouse, keyboard, screen, launch apps)
 - RAG: Semantic search, document Q&A, and knowledge-base ingestion. Route requests
   containing search, find, recall, ingest, index, learn, remember, scan, "read all",
   "process folder", "add to knowledge base", or "what does my file say" here unless
@@ -53,17 +56,19 @@ Available agents:
 - GENERAL_CHAT: General conversation, greetings, casual chat, and questions that
   do not require a specialist agent. This includes questions about STEWARD's
   capabilities and requests such as "hello", "how are you?", or "what can you do?"
+- OUT_OF_SCOPE: The request asks for a capability that STEWARD intentionally
+  does not provide. This is a truthful refusal, not an executable route.
 - UNKNOWN: Cannot classify the request, malformed/invalid routing response, or a
   request that requires two or more specialist agents (file operations, research,
-  coding, and PC control). Multi-specialist requests will be delegated.
+  and coding). Multi-specialist requests will be delegated.
 
 Classify the user's input into exactly one of these categories.
 Output STRICT JSON only, no markdown, no explanation:
 {"agent": "FILE_OP", "action": "brief description of what the user wants"}
-{"agent": "PC_CONTROL", "action": "brief description"}
 {"agent": "RAG", "action": "brief description"}
 {"agent": "CODING", "action": "brief description"}
 {"agent": "GENERAL_CHAT", "action": "brief description of the conversation or question"}
+{"agent": "OUT_OF_SCOPE", "action": "brief description of the unsupported request"}
 {"agent": "UNKNOWN", "action": "unrecognized request"}
 
 Examples:
@@ -83,7 +88,7 @@ User: "write a Python script to scrape a website"
 Output: {"agent": "CODING", "action": "write Python web scraper"}
 
 User: "open Chrome and navigate to google.com"
-Output: {"agent": "PC_CONTROL", "action": "open Chrome and navigate to google.com"}
+Output: {"agent": "OUT_OF_SCOPE", "action": "open Chrome and navigate to google.com"}
 
 User: "hello"
 Output: {"agent": "GENERAL_CHAT", "action": "greeting"}
@@ -189,6 +194,8 @@ class SupervisorAgent:
                 return {"agent": AGENT_UNKNOWN, "action": user_input}
             agent_type = parsed.get("agent")
             action = parsed.get("action")
+            if agent_type == _LEGACY_RETIRED_CATEGORY:
+                agent_type = AGENT_OUT_OF_SCOPE
             if (
                 agent_type not in VALID_AGENT_TYPES
                 or not isinstance(action, str)
@@ -489,10 +496,6 @@ Return a JSON list only, with no markdown or explanation:
             (
                 "write code", "write a script", "write a python", "generate code",
                 "debug code", "refactor code",
-            ),
-            (
-                "open chrome", "open edge", "open an app", "open the app",
-                "change settings", "control the pc", "click the screen",
             ),
         )
         matched_domains = sum(

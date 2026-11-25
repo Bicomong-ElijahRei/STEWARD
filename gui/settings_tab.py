@@ -10,7 +10,7 @@ from core.discovery import start_discovery
 from core.validator import validate_provider, ValidationResult
 
 class SettingsTab(ctk.CTkFrame):
-    AGENT_CHOICES = ("Any", "Cortex", "Foldy", "Click", "Syntax", "Scout")
+    AGENT_CHOICES = ("Any", "Cortex", "Foldy", "Syntax", "Scout")
 
     def __init__(self, parent, legacy_agent=None, main_app=None):
         # We accept legacy_agent to prevent crashes, but we don't use it anymore.

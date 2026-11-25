@@ -6,7 +6,6 @@ from core.theme import (
     BORDER_COLOR,
     NEON_BLUE,
     NEON_CYAN,
-    NEON_LIME,
     NEON_ORANGE,
     NEON_PURPLE,
     TEXT_BRIGHT,
@@ -17,7 +16,6 @@ from gui.anim import SafeTick, lerp_color
 AGENT_COLORS = {
     "Cortex": NEON_PURPLE,
     "Foldy": NEON_CYAN,
-    "Click": NEON_LIME,
     "Scout": NEON_BLUE,
     "Syntax": NEON_ORANGE,
 }
@@ -28,7 +26,6 @@ AGENT_COLORS = {
 AGENT_POSITIONS = {
     "Cortex": (0.50, 0.50),
     "Foldy": (0.50, 0.15),
-    "Click": (0.85, 0.50),
     "Scout": (0.50, 0.85),
     "Syntax": (0.15, 0.50),
 }

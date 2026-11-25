@@ -15,7 +15,7 @@ BG_HOVER = "#3E3E50"             # Hover states
 
 NEON_PURPLE = "#BB86FC"          # Cortex (Supervisor) accent
 NEON_CYAN = "#03DAC6"            # Foldy (File) accent
-NEON_LIME = "#CCFF00"            # Click (PC) accent
+NEON_LIME = "#CCFF00"            # approval accent
 NEON_BLUE = "#3700FF"            # Scout (Browser) accent
 NEON_ORANGE = "#FF9800"          # Syntax (Coding) accent
 
@@ -48,7 +48,6 @@ def apply_theme():
 AGENT_COLORS = {
     "Cortex": NEON_PURPLE,
     "Foldy": NEON_CYAN,
-    "Click": NEON_LIME,
     "Scout": NEON_BLUE,
     "Syntax": NEON_ORANGE,
 }

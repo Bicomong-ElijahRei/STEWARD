@@ -20,7 +20,7 @@ from agent.daemon import FileCreationHandler
 from agents.file_agent import FileAgent
 from agents.supervisor import (
     AGENT_FILE_OP,
-    AGENT_PC_CONTROL,
+    AGENT_OUT_OF_SCOPE,
     AGENT_RAG,
     AGENT_GENERAL_CHAT,
     AGENT_CODING,
@@ -228,8 +228,8 @@ class DatabaseRecoveryTests(unittest.TestCase):
 
 
 class SettingsAssignmentTests(unittest.TestCase):
-    def test_agent_choices_include_click(self):
-        self.assertIn("Click", SettingsTab.AGENT_CHOICES)
+    def test_agent_choices_exclude_removed_persona(self):
+        self.assertNotIn("Click", SettingsTab.AGENT_CHOICES)
 
     def make_settings(self, db, name="BoundProvider"):
         tab = SettingsTab.__new__(SettingsTab)
@@ -329,26 +329,26 @@ class RouterAssignmentTests(unittest.TestCase):
             self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer shared")
             self.assertEqual(shared_result["_steward"]["provider"], "Shared")
 
-    def test_click_binding_and_short_tier_match_stored_label(self):
+    def test_supported_role_binding_and_short_tier_match_stored_label(self):
         db = self.db
         db.add_provider(
-            name="ClickBrain", base_url="https://click.example/v1", api_key="click-key",
-            model_name="click-model", assigned_agent="Click", speed_score_ms=10,
+            name="SyntaxBrain", base_url="https://syntax.example/v1", api_key="syntax-key",
+            model_name="syntax-model", assigned_agent="Syntax", speed_score_ms=10,
             intelligence_tier="Tier 1: Genius",
         )
         db.add_provider(
             name="WrongTier", base_url="https://wrong.example/v1", api_key="wrong-key",
-            model_name="wrong-model", assigned_agent="Click", speed_score_ms=1,
+            model_name="wrong-model", assigned_agent="Syntax", speed_score_ms=1,
             intelligence_tier="Tier 3: Fast",
         )
         with patch("core.router.requests.post", return_value=FakeResponse(
             payload=success_payload()
         )) as post:
             result = self.manager.route_request(
-                [], agent_name="Click", required_tier="Tier 1"
+                [], agent_name="Syntax", required_tier="Tier 1"
             )
         post.assert_called_once()
-        self.assertEqual(result["_steward"]["provider"], "ClickBrain")
+        self.assertEqual(result["_steward"]["provider"], "SyntaxBrain")
 
     def test_tool_request_is_not_sent_to_provider_without_tool_support(self):
         self.db.add_provider(
@@ -1107,7 +1107,7 @@ class ChatWorkflowTests(unittest.TestCase):
 
     def test_send_chat_rejects_reentry_until_deferred_restore(self):
         chat, callbacks = self.make_chat(
-            routing={"agent": AGENT_PC_CONTROL, "action": "open editor"}
+            routing={"agent": AGENT_OUT_OF_SCOPE, "action": "open editor"}
         )
 
         class QueuedThread:
@@ -1136,7 +1136,7 @@ class ChatWorkflowTests(unittest.TestCase):
 
     def test_destroyed_widget_skips_worker_callbacks_without_raising(self):
         chat, callbacks = self.make_chat(
-            routing={"agent": AGENT_PC_CONTROL, "action": "open editor"}
+            routing={"agent": AGENT_OUT_OF_SCOPE, "action": "open editor"}
         )
         chat.winfo_exists.return_value = False
         chat.after = Mock(side_effect=RuntimeError("main thread is not in main loop"))
@@ -1152,7 +1152,7 @@ class ChatWorkflowTests(unittest.TestCase):
 
     def test_non_file_route_restores_input_in_finally(self):
         chat, callbacks = self.make_chat(
-            routing={"agent": AGENT_PC_CONTROL, "action": "open editor"}
+            routing={"agent": AGENT_OUT_OF_SCOPE, "action": "open editor"}
         )
         with patch("gui.chat_tab.threading.Thread", self.ImmediateThread):
             chat.send_chat()
@@ -1194,7 +1194,7 @@ class ChatWorkflowTests(unittest.TestCase):
             chat.send_chat()
 
         chat.supervisor.delegate_task.assert_called_once_with(
-            "organize this", ["Foldy", "Scout", "Click", "Syntax"]
+            "organize this", ["Foldy", "Scout", "Syntax"]
         )
         for callback in callbacks:
             callback()
@@ -2268,7 +2268,7 @@ class ConstellationViewTests(unittest.TestCase):
 
     def test_init_and_resize(self):
         self.assertEqual(set(self.widget.nodes), set(AGENT_COLORS))
-        self.assertEqual(len(self.widget.edges), 4)
+        self.assertEqual(len(self.widget.edges), 3)
         self.assertTrue(self.widget.bind("<Configure>"))
 
         before = self.widget.bbox(self.widget.nodes["Cortex"])
@@ -4062,7 +4062,7 @@ class HierarchicalSwarmTests(unittest.TestCase):
 
         result = supervisor.delegate_task(
             "Organize the files and search for project documents",
-            ["Foldy", "Scout", "Click", "Syntax"],
+            ["Foldy", "Scout", "Syntax"],
         )
 
         self.assertEqual(result["response"], "Combined specialist result")
