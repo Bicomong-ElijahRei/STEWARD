@@ -6,6 +6,8 @@ preview, explicit approval, and undo/redo.
 ## What it actually does today
 - Chat: Cortex classifies intent and routes to Foldy (file operations), Scout (semantic
   document search), Syntax (provider-backed coding text), or Cortex for general conversation.
+  Requests for intentionally unsupported capabilities receive a truthful no-action refusal rather
+  than delegation or an apparently available persona.
 - Cortex conversation: general chat retains at most 6 turns, 12,000 total characters, and
   4,000 characters per message. Clearing chat erases that memory and rejects stale responses.
 - Syntax assistance: generation, debugging, refactoring, review, and explanation use providers
@@ -23,8 +25,9 @@ preview, explicit approval, and undo/redo.
 - User-integrated patch review: the Chat header's **Patch Review** control opens a workspace/target
   picker for the latest reviewed plan, generates a deterministic exact-diff preview, and requires a
   distinct epoch-bound, single-use approval before applying. Approvals bind the plan, workspace
-  fingerprint, source/output hashes, exact-diff SHA-256, and immutable artifact SHA-256; clearing
-  chat invalidates the preview and closes the review surface.
+  fingerprint, source/output hashes, exact-diff SHA-256, and immutable artifact SHA-256. Proposal
+  and apply run off the Tk main thread in one bounded worker slot; closing the dialog or clearing
+  chat invalidates the preview, closes the surface, and discards any late worker result.
 - Scout RAG: persistent ChromaDB knowledge index with document ingestion, 500-character
   overlapping chunks, semantic retrieval, and source/content snippets in chat.
 - Code context: an explicitly selected project root can be indexed in a separate persistent
@@ -74,7 +77,8 @@ preview, explicit approval, and undo/redo.
   without ownership evidence are not destructively undone or redone.
 - Approval is bound to a preview plan ID. Stale, superseded, or replayed plans are refused.
 - Clearing chat advances a conversation epoch and invalidates pending or in-flight previews;
-  stale preview, approval, execution, provider, and specialist UI continuations are discarded.
+  stale preview, approval, execution, provider, specialist, and Patch Review worker UI
+  continuations are discarded.
 - Provider metadata is request-local, preventing concurrent requests from reporting each
   other's provider selection.
 - API keys are encrypted at rest with Fernet; credential rotation updates only the selected
@@ -124,7 +128,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-455 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+470 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
@@ -134,6 +138,8 @@ schema-validated meta-prompting review gates, pure AST patch artifact/anchor/spl
 encoding/proof/determinism/purity safety, C3-I2 workspace admission, atomic replacement,
 journal/backup, and guarded content recovery, C3-I3 exact-diff review, immutable artifact,
 single-use approval, lifecycle invalidation, mutation refusal, and guarded real-file apply,
+Patch Review off-main worker/epoch/close/clear/single-flight behavior, truthful removed-scope
+refusal,
 and the C4-I1 pure iteration controller's hard bound, termination, journal, observation,
 cancellation, no-execution, and no-auto-apply guarantees.
 
@@ -145,7 +151,7 @@ Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires 
 confirmation and a verified database/key/operation-log backup set.
 
 ## Known limitations
-- Click (PC control) remains an orphaned registered persona with no implementation; screen-aware automation/PC control is out of declared scope, and persona removal or repurposing is a separate backlog item.
+- Screen-aware desktop automation, voice control, and phone/remote control remain outside declared scope. Their retired persona and routing surfaces have been removed; such requests are refused as out of scope rather than delegated.
 - Syntax produces suggestions as text; it does not edit files, run code, or apply patches.
 - Patch Review applies only one explicitly selected Python file in an explicitly selected
   workspace, never executes or tests the target, and does not yet support multi-file patches,
@@ -178,7 +184,8 @@ Syntax with review/explanation intents, bounded read-only code-context retrieval
 static dependency expansion, pure AST patch staging, admitted one-file replacement/recovery,
 and a user-integrated exact-diff Patch Review workflow); self-healing execution and MCP remain
 future work tracked in PLAN.md. Voice control, phone/remote control, and screen-aware
-automation/PC control were removed from declared scope and are recorded in PLAN.md and
-ROADMAP.md; no such running capability was added or removed by that documentation decision.
+automation were removed from declared scope and remain recorded in PLAN.md and ROADMAP.md.
+The orphaned active persona/routing surfaces were subsequently removed; unsupported requests
+now receive a truthful no-action refusal.
 The C4-I1 pure iteration controller is landed but not user-integrated and deliberately exposes
 no execution surface.

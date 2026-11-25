@@ -19,7 +19,7 @@ file categorization.
 - `core/database.py`    DatabaseManager: Fernet-encrypted providers, usage_ledger, traces; singleton via init_db/get_db; shared credentials support explicit ID rotation with endpoint/provider-link validation and rollback
 - `core/discovery.py`   OpenRouter free-model discovery (Phase 4/5)
 - `core/validator.py`   latency/intelligence/tool probes
-- `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}
+- `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}; supported categories route to specialists, OUT_OF_SCOPE is a truthful non-actionable refusal, and generic invalid categories remain UNKNOWN
 - `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
@@ -30,7 +30,7 @@ file categorization.
 - `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo
 - `agents/patch_review.py` C3-I3 review facade: provider proposal, immutable exact-diff artifact, epoch/workspace/hash-bound single-use approval, guarded apply, and fail-closed lifecycle invalidation
 - `agents/healing_controller.py` C4-I1 pure iteration controller: bounded self-healing loop over INJECTED executor/journal/cancellation/proposal interfaces; structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, and truthful termination states. It performs NO execution (no process, shell, or dynamic-code surface), cannot apply patches, and reaches C3 only through a proposal request
-- `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, and truthful recovery states
+- `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, truthful recovery states, and one bounded daemon-worker slot with epoch/closed-guarded UI marshaling
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
@@ -72,10 +72,14 @@ C3-I2 admitted replacement: explicit workspace + one `.py`
   same-directory hash-checked staging -> `os.replace` -> durable completion. Undo/redo is
   journal-locked and hash-guarded. This path never executes, imports, lints, or tests the target.
 C3-I3 user-integrated review: Chat **Patch Review** -> latest reviewed plan ID + explicit
-  workspace/target -> text-only Syntax structural proposal -> C3-I1/C3-I2 staging -> immutable
-  write-once exact-diff artifact -> epoch/workspace/source/output/artifact-bound single-use
-  approval -> journal-locked C3-I2 apply. Clearing chat invalidates the proposal/approval and
-  closes the dialog; stale provider or UI continuations cannot publish a patch.
+  workspace/target -> Tk-thread input snapshot -> one bounded daemon worker -> existing manager
+  proposal -> C3-I1/C3-I2 staging -> immutable write-once exact-diff artifact ->
+  epoch/workspace/source/output/artifact-bound single-use approval -> journal-locked C3-I2 apply.
+  Worker results return through ChatTab's epoch-aware scheduler. One apply runs at a time;
+  captured-input controls are disabled during work and restored on completion/refusal/failure.
+  Closing the dialog or clearing chat invalidates the proposal/approval and closes the dialog;
+  stale, closed, or superseded worker results cannot publish a preview, approval, result, control
+  state, or Live Feed event.
 Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
@@ -111,13 +115,18 @@ C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   a text-only provider.
 - Provider HTTP calls have a 30-second default timeout, so an in-flight daemon request cannot
   hold process exit indefinitely.
+- Supervisor categories map only to supported routing targets. OUT_OF_SCOPE is a non-actionable
+  refusal, while malformed or arbitrary categories remain UNKNOWN; retired category emissions
+  are normalized to OUT_OF_SCOPE without retaining the exact legacy token in active source.
 
 ## Conversation and Syntax boundaries
 - Cortex general-chat memory is instance-local and bounded to 6 turns, 12,000 total characters,
   and 4,000 characters per message. Clearing chat erases history and increments an epoch.
 - Requests capture that epoch before routing/provider work; stale responses and queued UI
   callbacks are discarded across general chat, file preview/approval/execution, Scout, Syntax,
-  provider reporting, Live Feed, and delegation. History snapshots and turn writes are protected
+  Patch Review proposal/apply, provider reporting, Live Feed, and delegation. Patch Review
+  workers call only the existing manager and publish no preview, approval, result, control state,
+  or feed event after close, clear, or epoch change. History snapshots and turn writes are protected
   by one instance lock. Clear invalidates pending/in-flight file previews in the same critical
   section; the final execution check and plan claim are serialized with that invalidation.
 - Provider metadata is delivered through request-local callbacks for Cortex, Foldy, and
@@ -278,8 +287,10 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
 - test_patch_applier.py — C3-I2 workspace/target admission, proof/source revalidation, atomic replacement, journal/backup states, and guarded undo/redo regressions
 - test_patch_review.py — C3-I3 exact-diff artifact/approval, lifecycle invalidation, hostile input, workspace isolation, truthful recovery, GUI, and real-process contention regressions
+- test_patch_review_workers.py — Patch Review off-main execution, epoch/closed result marshaling, stale suppression, close/clear invalidation, control restoration, refusal/failure, and single-flight apply regressions
+- test_hygiene_scope.py — retired-persona registry/source removal, truthful OUT_OF_SCOPE classification/refusal, generic UNKNOWN, and non-delegation regressions
 - test_healing_controller.py — C4-I1 pure-controller regressions: structural hard bound, deterministic termination states, write-ahead journal ordering, pre-iteration journal-failure blocking, uncertain post-execution journal failure, bounded/redacted observations, cancellation safe boundary, controller-owned timeouts, no-execution spy/AST proof, no-auto-apply proof, and determinism
-- Total discovery count is 455
+- Total discovery count is 470 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
