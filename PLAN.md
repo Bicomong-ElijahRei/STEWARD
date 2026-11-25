@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | 9737c516 | D1-R MCP integration safety review: documented a 13-section threat/design review and RE-SCOPE decision for one explicitly admitted, identity-pinned, read-only remote MCP resource server usable from chat with server failure isolated; D1 remains BACKLOG, and stdio, invokable tools, local resources, and MCP-caused local mutation remain excluded; no code, dependency, configuration, README, or ROADMAP change was introduced; 470/470 tests green with the one known Windows symlink-privilege skip. | Decide the MCP authority and containment boundary before implementation while preserving proportionality and preventing remote server declarations from entering native dispatch authority.
 2026-11-25 | 0acf370, 2e0fe28e | HYG-1 Patch Review background workers and retired-scope cleanup: moved proposal and apply off the Tk main thread into one bounded daemon-worker slot with epoch/closed-guarded result marshaling, single-flight apply, close/clear invalidation, and stale-result suppression; removed the orphaned retired desktop-control persona, routing, delegation, provider-choice, constellation, package-export, and skeleton surfaces; added truthful OUT_OF_SCOPE classification/refusal while preserving generic UNKNOWN behavior; left ROADMAP unchanged; 470/470 tests green with the one known Windows symlink-privilege skip. | Keep the Tk event loop responsive, prevent stale review state from publishing, and ensure removed-scope requests cannot be mistaken for an available persona or capability.
 2026-11-25 | e7a462d2 | SCOPE-R1 documentation-only scope amendment: moved voice control, phone/remote control, and screen-aware automation/PC control from active Phase D into a historical Removed from scope record, marked each item deferred and removed from declared scope with rationale, added the orphaned PC-control persona cleanup backlog line, and left C4, MCP, scheduled agents, and running behavior unchanged. Roadmap completion changed from 22/27 checked (81.48%) to 22/24 checked (91.67%), and active Phase D changed from 1/5 checked (20%) to 1/2 checked (50%), solely because three unchecked scope items were removed; no work was completed and no running capability was added or removed. | Remove authority-granting surfaces from declared scope where containment and proportionality cannot be proven, preserving history without changing runtime capability.
 2026-11-25 | 3afe56aa | C4-ISO Windows isolation research: documented exact read-only host findings, eight isolation candidates, an all-20-criterion capability matrix, conditional hash-bound artifact-transfer/provenance design, dependency decision, future proof plan, and fail-closed refusal policy; selected no baseline and DEFERRED C4-I2. | Convert the binding C4-R isolation gate into an evidence-backed host/candidate decision without introducing execution or silently weakening the review criteria; C4 itself remains BACKLOG.
@@ -73,13 +74,14 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 ## Ground state
 Implementation baseline: HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
 Acceptance baseline: HYG-1 worker and removed-scope regression suites; 470/470 discovery tests green
-Review baseline: C4-R execution safety review commit 8f3cb0da
+Review baseline: D1-R MCP integration safety review commit 9737c516
+Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
 Suite: 470/470 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
-Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability.
-Push state at verification: `origin/main` remains at e7a462d2. HYG-1 implementation commits `0acf370` and `2e0fe28e` are local ancestors of this closing commit and await human push; no push is claimed. Previously recorded implementation/documentation SHAs remain pushed ancestors of `origin/main`.
+Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
+Push state at verification: `origin/main` remains at 05abaac0. D1-R review commit `9737c516` is a local ancestor of this closing commit and awaits human push; no push is claimed. Previously recorded implementation/documentation SHAs remain pushed ancestors of `origin/main`.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -560,9 +562,32 @@ Files: docs/windows_isolation_research.md, ARCHITECTURE.md, PLAN.md
       green. C4-I2 remains BACKLOG pending a supported host or explicitly approved
       candidate baseline in a new focused design/proof batch.
 
+## BATCH D1-R — MCP integration safety review (DONE)
+Files: docs/mcp_integration_review.md, PLAN.md
+Review document: docs/mcp_integration_review.md
+- D1-R  DONE | 9737c516 | Completed a documentation-only, 13-section MCP integration
+      safety/threat review covering scope and proportionality, the server-declared-schema
+      inversion, transport analysis, namespace collisions, admission and pinned identity,
+      approval semantics, confused-deputy containment, the A-E scope matrix, dependency
+      rationale, bounded failure isolation, residual risks, and future mutation-proof
+      acceptance criteria. Decision: RE-SCOPE D1 to one explicitly admitted, identity-pinned,
+      read-only remote MCP resource server usable from chat with server failure isolated.
+      D1 REMAINS BACKLOG pending a future implementation batch. The selected v1 permits no
+      MCP tools, no stdio, no local MCP resources, and no MCP-caused local mutation; server
+      content cannot enter supervisor routing or native tool context. A future official MCP
+      SDK dependency requires exact-version and transitive-dependency review; a hand-rolled
+      JSON-RPC client and service-specific native adapter are rejected for D1. No code,
+      dependency, configuration, GUI, provider, network, server, README, or ROADMAP change
+      was introduced. Proof: 470/470 existing unit tests green with the one known Windows
+      symlink-privilege skip; validator 5/5; compileall and diff checks green.
+
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
-- D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server
-      usable from chat; server failure isolated. Est 8-15h.
+- D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516): one explicitly
+      admitted, identity-pinned, read-only remote MCP resource server usable from chat;
+      server failure isolated. The selected v1 permits no invokable tools, no stdio, no local
+      MCP resources, and no MCP-caused local mutation; server content cannot enter
+      supervisor routing or native tool context. Review: docs/mcp_integration_review.md.
+      Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
       scanner runs the real file categorization/move path at configurable 15-minute,
       30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
