@@ -124,7 +124,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-430 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+455 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
@@ -132,8 +132,10 @@ no-overwrite filesystem publication, whole-plan collision preflight, partial-out
 truthfulness, durable journal recovery, cross-process journal serialization,
 schema-validated meta-prompting review gates, pure AST patch artifact/anchor/splicing/
 encoding/proof/determinism/purity safety, C3-I2 workspace admission, atomic replacement,
-journal/backup, and guarded content recovery, and C3-I3 exact-diff review, immutable artifact,
-single-use approval, lifecycle invalidation, mutation refusal, and guarded real-file apply.
+journal/backup, and guarded content recovery, C3-I3 exact-diff review, immutable artifact,
+single-use approval, lifecycle invalidation, mutation refusal, and guarded real-file apply,
+and the C4-I1 pure iteration controller's hard bound, termination, journal, observation,
+cancellation, no-execution, and no-auto-apply guarantees.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.
@@ -148,6 +150,11 @@ confirmation and a verified database/key/operation-log backup set.
 - Patch Review applies only one explicitly selected Python file in an explicitly selected
   workspace, never executes or tests the target, and does not yet support multi-file patches,
   deletion edits, lint/run loops, or automatic self-healing.
+- Self-healing is not user-integrated. Only a pure, bounded iteration controller exists
+  (`agents/healing_controller.py`): it has no executor, no sandbox, no GUI wiring, no process
+  or shell surface, and it cannot apply patches — it can only request that a proposal enter
+  the existing Patch Review approval gate. Real lint/run execution stays backloged until an
+  OS-level isolation boundary is selected and proven.
 - Plan first produces an approval-gated plan and text-only elaboration; Patch Review is a
   separate explicit exact-diff workflow bound to the latest reviewed plan ID.
 - Scout searches a local `./rag_index/` knowledge base. Documents must be ingested through
@@ -170,4 +177,5 @@ generation-safe scheduling, bounded Cortex memory, lifecycle-owned previews, tex
 Syntax with review/explanation intents, bounded read-only code-context retrieval with
 static dependency expansion, pure AST patch staging, admitted one-file replacement/recovery,
 and a user-integrated exact-diff Patch Review workflow); self-healing execution, MCP, vision,
-voice, and remote control remain future work tracked in PLAN.md.
+voice, and remote control remain future work tracked in PLAN.md. The C4-I1 pure iteration
+controller is landed but not user-integrated and deliberately exposes no execution surface.

@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-25 | 4c794ec2 | C4-I1 pure iteration controller: added a bounded, injected-interface-only healing controller with a structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, truthful termination states, controller-owned timeouts, and 25 focused tests proving no execution and no auto-apply. | Establish the coordination layer C4 needs while keeping every execution surface out of the tree until the C4-R gate is satisfied; C4 itself remains BACKLOG.
+2026-11-25 | 8f3cb0da | C4-R execution safety review: documented an 11-section threat/design review deciding a fixed no-shell command allowlist, OS-level Windows isolation, a separate single-use execution grant in addition to C3's byte-only exact-diff approval, controller-owned bounds, bounded/redacted observations, truthful recovery, and future C4-I2 acceptance criteria. | Decide the safety gate before any C4 executor is written; C4 remains BACKLOG and real execution is deferred until OS-level isolation is proven.
 2026-11-25 | b1878548 | C3-F1 provider tier label correction: corrected Patch Review's caller tier literal from "Tier1" to "Tier 1" and added real-matcher structural and focused provider-selection regressions. | Make Patch Review proposals eligible for existing Tier 1 validator providers without changing router semantics, validator labels, or GUI behavior.
 2026-11-25 | 6c9017ed, 0da71eda | C3-I3 user-integrated exact-diff patch review: added immutable artifact persistence, epoch/plan/workspace/hash/diff-bound single-use approval, guarded real-file apply, Patch Review GUI, lifecycle invalidation, and 37 focused acceptance regressions. | Complete the §13 one-file review/approval acceptance path without granting target execution or weakening the organizer sandbox.
 2026-11-24 | 8546e051 | C3-I1 pure AST patch staging foundation: added strict one-file artifact validation, definition AST anchors, byte-preserving replace/insert staging, exact outside-range proofs and deterministic diffs, 36 focused tests, and five mutation proofs; no filesystem, execution, approval, or persistence surface was added. | Establish a reviewable deterministic staging core while keeping C3 mutation and C4 execution in BACKLOG.
@@ -66,11 +68,11 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: C3-F1 provider tier label correction commit b1878548
-Acceptance baseline: C3-F1 real-matcher provider-tier regression suite commit b1878548
-Review baseline: C3-R AST patch safety review commit fbfb42fc
-Suite: 430/430 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, and C3-I3 review-state closure `a1664a8` are confirmed pushed ancestors of `origin/main`. C3-F1 implementation `b1878548` is local and awaits human push; no push is claimed.
+Implementation baseline: C4-I1 pure iteration controller commit 4c794ec2
+Acceptance baseline: C4-I1 controller regression suite commit 4c794ec2
+Review baseline: C4-R execution safety review commit 8f3cb0da
+Suite: 455/455 unit tests green; validator 5/5; compileall and diff checks green
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, and C3-I3 review-state closure `a1664a8` are confirmed pushed ancestors of `origin/main`. C3-F1 implementation `b1878548`, C4-R review `8f3cb0da`, and C4-I1 implementation `4c794ec2` are local and await human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -325,7 +327,11 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       self-healing C3/C4 work remains future scope.
 - C4  BACKLOG | Self-healing loop: lint/run -> read stderr -> patch -> retry, with a hard
       iteration bound and a sandbox. Accept: loop terminates on bound; cannot escape
-      sandbox; every iteration logged. Est 15-30h + safety batch.
+      sandbox; every iteration logged. C4-R (execution safety review, commit 8f3cb0da) is
+      DONE and decided PROCEED for the pure C4-I1 controller only, with real execution
+      DEFERRED until an OS-level Windows isolation boundary is selected and proven;
+      C4-I1 (pure iteration controller, commit 4c794ec2) is DONE and adds no executor.
+      The executor, sandbox, and execution grant remain BACKLOG. Est 15-30h + safety batch.
 - C5  DONE | 8665d86d | Persistent document RAG: ChromaDB ingestion, 500-character chunks with
       50-character overlap, default MiniLM embeddings, bounded retrieval, source-change
       replacement, recursive TXT/PDF/DOCX ingestion, and Scout Chat results. Proof:
@@ -459,6 +465,61 @@ Review document: docs/ast_patch_review.md
       parallel to and disjoint from Incoming/Sorted; C3 and C4 remain BACKLOG. No code, tests,
       dependencies, UI, or behavior changes were introduced. Proof: 316/316 existing unit tests
       green; validator 5/5; compileall and diff checks green.
+
+## BATCH C4-R — execution safety review (DONE)
+Files: docs/self_healing_review.md, PLAN.md
+Review document: docs/self_healing_review.md
+- C4-R  DONE | 8f3cb0da | Completed a documentation-only, 11-section execution
+      safety/threat review for C4, the project's first code-execution surface.
+      Decision: PROCEED with the pure C4-I1 controller and DEFER all real execution
+      until an OS-level Windows isolation boundary (Sandbox/VM/container, or Job
+      Object plus restricted token/ACL/firewall controls proven for the whole child
+      tree) is selected and validated. The review fixes a command policy (fixed
+      application-owned interpreter/linter profiles, no shell, no string
+      interpolation of model output, no user-supplied arbitrary commands), an
+      isolation decision (scrubbed environment, default-deny network, disposable
+      copy, OS-enforced resource limits, and a plain statement of what
+      Python-level subprocess controls cannot enforce on Windows), and an approval
+      decision: C3's approval authorizes BYTES only, C4 must NEVER auto-apply a
+      patch, and every iteration's patch must pass the existing single-use exact-diff
+      C3 gate while execution itself needs a separate explicit bounded grant.
+      It also specifies controller-owned iteration bounds, bounded/redacted
+      observations, write-ahead journal/recovery truthfulness, failure and abort
+      semantics, residual risks, and 20 acceptance criteria for the future C4-I2
+      executor batch. No executor, subprocess, sandbox, GUI wiring, provider call,
+      patch-application path, or runtime behavior was introduced. C4 itself REMAINS
+      BACKLOG. Proof: 430/430 existing unit tests green; validator 5/5; compileall
+      and diff checks green; strict UTF-8 decode and required section-order check
+      on the review document.
+
+## BATCH C4-I1 — pure iteration controller (DONE)
+Files: agents/healing_controller.py, test_healing_controller.py, ARCHITECTURE.md, README.md, PLAN.md
+- C4-I1  DONE | 4c794ec2 | Added a pure, bounded iteration controller over INJECTED
+      interfaces. The module performs NO execution (no process, shell, or dynamic-code
+      surface) and cannot apply patches. It structurally checks and increments its
+      iteration counter before every iteration, so the executor cannot extend the
+      bound; writes a durable intent record before the executor call and an outcome
+      record after it (plus one terminal record), reusing the write-ahead ordering of
+      FileAgent._begin_mutation/_complete_mutation/_save_operation_log_locked; bounds
+      and redacts observations deterministically with truncation and redaction
+      reporting; and terminates deterministically on bound reached, success,
+      unrecoverable error, executor exception, invalid result, cancellation, repeated
+      identical failure, iteration/total timeout, and journal failure. Cancellation
+      is checked between iterations at a safe boundary. A journal-write failure before
+      an iteration prevents that iteration from running; a failure after execution
+      yields the truthful `uncertain` state. The controller exposes no patch-application
+      path and may only request that a proposal enter the existing C3 single-use
+      exact-diff approval gate. No executor, sandbox, GUI wiring, provider call, or
+      filesystem mutation exists in the module; C4 REMAINS BACKLOG.
+      Proof: focused RED was ModuleNotFoundError: No module named
+      'agents.healing_controller'; focused GREEN passed 25/25 focused tests and
+      455/455 discovery tests with the one known Windows symlink-privilege skip;
+      validator 5/5; compileall and diff checks green. Mutation proof: weakening the
+      structural bound check from `iteration >= self.max_iterations` to
+      `iteration > self.max_iterations` produced RED
+      (`AssertionError: 'repeated_failure' != 'bound_reached'`, a fourth executor
+      call); restoring the check returned the focused test and the full controller
+      suite to GREEN.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server

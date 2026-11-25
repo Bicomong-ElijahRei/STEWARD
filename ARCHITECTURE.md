@@ -29,6 +29,7 @@ file categorization.
 - `agents/patch_engine.py` C3-I1 pure patch staging: strict one-file artifact/schema validation, definition AST anchors, byte-preserving replace/insert splicing, deterministic diff, and outside-edit byte proof; no I/O, mutation, approval, persistence, or execution
 - `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo
 - `agents/patch_review.py` C3-I3 review facade: provider proposal, immutable exact-diff artifact, epoch/workspace/hash-bound single-use approval, guarded apply, and fail-closed lifecycle invalidation
+- `agents/healing_controller.py` C4-I1 pure iteration controller: bounded self-healing loop over INJECTED executor/journal/cancellation/proposal interfaces; structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, and truthful termination states. It performs NO execution (no process, shell, or dynamic-code surface), cannot apply patches, and reaches C3 only through a proposal request
 - `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, and truthful recovery states
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
@@ -79,6 +80,15 @@ Code indexing: Chat **Code Index** control -> explicit folder -> daemon worker
   -> CodeIndexAgent.index_project -> separate persistent `steward_code` Chroma collection
   -> queue -> main-thread status/Live Feed update; cancellation and job/conversation epochs
   reject stale worker results
+C4-I1 pure healing controller (not user-integrated): injected executor + injected
+  journal -> structural pre-iteration bound check -> durable `intent` record ->
+  injected executor call -> durable `outcome` record (bounded, redacted observation)
+  -> terminal `terminal` record. Termination is deterministic on bound reached,
+  success, unrecoverable error, executor exception, invalid result, cancellation,
+  repeated identical failure, iteration/total timeout, and journal failure. The
+  controller starts no process, applies no patch, and may only request that a
+  proposal enter the existing C3 single-use exact-diff approval gate. No executor,
+  sandbox, GUI wiring, or provider call exists; C4 remains BACKLOG.
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -265,7 +275,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_patch_engine.py — pure C3-I1 artifact, anchor, splicing, encoding, proof, determinism, and purity regressions
 - test_patch_applier.py — C3-I2 workspace/target admission, proof/source revalidation, atomic replacement, journal/backup states, and guarded undo/redo regressions
 - test_patch_review.py — C3-I3 exact-diff artifact/approval, lifecycle invalidation, hostile input, workspace isolation, truthful recovery, GUI, and real-process contention regressions
-- Total discovery count is 430
+- test_healing_controller.py — C4-I1 pure-controller regressions: structural hard bound, deterministic termination states, write-ahead journal ordering, pre-iteration journal-failure blocking, uncertain post-execution journal failure, bounded/redacted observations, cancellation safe boundary, controller-owned timeouts, no-execution spy/AST proof, no-auto-apply proof, and determinism
+- Total discovery count is 455
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
