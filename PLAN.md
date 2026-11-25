@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-25 | 3afe56aa | C4-ISO Windows isolation research: documented exact read-only host findings, eight isolation candidates, an all-20-criterion capability matrix, conditional hash-bound artifact-transfer/provenance design, dependency decision, future proof plan, and fail-closed refusal policy; selected no baseline and DEFERRED C4-I2. | Convert the binding C4-R isolation gate into an evidence-backed host/candidate decision without introducing execution or silently weakening the review criteria; C4 itself remains BACKLOG.
 2026-11-25 | 4c794ec2 | C4-I1 pure iteration controller: added a bounded, injected-interface-only healing controller with a structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, truthful termination states, controller-owned timeouts, and 25 focused tests proving no execution and no auto-apply. | Establish the coordination layer C4 needs while keeping every execution surface out of the tree until the C4-R gate is satisfied; C4 itself remains BACKLOG.
 2026-11-25 | 8f3cb0da | C4-R execution safety review: documented an 11-section threat/design review deciding a fixed no-shell command allowlist, OS-level Windows isolation, a separate single-use execution grant in addition to C3's byte-only exact-diff approval, controller-owned bounds, bounded/redacted observations, truthful recovery, and future C4-I2 acceptance criteria. | Decide the safety gate before any C4 executor is written; C4 remains BACKLOG and real execution is deferred until OS-level isolation is proven.
 2026-11-25 | b1878548 | C3-F1 provider tier label correction: corrected Patch Review's caller tier literal from "Tier1" to "Tier 1" and added real-matcher structural and focused provider-selection regressions. | Make Patch Review proposals eligible for existing Tier 1 validator providers without changing router semantics, validator labels, or GUI behavior.
@@ -71,9 +72,10 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 Implementation baseline: C4-I1 pure iteration controller commit 4c794ec2
 Acceptance baseline: C4-I1 controller regression suite commit 4c794ec2
 Review baseline: C4-R execution safety review commit 8f3cb0da
+Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation closure: C4 documentation reconciliation commit 7b427437
 Suite: 455/455 unit tests green; validator 5/5; compileall and diff checks green
-Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, C3-I3 review-state closure `a1664a8`, C3-F1 implementation `b1878548`, and C3-F1 documentation closure `8dfd1a9d` are confirmed pushed ancestors of `origin/main` (verified with `git merge-base --is-ancestor` against `origin/main` at `8dfd1a9d`). C4-R review `8f3cb0da`, C4-I1 implementation `4c794ec2`, and C4 documentation closure `7b427437` are local and await human push; no push is claimed.
+Push state at verification: Phase C2 implementation `1c66ecb9`, C6 implementation `8e8d4f34`, C6 documentation `9dbf774d`, push-state reconciliation `96dcfe14`, Phase C7 implementation `883347bf`, C3-R review `fbfb42fc`, C3-R documentation closure `77f500af`, C3-I1 implementation `8546e051`, its documentation closure `2b9f87cc`, C3-I2 implementation `279023e7`, its documentation closure `1c59da0f`, C3-I3 implementation `6c9017ed`, C3-I3 acceptance suite `0da71eda`, C3-I3 review-state closure `a1664a8`, C3-F1 implementation `b1878548`, C3-F1 documentation closure `8dfd1a9d`, C4-R review `8f3cb0da`, C4-I1 implementation `4c794ec2`, C4 documentation closure `7b427437`, and push-state reconciliation `47162e82` are confirmed pushed ancestors of `origin/main` (verified with `git merge-base --is-ancestor` against `origin/main` at `47162e82`). C4-ISO research `3afe56aa` is local and awaits human push; no push is claimed.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -331,8 +333,11 @@ Gate: v2.0 frozen. C3/C4 introduce code EXECUTION — each requires its own safe
       sandbox; every iteration logged. C4-R (execution safety review, commit 8f3cb0da) is
       DONE and decided PROCEED for the pure C4-I1 controller only, with real execution
       DEFERRED until an OS-level Windows isolation boundary is selected and proven;
-      C4-I1 (pure iteration controller, commit 4c794ec2) is DONE and adds no executor.
-      The executor, sandbox, and execution grant remain BACKLOG. Est 15-30h + safety batch.
+      C4-I1 (pure iteration controller, commit 4c794ec2) is DONE and adds no executor;
+      C4-ISO (Windows isolation research, commit 3afe56aa) is DONE and DEFERRED C4-I2
+      after finding no supported, proven baseline on this Windows 11 Home host. The
+      executor, sandbox, artifact transfer, and execution grant remain BACKLOG. Est
+      15-30h + safety batch on a qualified host.
 - C5  DONE | 8665d86d | Persistent document RAG: ChromaDB ingestion, 500-character chunks with
       50-character overlap, default MiniLM embeddings, bounded retrieval, source-change
       replacement, recursive TXT/PDF/DOCX ingestion, and Scout Chat results. Proof:
@@ -521,6 +526,30 @@ Files: agents/healing_controller.py, test_healing_controller.py, ARCHITECTURE.md
       (`AssertionError: 'repeated_failure' != 'bound_reached'`, a fourth executor
       call); restoring the check returned the focused test and the full controller
       suite to GREEN.
+
+## BATCH C4-ISO — Windows isolation research and decision (DONE)
+Files: docs/windows_isolation_research.md, ARCHITECTURE.md, PLAN.md
+- C4-ISO  DONE | 3afe56aa | Completed a research-only host qualification and Windows
+      isolation decision for the future C4-I2 executor. The document records the exact
+      read-only probe allowlist and empirical findings; compares Windows Sandbox,
+      Hyper-V VM, WSL2/Linux guest, Windows containers, Job Object + restricted token +
+      ACL + firewall, AppContainer, third-party sandbox, and Python-only/no-boundary
+      candidates; maps all eight against all 20 C4-R acceptance criteria; defines a
+      conditional hash-bound data-only source/artifact transfer with protected provenance;
+      approves no new Python or third-party dependency; specifies the criterion-by-criterion
+      future test strategy; and requires fail-closed refusal with no silent downgrade.
+      Decision: DEFER C4-I2 and keep C4 BACKLOG. Windows Sandbox is unsupported on the
+      observed Home edition; the Hyper-V role is outside the observed client edition's
+      supported editions; optional-feature state remains unknown because authoritative
+      queries require elevation; no candidate boundary was constructed or proven. No
+      executor, sandbox, transfer implementation, execution grant, test, dependency, GUI
+      wiring, provider call, patch-application path, or runtime behavior was introduced.
+      Proof: read-only systeminfo, whoami /priv, DISM/Get-WindowsOptionalFeature refusal,
+      and netsh advfirewall probes; structural checks for 11 ordered sections, 32 matrix
+      candidate rows, and all 20 proof-plan criteria; 455/455 unit tests green with the
+      one known Windows symlink-privilege skip; validator 5/5; compileall and diff checks
+      green. C4-I2 remains BACKLOG pending a supported host or explicitly approved
+      candidate baseline in a new focused design/proof batch.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support: connect external tool servers. Accept: one real MCP server

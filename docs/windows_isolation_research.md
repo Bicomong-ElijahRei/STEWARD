@@ -1,10 +1,10 @@
 # STEWARD — C4-ISO Windows Isolation Research and Decision
 
-**Batch:** C4-ISO — Windows isolation research and decision  
-**Date:** 2026-11-25  
-**Status:** Complete research; C4-I2 execution remains deferred  
-**Binding review:** `docs/self_healing_review.md` §§4, 10.1, and 11  
-**Decision:** **DEFER.** This host has no Windows Sandbox support, its Windows edition does not support the Hyper-V role, optional-feature state could not be queried without elevation, and no candidate boundary was constructed or proven. C4 remains **BACKLOG**.
+- **Batch:** C4-ISO — Windows isolation research and decision
+- **Date:** 2026-11-25
+- **Status:** Complete research; C4-I2 execution remains deferred
+- **Binding review:** `docs/self_healing_review.md` §§4, 10.1, and 11
+- **Decision:** **DEFER.** This host has no Windows Sandbox support, its Windows edition does not support the Hyper-V role, optional-feature state could not be queried without elevation, and no candidate boundary was constructed or proven. C4 remains **BACKLOG**.
 
 This document answers review open questions 1 and 2. It adds no executor, sandbox, test, dependency, GUI behavior, command profile, or execution surface.
 
