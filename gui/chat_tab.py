@@ -473,6 +473,7 @@ class ChatTab(ctk.CTkFrame):
             live_feed=self.live_feed,
             is_current=is_current,
             on_close=on_close,
+            schedule_if_epoch=self._safe_after_if_epoch,
         )
         self._patch_review_dialog = dialog
 

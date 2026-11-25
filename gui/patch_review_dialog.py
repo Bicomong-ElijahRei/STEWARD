@@ -1,6 +1,7 @@
 """Exact-diff review and guarded apply dialog for C3 patches."""
 
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog
 
@@ -26,6 +27,7 @@ class PatchReviewDialog(ctk.CTkToplevel):
         live_feed=None,
         is_current=None,
         on_close=None,
+        schedule_if_epoch=None,
     ):
         super().__init__(master)
         self.manager = manager
@@ -34,6 +36,13 @@ class PatchReviewDialog(ctk.CTkToplevel):
         self.live_feed = live_feed
         self.is_current = is_current or (lambda: True)
         self.on_close = on_close
+        if schedule_if_epoch is None:
+            raise ValueError("Patch Review requires an epoch-aware UI scheduler")
+        self._epoch_scheduler = schedule_if_epoch
+        self._closed = False
+        self._request_in_flight = False
+        self._propose_in_flight = False
+        self._apply_in_flight = False
         self.preview = None
         self.approval = None
         self.last_result = None
@@ -119,7 +128,70 @@ class PatchReviewDialog(ctk.CTkToplevel):
         owner.live_feed.add_event("Patch", state, detail=detail)
 
     def _current(self):
-        return self.is_current()
+        return not self._closed and self.is_current()
+
+    def _publish_if_current(self, epoch, callback):
+        """Publish one worker result only while its conversation is current."""
+        def guarded_callback():
+            if not self._current():
+                return
+            callback()
+
+        self._epoch_scheduler(guarded_callback, epoch)
+
+    def _start_worker(self, operation, epoch, on_success, on_refused, on_failed):
+        """Run one bounded manager request on a daemon worker thread."""
+        def worker():
+            try:
+                result = operation()
+            except PatchRefusal as exc:
+                outcome = ("refused", exc)
+            except Exception as exc:
+                outcome = ("failed", exc)
+            else:
+                outcome = ("success", result)
+            self._publish_if_current(
+                epoch,
+                lambda outcome=outcome: self._publish_worker_outcome(
+                    outcome, on_success, on_refused, on_failed
+                ),
+            )
+
+        threading.Thread(
+            target=worker,
+            name="patch-review-worker",
+            daemon=True,
+        ).start()
+
+    def _publish_worker_outcome(self, outcome, on_success, on_refused, on_failed):
+        kind, value = outcome
+        if kind == "success":
+            on_success(value)
+        elif kind == "refused":
+            on_refused(value)
+        else:
+            on_failed(value)
+
+    def _restore_proposal_controls(self):
+        """Restore controls after a proposal request ends."""
+        self.propose_button.configure(state="normal")
+        self.choose_workspace_button.configure(state="normal")
+        self.workspace_entry.configure(state="normal")
+        self.targets_menu.configure(state="normal")
+        self.intent_entry.configure(state="normal")
+
+    def _disable_request_inputs(self):
+        """Disable controls whose values are captured by a request."""
+        self.propose_button.configure(state="disabled")
+        self.choose_workspace_button.configure(state="disabled")
+        self.workspace_entry.configure(state="disabled")
+        self.targets_menu.configure(state="disabled")
+        self.intent_entry.configure(state="disabled")
+
+    def _invalidate_local_state(self):
+        """Discard dialog-owned pending state without touching the workspace."""
+        self.preview = None
+        self.approval = None
 
     def _choose_workspace(self):
         selected = filedialog.askdirectory(title="Select code workspace")
@@ -171,30 +243,74 @@ class PatchReviewDialog(ctk.CTkToplevel):
         if not self._current() or not self.workspace_root or not self.target_var.get():
             self._set_status("refused", "Select a current workspace and admitted target.")
             return
-        try:
-            self.preview = self.manager.propose_patch(
+        if self._request_in_flight:
+            return
+        workspace_root = self.workspace_root
+        relative_path = self.target_var.get()
+        intent = self.intent_entry.get()
+        self._request_in_flight = True
+        self._propose_in_flight = True
+        self._disable_request_inputs()
+        self.approve_button.configure(state="disabled")
+        self.apply_button.configure(state="disabled")
+        self.decline_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled")
+
+        def operation():
+            return self.manager.propose_patch(
                 plan_id=self.plan_id,
-                workspace_root=self.workspace_root,
-                relative_path=self.target_var.get(),
-                intent=self.intent_entry.get(),
+                workspace_root=workspace_root,
+                relative_path=relative_path,
+                intent=intent,
                 epoch=self.epoch,
                 is_current=self._current,
             )
-        except PatchRefusal:
+
+        def succeeded(preview):
+            self._propose_in_flight = False
+            self._request_in_flight = False
+            self.preview = preview
+            self._restore_proposal_controls()
+            self._show_diff(preview["diff_bytes"])
+            self.approve_button.configure(state="normal")
+            self.decline_button.configure(state="normal")
+            self.cancel_button.configure(state="normal")
+            self._set_status(
+                "preview ready",
+                f"{preview['patch_id']} — source {preview['source_sha256']} "
+                f"output {preview['output_sha256']}",
+            )
+
+        def refused(_exc):
+            self._propose_in_flight = False
+            self._request_in_flight = False
             self.preview = None
+            self.approval = None
+            self._restore_proposal_controls()
+            self.approve_button.configure(state="disabled")
+            self.apply_button.configure(state="disabled")
+            self.decline_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled")
             self._set_status("refused", "Patch request was refused.")
-            return
-        except Exception as exc:
+
+        def failed(exc):
+            self._propose_in_flight = False
+            self._request_in_flight = False
+            self.preview = None
+            self.approval = None
+            self._restore_proposal_controls()
+            self.approve_button.configure(state="disabled")
+            self.apply_button.configure(state="disabled")
+            self.decline_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled")
             self._set_status("failed", str(exc))
-            return
-        self._show_diff(self.preview["diff_bytes"])
-        self.approve_button.configure(state="normal")
-        self.decline_button.configure(state="normal")
-        self.cancel_button.configure(state="normal")
-        self._set_status(
-            "preview ready",
-            f"{self.preview['patch_id']} — source {self.preview['source_sha256']} "
-            f"output {self.preview['output_sha256']}",
+
+        self._start_worker(
+            operation,
+            self.epoch,
+            succeeded,
+            refused,
+            failed,
         )
 
     def _approve(self):
@@ -236,43 +352,69 @@ class PatchReviewDialog(ctk.CTkToplevel):
     def _apply(self):
         if not self.approval or not self._current():
             return
+        if self._request_in_flight or self._apply_in_flight:
+            return
+        approval_id = self.approval["approval_id"]
+        self._request_in_flight = True
+        self._apply_in_flight = True
+        self._disable_request_inputs()
+        self.apply_button.configure(state="disabled")
+        self.approve_button.configure(state="disabled")
+        self.decline_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled")
         self._set_status("applying", "Applying the approved artifact.")
-        try:
-            result = self.manager.apply_patch(
-                self.approval["approval_id"], epoch=self.epoch
+
+        def operation():
+            return self.manager.apply_patch(approval_id, epoch=self.epoch)
+
+        def succeeded(result):
+            self._apply_in_flight = False
+            self._request_in_flight = False
+            self.last_result = result
+            self.preview = None
+            self.approval = None
+            self.apply_button.configure(state="disabled")
+            if result["state"] == "uncertain":
+                self._disable_all_actions()
+                self._set_status(
+                    "uncertain",
+                    f"source {result['source_sha256']} output {result['output_sha256']} "
+                    f"backup {result['backup_reference']}. {result['guidance']}",
+                )
+                return
+            self.approve_button.configure(state="disabled")
+            self.decline_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled")
+            self._restore_proposal_controls()
+            self.undo_button.configure(state="normal")
+            self.redo_button.configure(state="normal")
+            self._set_status(
+                "completed",
+                f"output {result['output_sha256']} backup {result['backup_reference']}",
             )
-        except PatchRefusal:
+
+        def refused(_exc):
+            self._apply_in_flight = False
+            self._request_in_flight = False
             self.preview = None
             self.approval = None
             self._disable_all_actions()
             self._set_status("refused", "Patch request was refused.")
-            return
-        except Exception as exc:
+
+        def failed(exc):
+            self._apply_in_flight = False
+            self._request_in_flight = False
             self.preview = None
             self.approval = None
             self._disable_all_actions()
             self._set_status("failed", str(exc))
-            return
-        self.last_result = result
-        self.preview = None
-        self.approval = None
-        self.apply_button.configure(state="disabled")
-        if result["state"] == "uncertain":
-            self._disable_all_actions()
-            self._set_status(
-                "uncertain",
-                f"source {result['source_sha256']} output {result['output_sha256']} "
-                f"backup {result['backup_reference']}. {result['guidance']}",
-            )
-            return
-        self.approve_button.configure(state="disabled")
-        self.decline_button.configure(state="disabled")
-        self.cancel_button.configure(state="disabled")
-        self.undo_button.configure(state="normal")
-        self.redo_button.configure(state="normal")
-        self._set_status(
-            "completed",
-            f"output {result['output_sha256']} backup {result['backup_reference']}",
+
+        self._start_worker(
+            operation,
+            self.epoch,
+            succeeded,
+            refused,
+            failed,
         )
 
     def _undo(self):
@@ -296,6 +438,8 @@ class PatchReviewDialog(ctk.CTkToplevel):
         self._set_status("redone", "The guarded post-image was restored.")
 
     def close(self):
+        """Invalidate pending review state before closing the dialog."""
+        self._closed = True
         if self.preview:
             try:
                 self.manager.cancel_patch(
@@ -303,8 +447,17 @@ class PatchReviewDialog(ctk.CTkToplevel):
                 )
             except PatchRefusal:
                 pass
-            self.preview = None
-            self.approval = None
+        try:
+            self.manager.invalidate_pending_patch()
+        except Exception:
+            pass
+        self._invalidate_local_state()
         if self.on_close:
             self.on_close()
         self.destroy()
+
+    def destroy(self):
+        """Invalidate local review state whenever Tk destroys the dialog."""
+        self._closed = True
+        self._invalidate_local_state()
+        super().destroy()
