@@ -7,7 +7,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 ## Amendment protocol (how this document changes)
 1. Statuses: OPEN | IN-PROGRESS | DONE | DISPUTED | DEFERRED. DONE requires a commit SHA.
 2. Add, remove, split, re-scope, or re-estimate ANY item by editing this file directly.
-3. Every structural change gets ONE changelog line: date | HEAD | change | why.
+3. Every structural change gets ONE changelog line: date | commit SHA | change | why.
 4. No silent scope growth: an item discovered mid-batch moves to a new batch or the
    backlog FIRST, then is worked. (This rule exists because a session once invented
    "Item 5" and padded a report with it.)
@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | 638d6ffc | D1-I1/D1-R resolution record: the official MCP SDK was selected, exact-version and transitive-dependency review was required before D1-I2, and a non-binding dependency-review backlog line was instructed but omitted from the ledger. | Restore the omitted proposed amendment while preserving the binding review and distinguishing non-binding backlog consideration from the selected SDK transport.
 2026-11-26 | 5c337317 | D1-I1 pure MCP resource admission core: added a standard-library-only, transport-agnostic admission/read boundary with HTTPS and effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers; added 37 focused regressions and killed six targeted source mutants; no transport, SDK dependency, network/filesystem/process access, GUI integration, tool surface, local MCP resource, or MCP-caused local mutation was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Establish the fail-closed, identity-pinned resource admission foundation before selecting the official MCP SDK and transport for D1-I2, while keeping remote content structurally outside routing and native-tool authority.
 2026-11-26 | 9737c516 | D1-R MCP integration safety review: documented a 13-section threat/design review and RE-SCOPE decision for one explicitly admitted, identity-pinned, read-only remote MCP resource server usable from chat with server failure isolated; D1 remains BACKLOG, and stdio, invokable tools, local resources, and MCP-caused local mutation remain excluded; no code, dependency, configuration, README, or ROADMAP change was introduced; 470/470 tests green with the one known Windows symlink-privilege skip. | Decide the MCP authority and containment boundary before implementation while preserving proportionality and preventing remote server declarations from entering native dispatch authority.
 2026-11-25 | 0acf370, 2e0fe28e | HYG-1 Patch Review background workers and retired-scope cleanup: moved proposal and apply off the Tk main thread into one bounded daemon-worker slot with epoch/closed-guarded result marshaling, single-flight apply, close/clear invalidation, and stale-result suppression; removed the orphaned retired desktop-control persona, routing, delegation, provider-choice, constellation, package-export, and skeleton surfaces; added truthful OUT_OF_SCOPE classification/refusal while preserving generic UNKNOWN behavior; left ROADMAP unchanged; 470/470 tests green with the one known Windows symlink-privilege skip. | Keep the Tk event loop responsive, prevent stale review state from publishing, and ensure removed-scope requests cannot be mistaken for an available persona or capability.
@@ -38,7 +39,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 2026-11-23 | 935a6236 | FS-S5 DONE: implemented persistent sidecar OS locking, bounded timeout, crash release, stale-transition protection, write-ahead/atomic journal guarantees, cross-process regressions, and 266/266 discovery tests green. | Prevent lost journal updates and conflicting undo/redo transitions when separate STEWARD processes share the AppData operation log.
 2026-11-23 | cc4800de | Activated FS-S5 with an explicit portable cross-process journal-lock design, bounded timeout, crash-release semantics, transition-claim requirements, and isolated multi-process regression plan. | Separate STEWARD processes can share the AppData operation log, so process-local synchronization is insufficient.
 2026-11-23 | e1a37c30 | Filesystem journal truthfulness: distinguish no-op, failed, and uncertain outcomes; preserve partial-folder ownership evidence; detect file/directory plan conflicts in either order; 259/259 unit tests green. | Make durable history reflect unresolved filesystem state and prevent conflicting whole plans from mutating disk.
-2026-11-23 | 9d092fd7 | Added Batch FS-SAFETY-1: reproduce and repair no-op, partial-mutation, partial-folder, and folder-target preflight journal truthfulness; defer cross-process journal locking pending reviewed design. | Reproduce the handoff leads against the current checkout before changing safety behavior.
+2026-11-23 | 9d092fd7, 935a6236 | Added Batch FS-SAFETY-1: reproduce and repair no-op, partial-mutation, partial-folder, and folder-target preflight journal truthfulness; cross-process journal locking was deferred for reviewed design and later implemented in 935a6236. | Reproduce the handoff leads against the current checkout before changing safety behavior.
 2026-11-23 | 7907ebb1 | Filesystem mutation safety: added no-overwrite publication, write-ahead atomic operation history, exact folder ownership, whole-plan destination conflict preflight, uncertain-state recovery, and 247/247 unit tests green.
 2026-11-23 | 8dd2e411 | Lifecycle hardening: added preview-generation ownership, epoch-guarded chat/approval/execution/specialist UI continuations, five Syntax intents, and generation-isolated scanner restarts; 236/236 unit tests green.
 2026-11-23 | 8dd2e411 | Documentation reconciliation: updated README, ARCHITECTURE, PLAN, and ROADMAP to match the implemented credential, scheduler, conversation, Syntax, AppData, lifecycle, provider-attribution, and test state; 236/236 unit tests green.
@@ -63,7 +64,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 2026-11-22 | b59b7c30 | Reconciled state: Phase B 4/5 items done; 85 unit tests green.
 2026-11-22 | ab585a7f | tools/run_migration.py added; Batch 4c fully closed.
 2026-11-22 | eef11f9b | Batch 4c closed: shared credential store live; 72/72 green.
-2026-11-22 | 535b9c6d | Batch 4c first push carried a syntax break from a partial replace; repairs applied locally, gate pending.
+2026-11-22 | 535b9c6d, eef11f9b, ab585a7f | Batch 4c first push carried a syntax break from a partial replace; the repair and documentation-closure commits were subsequently published. | Preserve the actual repair and closure SHAs in the canonical record.
 2026-11-22 | 5357cc43 | Batch 4b closed: credential store safety review committed (docs/credential_store_review.md).
 2026-11-22 | 3f0ed7d1 | Batch 4a closed: bounded dialog waits (L2 fully closed) and strengthened dedup test; 62 tests green.
 2026-11-22 | 33e2b281 | v2.0 FROZEN. README shipped. (amends 1a538464)
@@ -82,11 +83,18 @@ Documentation baseline: C4 documentation reconciliation commit 7b427437
 Suite: 507/507 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at verification: `origin/main` remains at 05abaac0. D1-R review commit `9737c516` is a local ancestor of this closing commit and awaits human push; no push is claimed. Previously recorded implementation/documentation SHAs remain pushed ancestors of `origin/main`.
+Push state at verification: `origin/main` is at `638d6ffc`. Ancestry checks confirm `05abaac0`, `9737c516`, `4d274b26`, `5c337317`, and `638d6ffc` are published to origin at their respective SHAs and are ancestors of `origin/main`; `4d274b26` is the parent of `5c337317`. This ledger-correction commit is local, not yet published to origin at the time of writing.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
 `883347bf` and its documentation closure use the required structured body.
+Additional commit-body deviation: `5c337317` and `638d6ffc` used a merged `Tests/Gates`
+section instead of six separate sections; their content is present, but the structure
+deviated. The subject of `638d6ffc` says "open dependency decision" while its body and PLAN
+correctly record the SDK as selected. Public history is not rewritten.
+Commit-body convention: every commit body carries SIX SEPARATE sections — Problem / Design /
+Fix / Impact / Tests / Gates. Tests reports counts and RED->GREEN/mutation evidence; Gates
+reports the gate commands and results. Do not merge them.
 Persistent state: `%APPDATA%\STEWARD`; legacy repository-root files are copied, never moved or overwritten.
 Invariants: The agent must never write to, delete, or recreate steward.db or secret.key. Their hashes MAY change during normal application use; a changed hash is NOT a defect; helper scripts never in repo.
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
@@ -199,18 +207,18 @@ Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.p
       bounded `SourceIntegrityTests` regression over tracked Python sources (venv excluded, utf-8-sig).
       Proof: focused regression RED with 22 signature findings, then GREEN; 267/267 unit tests,
       5/5 validator checks, compileall, and diff checks green. Encoding repair commit: `fc3cc0ee`
-      (local; not pushed).
+      is published to origin at `fc3cc0ee` and confirmed as an ancestor of `origin/main`.
 
 ### FS-S5 closure handoff ledger
-- Verified baseline: `eaee322b`; origin/main was synced at verification. The pre-existing
-  FS-S5 implementation `935a6236` and closure `eaee322b` are confirmed pushed ancestors of
-  `origin/main`; the stale `local; not pushed` claim was removed.
+- Verified baseline: `eaee322b`. The pre-existing FS-S5 implementation `935a6236` and closure
+  `eaee322b` are confirmed published ancestors of `origin/main`; the stale local-not-pushed
+  claim is corrected here.
 - Encoding finding: confirmed, not disputed. Exact affected literals were `agents/file_agent.py`
   lines 683, 705, 790, 810, 1304, 1306, 1310, 1314, 1342, 1344, and 1499 before repair.
 - Repair: `fc3cc0ee` restores `→` in those 11 literals only and adds one bounded tracked-Python
   regression. BOMs and line endings were not altered.
-- Push handoff: `fc3cc0ee` and this plan-reconciliation commit are local; a human must push them.
-  Do not claim they are pushed until `origin/main` confirms them.
+- Push state: `fc3cc0ee` and plan-reconciliation commit `9b8ee32e` are published to origin at
+  their respective SHAs and are ancestors of `origin/main`.
 
 ## BATCH 2A — router / database / settings / chat lifecycle
 Files: core/router.py, core/database.py, gui/settings_tab.py, gui/chat_tab.py
@@ -626,7 +634,7 @@ Review document: docs/mcp_integration_review.md
       rationale, bounded failure isolation, residual risks, and future mutation-proof
       acceptance criteria. Decision: RE-SCOPE D1 to one explicitly admitted, identity-pinned,
       read-only remote MCP resource server usable from chat with server failure isolated.
-      D1 REMAINS BACKLOG pending a future implementation batch. The selected v1 permits no
+      D1 REMAINS BACKLOG pending D1-I2. The selected v1 permits no
       MCP tools, no stdio, no local MCP resources, and no MCP-caused local mutation; server
       content cannot enter supervisor routing or native tool context. A future official MCP
       SDK dependency requires exact-version and transitive-dependency review; a hand-rolled
@@ -647,6 +655,12 @@ Review document: docs/mcp_integration_review.md
       add a read-only transport/chat integration without weakening the D1-I1
       admission, isolation, bounds, redaction, or revocation contracts.
       Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
+- Proposed (non-binding) for the D1-I2 dependency review: a resources-only client
+  needs initialize, resources/list, and resources/read over HTTPS, and requests is
+  already a dependency. The full official MCP SDK carries stdio transports and tool
+  machinery that D1 will never invoke; unused code remains attack surface. Weigh
+  that unused-surface cost against protocol-correctness benefits, consistent with
+  the FS-S5 and C3-R precedent of preferring stdlib where sufficient. Est 2-4h.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
       scanner runs the real file categorization/move path at configurable 15-minute,
       30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
@@ -687,7 +701,7 @@ Common thread: each grants authority beyond the application's existing bounded m
 2. RED -> fix -> GREEN, pasting both outputs. Safety items also get mutation proof.
 3. Security tests enter via execute_pending_plan() with a hostile plan, never convenience methods.
 4. No invented items. Disputed items are marked DISPUTED with exact source lines.
-5. Update statuses here in the closing commit; update HEAD on push; log structural changes.
+5. Update statuses here in the closing commit; record the actual commit SHA; log structural changes.
 6. Context death: commit proven work, write the handoff ledger INTO THIS FILE.
 7. Environment: PowerShell (no &&, no rg, no tail), unittest not pytest, BOM files need
    utf-8-sig, protected files never modified, helper scripts outside the repo.
