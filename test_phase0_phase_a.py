@@ -500,6 +500,24 @@ class RouterAssignmentTests(unittest.TestCase):
                 self.assertIsNotNone(provider["cooldown_until"])
 
 
+class ValidatorMeasurementTests(unittest.TestCase):
+    def test_health_check_reports_total_request_elapsed_time(self):
+        from core.validator import health_check
+
+        response = Mock(status_code=200, headers={}, text='{"choices": []}')
+        response.json.return_value = {"choices": []}
+        with patch("core.validator.requests.post", return_value=response):
+            with patch(
+                "core.validator.time.perf_counter", side_effect=[10.0, 10.125]
+            ):
+                result = health_check("https://measure.example/v1", "key")
+
+        self.assertEqual(result.speed_ms, 125)
+        self.assertEqual(result.elapsed_ms, 125)
+        self.assertEqual(result.model_dump()["elapsed_ms"], 125)
+        self.assertNotIn("first_" + "byte_ms", result.model_dump())
+
+
 class ImmutablePlanTests(unittest.TestCase):
     def test_confirmation_executes_saved_arguments_without_more_llm_calls(self):
         with tempfile.TemporaryDirectory(prefix="steward_plan_test_") as tmp:

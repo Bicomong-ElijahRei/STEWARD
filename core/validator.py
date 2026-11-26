@@ -87,7 +87,7 @@ class ValidationResult:
         self.supports_tools = None
         self.status = "unknown"
         self.error = None
-        self.first_byte_ms = None
+        self.elapsed_ms = None
         self.success = False
 
     def model_dump(self) -> dict:
@@ -98,7 +98,7 @@ class ValidationResult:
             "supports_tools": self.supports_tools,
             "status": self.status,
             "error": self.error,
-            "first_byte_ms": self.first_byte_ms,
+            "elapsed_ms": self.elapsed_ms,
             "success": self.success,
         }
 
@@ -107,9 +107,8 @@ class ValidationResult:
 
 def health_check(base_url: str, api_key: str, timeout: float = 15.0, model_name: str = "default") -> ValidationResult:
     """
-    Send a minimal 'Say "OK"' payload and measure time from request start
-    until we have the first byte of the response body.
-    Returns a ValidationResult with speed_ms set on success.
+    Send a minimal 'Say "OK"' payload and measure total elapsed request time.
+    Returns a ValidationResult with speed_ms and elapsed_ms set on success.
     """
     result = ValidationResult(base_url)
     url = normalize_chat_endpoint(base_url)
@@ -128,8 +127,8 @@ def health_check(base_url: str, api_key: str, timeout: float = 15.0, model_name:
     start = time.perf_counter()
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-        first_byte = time.perf_counter()
-        elapsed = int((first_byte - start) * 1000)
+        completed = time.perf_counter()
+        elapsed = int((completed - start) * 1000)
 
         if resp.status_code == 401:
             result.status = "invalid_key"
@@ -152,7 +151,7 @@ def health_check(base_url: str, api_key: str, timeout: float = 15.0, model_name:
             data = {"raw": resp.text[:200]}
 
         result.speed_ms = elapsed
-        result.first_byte_ms = elapsed
+        result.elapsed_ms = elapsed
         result.status = "healthy"
         result.success = True
         return result
@@ -308,9 +307,10 @@ def validate_provider(
     """
     result = ValidationResult(name)
 
-    # 1. Speed
+    # 1. Total request elapsed time
     speed = health_check(base_url, api_key, model_name=model_name)
     result.speed_ms = speed.speed_ms
+    result.elapsed_ms = speed.elapsed_ms
     if not speed.success:
         result.status = speed.status
         result.error = speed.error

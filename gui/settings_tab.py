@@ -243,7 +243,7 @@ class SettingsTab(ctk.CTkFrame):
                 name, is_active=1, cooldown_until=None, failure_count=0
             )
             self.status_label.configure(
-                text=f"✅ Saved! Speed: {speed_score}ms | IQ: {intelligence_tier}", 
+                text=f"✅ Saved! Total request: {speed_score}ms | IQ: {intelligence_tier}",
                 text_color="#00FFCC"
             )
             self.refresh_provider_list()
@@ -362,7 +362,7 @@ class SettingsTab(ctk.CTkFrame):
                     status_text = ""
                 info = ctk.CTkLabel(
                     card, 
-                    text=f"{p['name']} | {p['model_name']} | {p['speed_score_ms']}ms | {p['intelligence_tier']}{status_text}", 
+                    text=f"{p['name']} | {p['model_name']} | total request {p['speed_score_ms']}ms | {p['intelligence_tier']}{status_text}",
                     font=("Consolas", 12),
                     text_color=TEXT_BRIGHT if is_active else TEXT_MUTED,
                     anchor="w"
