@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | 9f1d9ace | D1-DEP MCP dependency and protocol review: documented a 13-section read-only review selecting the official MCP Python SDK at mcp==2.3.0 for a future D1-I2 implementation; recorded the complete 29-package Windows CPython 3.12 binary closure with reviewed artifact hashes, licenses, ownership, and release dates; rejected the narrow requests client and helper/placeholder alternatives; required cryptography==50.0.2 remediation for six current cryptography==43.0.1 advisories; and defined the future hash lock, stdio reachability boundary, transport implications, and D1-I2 acceptance gates; no dependency, lock, configuration, code, runtime, README, or ROADMAP change was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Satisfy the binding D1-I2 exact-version/transitive-dependency review prerequisite while keeping D1 BACKLOG and preserving the D1-R official-SDK, read-only, no-tools, no-stdio, no-local-resource boundary.
 2026-11-26 | 638d6ffc | D1-I1/D1-R resolution record: the official MCP SDK was selected, exact-version and transitive-dependency review was required before D1-I2, and a non-binding dependency-review backlog line was instructed but omitted from the ledger. | Restore the omitted proposed amendment while preserving the binding review and distinguishing non-binding backlog consideration from the selected SDK transport.
 2026-11-26 | 5c337317 | D1-I1 pure MCP resource admission core: added a standard-library-only, transport-agnostic admission/read boundary with HTTPS and effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers; added 37 focused regressions and killed six targeted source mutants; no transport, SDK dependency, network/filesystem/process access, GUI integration, tool surface, local MCP resource, or MCP-caused local mutation was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Establish the fail-closed, identity-pinned resource admission foundation before selecting the official MCP SDK and transport for D1-I2, while keeping remote content structurally outside routing and native-tool authority.
 2026-11-26 | 9737c516 | D1-R MCP integration safety review: documented a 13-section threat/design review and RE-SCOPE decision for one explicitly admitted, identity-pinned, read-only remote MCP resource server usable from chat with server failure isolated; D1 remains BACKLOG, and stdio, invokable tools, local resources, and MCP-caused local mutation remain excluded; no code, dependency, configuration, README, or ROADMAP change was introduced; 470/470 tests green with the one known Windows symlink-privilege skip. | Decide the MCP authority and containment boundary before implementation while preserving proportionality and preventing remote server declarations from entering native dispatch authority.
@@ -77,13 +78,14 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 Implementation baseline: D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
 Acceptance baseline: D1-I1 focused mutation-tested resource admission suite; 507/507 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
+Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
 Suite: 507/507 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at verification: `origin/main` is at `638d6ffc`. Ancestry checks confirm `05abaac0`, `9737c516`, `4d274b26`, `5c337317`, and `638d6ffc` are published to origin at their respective SHAs and are ancestors of `origin/main`; `4d274b26` is the parent of `5c337317`. This ledger-correction commit is local, not yet published to origin at the time of writing.
+Push state at verification: `origin/main` remains at `78a88b64`; D1-DEP review commit `9f1d9ace` and this ledger reconciliation are local, not yet published to origin at the time of writing. The preflight confirmed `78a88b64` was the starting `HEAD` and `origin/main` on branch `main`.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -100,6 +102,16 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- D1-DEP MCP dependency and protocol review — DONE | 9f1d9ace
+  read-only 13-section dependency decision selecting the official MCP Python SDK at
+  `mcp==2.3.0` for a future D1-I2 implementation. The review records the complete
+  29-package Windows CPython 3.12 binary closure, reviewed wheel hashes, licenses,
+  ownership, release dates, and exact-version advisory status; rejects the narrow
+  `requests` client and helper/placeholder alternatives; requires the current
+  `cryptography==43.0.1` pin to be replaced by `cryptography==50.0.2`; and defines
+  the future platform lock, transport/import boundary, and D1-I2 acceptance gates.
+  No dependency, lock, configuration, code, transport, chat surface, or runtime
+  capability was added; D1 remains BACKLOG pending D1-I2.
 - D1-I1 Pure MCP resource admission core — DONE | 5c337317 |
   standard-library-only, transport-agnostic admission/read boundary for one explicitly selected,
   identity-pinned remote resource server. HTTPS identities and effective origins are canonicalized
@@ -614,8 +626,9 @@ Files: agents/mcp_resource_core.py, test_mcp_resource_core.py
   and tools is rejected wholesale rather than partially admitted, so D1-I1 is
   intentionally incompatible with resource-and-tools servers even though the core
   never invokes tools. D1-I1 adds no dependency. The official MCP SDK remains the
-  selected D1 transport choice, but exact-version and transitive-dependency review
-  is a mandatory D1-I2 prerequisite before adding it.
+  selected D1 transport choice; its exact-version and transitive-dependency review
+  is complete in D1-DEP commit 9f1d9ace and remains a prerequisite for installation
+  in D1-I2.
   Proof: 37/37 focused tests; 507/507 discovery tests green with the one known
   Windows symlink-privilege skip; validator 5/5; compileall and diff checks green.
   Six targeted source mutants covering tools refusal, fingerprint verification,
@@ -643,24 +656,51 @@ Review document: docs/mcp_integration_review.md
       was introduced. Proof: 470/470 existing unit tests green with the one known Windows
       symlink-privilege skip; validator 5/5; compileall and diff checks green.
 
+## BATCH D1-DEP — MCP dependency and protocol review (DONE)
+Files: docs/mcp_dependency_review.md, PLAN.md
+Review document: docs/mcp_dependency_review.md
+- D1-DEP  DONE | 9f1d9ace | Completed a read-only, 13-section MCP dependency and
+      protocol review covering scope, the required JSON-RPC/MCP lifecycle and transport
+      surface, the official SDK versus a narrow `requests` client and helper/placeholder
+      alternatives, the complete 29-package Windows CPython 3.12 binary closure,
+      licenses/ownership/release dates, exact-version advisory status, transport and
+      import implications, the future D1-I2 requirement/lock plan, final rationale,
+      acceptance criteria, and residual limitations. Decision: select the official
+      `mcp==2.3.0` SDK for a future D1-I2 implementation. Candidate B, a hand-written
+      client over existing `requests==2.32.3`, is rejected because it transfers protocol
+      correctness, modern/legacy negotiation, session/SSE, and hostile-input maintenance
+      to STEWARD and inherits two advisories affecting the current requests pin.
+      Candidate C is rejected because `httpx-sse` is only an SSE helper and
+      `mcp-client==0.0.0` is an empty Python-3.13-only placeholder. The reviewed
+      `cryptography==43.0.1` pin is affected by six distinct advisory records; a future
+      D1-I2 must replace it with `cryptography==50.0.2` rather than merely adding MCP.
+      D1-I2 must use a complete exact-version/hash platform lock, repeat advisory checks,
+      import only the SDK client API, and prove that no stdio configuration or process
+      launch is reachable; the upstream eager stdio import means module absence from
+      `sys.modules` is not a valid boundary test. D1 REMAINS BACKLOG. No dependency,
+      lock, configuration, code, transport, server, chat/GUI surface, README, ROADMAP,
+      protected state, or runtime capability was introduced. Proof: 507/507 discovery
+      tests green with the one known Windows symlink-privilege skip; validator 5/5;
+      compileall and diff checks green; structural checks confirm 13 ordered sections,
+      29 unique closure versions/hashes, 29 linked governance rows, and a contiguous
+      S1-S36 source register with all citations resolved and no append marker.
+
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516; pure admission
-      foundation D1-I1 DONE in commit 5c337317): one explicitly admitted,
-      identity-pinned, read-only remote MCP resource server usable from chat; server
-      failure isolated. The selected v1 permits no invokable tools, no stdio, no local
-      MCP resources, and no MCP-caused local mutation; server content cannot enter
-      supervisor routing or native tool context. D1-I1 adds no transport or dependency
-      and is not user-integrated. Review: docs/mcp_integration_review.md. D1-I2 must
-      select an exact official MCP SDK version after transitive-dependency review and
-      add a read-only transport/chat integration without weakening the D1-I1
-      admission, isolation, bounds, redaction, or revocation contracts.
+      foundation D1-I1 DONE in commit 5c337317; dependency review D1-DEP DONE in
+      commit 9f1d9ace): one explicitly admitted, identity-pinned, read-only remote MCP
+      resource server usable from chat; server failure isolated. The selected v1 permits
+      no invokable tools, no stdio, no local MCP resources, and no MCP-caused local
+      mutation; server content cannot enter supervisor routing or native tool context.
+      D1-I1 adds no transport or dependency and is not user-integrated. Reviews:
+      docs/mcp_integration_review.md and docs/mcp_dependency_review.md. D1-DEP selects
+      the official `mcp==2.3.0` SDK for a future D1-I2 implementation and requires the
+      current `cryptography==43.0.1` pin to be replaced by `cryptography==50.0.2`, a
+      complete exact-version/hash platform lock, repeated advisory checks, and proof
+      that no stdio configuration or process launch is reachable. D1-I2 must add a
+      read-only transport/chat integration without weakening the D1-I1 admission,
+      isolation, bounds, redaction, or revocation contracts.
       Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
-- Proposed (non-binding) for the D1-I2 dependency review: a resources-only client
-  needs initialize, resources/list, and resources/read over HTTPS, and requests is
-  already a dependency. The full official MCP SDK carries stdio transports and tool
-  machinery that D1 will never invoke; unused code remains attack surface. Weigh
-  that unused-surface cost against protocol-correctness benefits, consistent with
-  the FS-S5 and C3-R precedent of preferring stdlib where sufficient. Est 2-4h.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
       scanner runs the real file categorization/move path at configurable 15-minute,
       30-minute, 1-hour, or 6-hour intervals. Preferences and last-run state survive restart
