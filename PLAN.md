@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | (final commit SHA reported in handoff) | D1-SURVEY published MCP server survey and admission decision: examined 10 published candidates against all seven D1-I1 rules using official Registry metadata, SEP-2127 server-card material, the MCP tools/resources specifications, and first-party vendor documentation; classified 8 as failing at least one rule and 2 as UNKNOWN, with 0 compatible candidates; recorded that read-only tools still trigger the `tools` capability and that Registry metadata and server cards cannot establish resource enumeration or fingerprint stability; recommended DEFER D1-I2 and retained D1 in BACKLOG; left the owner's server-content product choice open; added no MCP package, transport, configuration, code, feature, GUI, provider-behavior, or protected-state change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Prevent D1-I2 implementation from creating a resource path around a server that exposes tools or lacks proven resource semantics while preserving the existing D1 resources-only safety boundary and keeping the content decision with the owner. The one-commit gate prevents embedding this commit's own SHA in `PLAN.md`; the actual final SHA is reported in the handoff rather than represented by a false placeholder.
+
 2026-11-26 | 85038613 | SEC-1 dependency advisory remediation: upgraded cryptography from 43.0.1 to the reviewed non-vulnerable pin 50.0.2 and requests from 2.32.3 to the reviewed fixed pin 2.33.0; recorded the unchanged required transitive closure cffi==2.1.1, pycparser==3.12, certifi==2026.10.23, charset-normalizer==3.5.2, idna==3.20, and urllib3==2.8.0, and added exact cffi and pycparser pins; retained a synthetic Fernet known-answer fixture generated under 43.0.1 and proved byte-exact decryption under 50.0.2; decoupled the cryptography remediation from D1-I2; recorded the confirmed ChromaDB cleanup race in backlog; added no MCP package, transport, feature, GUI, or provider-behavior change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Remediate the reviewed cryptography and requests advisories while preserving existing Fernet credential readability and keeping D1-I2 limited to its separately reviewed MCP integration work.
 2026-11-26 | 9f1d9ace | D1-DEP MCP dependency and protocol review: documented a 13-section read-only review selecting the official MCP Python SDK at mcp==2.3.0 for a future D1-I2 implementation; recorded the complete 29-package Windows CPython 3.12 binary closure with reviewed artifact hashes, licenses, ownership, and release dates; rejected the narrow requests client and helper/placeholder alternatives; required cryptography==50.0.2 remediation for six current cryptography==43.0.1 advisories; and defined the future hash lock, stdio reachability boundary, transport implications, and D1-I2 acceptance gates; no dependency, lock, configuration, code, runtime, README, or ROADMAP change was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Satisfy the binding D1-I2 exact-version/transitive-dependency review prerequisite while keeping D1 BACKLOG and preserving the D1-R official-SDK, read-only, no-tools, no-stdio, no-local-resource boundary.
 2026-11-26 | 638d6ffc | D1-I1/D1-R resolution record: the official MCP SDK was selected, exact-version and transitive-dependency review was required before D1-I2, and a non-binding dependency-review backlog line was instructed but omitted from the ledger. | Restore the omitted proposed amendment while preserving the binding review and distinguishing non-binding backlog consideration from the selected SDK transport.
@@ -79,6 +81,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 Implementation baseline: SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
 Acceptance baseline: SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 508/508 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
+Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
 Dependency remediation baseline: SEC-1 cryptography and requests advisory remediation commit 85038613
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
@@ -666,6 +669,29 @@ Review document: docs/mcp_integration_review.md
       was introduced. Proof: 470/470 existing unit tests green with the one known Windows
       symlink-privilege skip; validator 5/5; compileall and diff checks green.
 
+## BATCH D1-SURVEY — published MCP server survey and admission decision (DONE)
+Files: docs/mcp_server_survey.md, PLAN.md
+Survey document: docs/mcp_server_survey.md
+- D1-SURVEY  DONE | (final commit SHA reported in handoff) | Completed a
+      documentation-only survey of 10 published MCP server candidates against all seven
+      D1-I1 admission rules. Evidence came from the official MCP Registry API and its
+      `server.json` metadata, SEP-2127 server-card material, the MCP tools/resources
+      specifications, and first-party vendor documentation; no candidate MCP endpoint
+      was contacted, initialized, probed, or listed from. Eight candidates fail at least
+      one rule and two remain UNKNOWN; compatible candidates: 0. Read-only wording does
+      not make a tool server admissible because MCP servers that support tools MUST
+      declare the `tools` capability. Registry metadata and SEP-2127 cards cannot prove
+      runtime resources, complete same-origin URI enumeration, or fingerprint stability.
+      Decision: DEFER D1-I2 and keep D1 in BACKLOG until one candidate has affirmative
+      evidence for all seven rules and the owner separately chooses whether its published
+      content is useful to STEWARD. No dependency, lock, configuration, code, transport,
+      server, chat/GUI surface, provider behavior, README, ROADMAP, protected state, or
+      runtime capability was introduced. Proof: 508/508 discovery tests green with the
+      one known Windows symlink-privilege skip; validator 5/5; compileall and diff checks
+      green. The one-commit gate prevents this record from embedding the SHA of the
+      commit that contains it; the actual final SHA is reported in the handoff rather
+      than represented by a false placeholder.
+
 ## BATCH D1-DEP — MCP dependency and protocol review (DONE)
 Files: docs/mcp_dependency_review.md, PLAN.md
 Review document: docs/mcp_dependency_review.md
@@ -748,20 +774,24 @@ Files: requirements.txt, test_fernet_compatibility.py, PLAN.md
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516; pure admission
       foundation D1-I1 DONE in commit 5c337317; dependency review D1-DEP DONE in
-      commit 9f1d9ace): one explicitly admitted, identity-pinned, read-only remote MCP
-      resource server usable from chat; server failure isolated. The selected v1 permits
+      commit 9f1d9ace; published server survey D1-SURVEY DONE with final commit SHA
+      reported in the handoff): one explicitly admitted, identity-pinned, read-only remote
+      MCP resource server usable from chat; server failure isolated. The selected v1 permits
       no invokable tools, no stdio, no local MCP resources, and no MCP-caused local
       mutation; server content cannot enter supervisor routing or native tool context.
       D1-I1 adds no transport or dependency and is not user-integrated. Reviews:
-      docs/mcp_integration_review.md and docs/mcp_dependency_review.md. D1-DEP selects
-      the official `mcp==2.3.0` SDK for a future D1-I2 implementation. Its separate
-      cryptography remediation condition was completed in SEC-1 commit `85038613`,
-      which replaced `cryptography==43.0.1` with `cryptography==50.0.2` and proved
-      cross-version Fernet compatibility; D1-I2 must not re-apply that remediation.
-      D1-I2 remains responsible for its own complete exact-version/hash platform lock,
-      repeated advisory checks, and proof that no stdio configuration or process launch
-      is reachable. D1-I2 must add a
-      read-only transport/chat integration without weakening the D1-I1 admission,
+      docs/mcp_integration_review.md, docs/mcp_dependency_review.md, and
+      docs/mcp_server_survey.md. D1-DEP selects the official `mcp==2.3.0` SDK for a
+      future D1-I2 implementation. D1-SURVEY examined 10 published candidates and found
+      0 compatible: 8 fail at least one D1-I1 rule and 2 remain UNKNOWN. D1-I2 is DEFERRED
+      until one candidate has affirmative published evidence for all seven rules and the
+      owner separately chooses its useful server content. Its separate cryptography
+      remediation condition was completed in SEC-1 commit `85038613`, which replaced
+      `cryptography==43.0.1` with `cryptography==50.0.2` and proved cross-version Fernet
+      compatibility; D1-I2 must not re-apply that remediation. A reopened D1-I2 remains
+      responsible for its own complete exact-version/hash platform lock, repeated advisory
+      checks, and proof that no stdio configuration or process launch is reachable. It must
+      add a read-only transport/chat integration without weakening the D1-I1 admission,
       isolation, bounds, redaction, or revocation contracts.
       Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
