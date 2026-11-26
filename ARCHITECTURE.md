@@ -30,6 +30,7 @@ file categorization.
 - `agents/patch_applier.py` C3-I2 admitted content replacement: one-file workspace/target admission, proof/source revalidation, durable journal transitions, exact backups, and hash-guarded undo/redo
 - `agents/patch_review.py` C3-I3 review facade: provider proposal, immutable exact-diff artifact, epoch/workspace/hash-bound single-use approval, guarded apply, and fail-closed lifecycle invalidation
 - `agents/healing_controller.py` C4-I1 pure iteration controller: bounded self-healing loop over INJECTED executor/journal/cancellation/proposal interfaces; structural hard iteration bound, write-ahead intent/outcome/terminal journal ordering, deterministic bounded+redacted observations, and truthful termination states. It performs NO execution (no process, shell, or dynamic-code surface), cannot apply patches, and reaches C3 only through a proposal request
+- `agents/mcp_resource_core.py` D1-I1 pure MCP resource admission core: standard-library-only, transport-agnostic admission/read boundary for one explicitly selected identity-pinned remote resource server; HTTPS/effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers. It imports no MCP SDK and performs no network, filesystem, subprocess, dynamic-code, JSON-RPC, GUI, tool, or local mutation operation
 - `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, truthful recovery states, and one bounded daemon-worker slot with epoch/closed-guarded UI marshaling
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
@@ -96,6 +97,17 @@ C4-I1 pure healing controller (not user-integrated): injected executor + injecte
 C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   evaluates all 20 C4-I2 criteria and defers execution because no supported
   baseline is proven on this Windows Home host.
+D1-I1 pure MCP resource admission (not user-integrated): explicit server identity +
+  exact expected server identity -> canonical HTTPS identity/effective origin -> explicit
+  canonical resource allowlist -> injected transport server snapshot -> tools-capability,
+  advertised-resource, duplicate/count/type, and fingerprint checks -> single immutable
+  admission -> fingerprint re-verification immediately before an injected read -> per-resource/
+  total byte bounds -> deterministic redaction/truncation -> immutable external-only container.
+  Only the admitted server's canonical origin may supply resources. Any server advertising
+  a tools capability is refused wholesale. Revocation or successful re-admission invalidates
+  the prior admission and cached content. The result container is permanently ineligible for
+  supervisor routing and native-tool use. No transport, SDK dependency, chat surface, or
+  runtime MCP capability exists in D1-I1.
 
 ## Sandbox rules (do not weaken)
 - Roots: <root_path>/Incoming and <root_path>/Sorted only; root_path defaults to os.getcwd()
@@ -217,6 +229,35 @@ C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   configured Syntax provider (cloud-first unless explicitly configured otherwise); the GUI
   discloses this before indexing.
 
+## MCP resource admission and isolation rules
+- D1-I1 (`agents/mcp_resource_core.py`) is a pure core, not a transport. The only external
+  boundary is an injected protocol exposing `describe_server(identity)` and
+  `read_resource(identity, resource_uri)`. D1-I1 does not import or select an MCP SDK version.
+- Identities and resource URIs must be canonical HTTPS URLs. Userinfo, fragments, malformed
+  percent escapes, and every query-bearing URL are refused. Literal loopback, private, reserved,
+  link-local, multicast, and unspecified addresses plus localhost/local-domain suffixes fail
+  closed. Public IDNA and IPv6 hosts canonicalize deterministically.
+- The effective origin includes the explicit/default port. Identity and every allowed resource
+  are pinned to that origin; canonical-equivalent duplicates fail closed.
+- The server-reported identity must exactly equal the caller's expected identity. A server
+  advertising any tools capability is refused wholesale, even if it also advertises resources.
+  This v1 compatibility cost is intentional: D1-I1 never invokes tools and does not partially
+  admit a tools-capable server.
+- The resource allowlist is explicit and unique. Every listed canonical URI must be advertised
+  by the server. The SHA-256 fingerprint covers normalized identity, reported server identity,
+  normalized capabilities, and order-independent canonical advertised resources, and is
+  re-verified before every read.
+- Per-resource, per-admission-total, resource-count, and URI-length bounds fail closed.
+  Deterministic assignment-name-preserving redaction and private-key redaction run before
+  deterministic UTF-8 truncation. Transport exceptions become the bounded
+  `transport_failure` refusal.
+- Exactly one server is admitted at a time. Successful re-admission and explicit revocation
+  invalidate the prior admission and cached content. Failed admission does not clear a valid
+  prior admission.
+- Results are core-constructed immutable `UntrustedExternalResource` values with permanent
+  `routing_eligible=False` and `native_tool_eligible=False`. They cannot enter supervisor routing
+  or native-tool context merely by being passed to a caller.
+
 ## Daemon lifecycle
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
   a deleted/recreated path is eligible for processing again.
@@ -290,7 +331,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_patch_review_workers.py — Patch Review off-main execution, epoch/closed result marshaling, stale suppression, close/clear invalidation, control restoration, refusal/failure, and single-flight apply regressions
 - test_hygiene_scope.py — retired-persona registry/source removal, truthful OUT_OF_SCOPE classification/refusal, generic UNKNOWN, and non-delegation regressions
 - test_healing_controller.py — C4-I1 pure-controller regressions: structural hard bound, deterministic termination states, write-ahead journal ordering, pre-iteration journal-failure blocking, uncertain post-execution journal failure, bounded/redacted observations, cancellation safe boundary, controller-owned timeouts, no-execution spy/AST proof, no-auto-apply proof, and determinism
-- Total discovery count is 470 (one expected Windows symlink-privilege skip)
+- test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
+- Total discovery count is 507 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

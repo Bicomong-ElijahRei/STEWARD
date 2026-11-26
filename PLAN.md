@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | 5c337317 | D1-I1 pure MCP resource admission core: added a standard-library-only, transport-agnostic admission/read boundary with HTTPS and effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers; added 37 focused regressions and killed six targeted source mutants; no transport, SDK dependency, network/filesystem/process access, GUI integration, tool surface, local MCP resource, or MCP-caused local mutation was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Establish the fail-closed, identity-pinned resource admission foundation before selecting the official MCP SDK and transport for D1-I2, while keeping remote content structurally outside routing and native-tool authority.
 2026-11-26 | 9737c516 | D1-R MCP integration safety review: documented a 13-section threat/design review and RE-SCOPE decision for one explicitly admitted, identity-pinned, read-only remote MCP resource server usable from chat with server failure isolated; D1 remains BACKLOG, and stdio, invokable tools, local resources, and MCP-caused local mutation remain excluded; no code, dependency, configuration, README, or ROADMAP change was introduced; 470/470 tests green with the one known Windows symlink-privilege skip. | Decide the MCP authority and containment boundary before implementation while preserving proportionality and preventing remote server declarations from entering native dispatch authority.
 2026-11-25 | 0acf370, 2e0fe28e | HYG-1 Patch Review background workers and retired-scope cleanup: moved proposal and apply off the Tk main thread into one bounded daemon-worker slot with epoch/closed-guarded result marshaling, single-flight apply, close/clear invalidation, and stale-result suppression; removed the orphaned retired desktop-control persona, routing, delegation, provider-choice, constellation, package-export, and skeleton surfaces; added truthful OUT_OF_SCOPE classification/refusal while preserving generic UNKNOWN behavior; left ROADMAP unchanged; 470/470 tests green with the one known Windows symlink-privilege skip. | Keep the Tk event loop responsive, prevent stale review state from publishing, and ensure removed-scope requests cannot be mistaken for an available persona or capability.
 2026-11-25 | e7a462d2 | SCOPE-R1 documentation-only scope amendment: moved voice control, phone/remote control, and screen-aware automation/PC control from active Phase D into a historical Removed from scope record, marked each item deferred and removed from declared scope with rationale, added the orphaned PC-control persona cleanup backlog line, and left C4, MCP, scheduled agents, and running behavior unchanged. Roadmap completion changed from 22/27 checked (81.48%) to 22/24 checked (91.67%), and active Phase D changed from 1/5 checked (20%) to 1/2 checked (50%), solely because three unchecked scope items were removed; no work was completed and no running capability was added or removed. | Remove authority-granting surfaces from declared scope where containment and proportionality cannot be proven, preserving history without changing runtime capability.
@@ -72,13 +73,13 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: HYG-1 worker and removed-scope regression suites; 470/470 discovery tests green
+Implementation baseline: D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: D1-I1 focused mutation-tested resource admission suite; 507/507 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 470/470 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 507/507 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
 Push state at verification: `origin/main` remains at 05abaac0. D1-R review commit `9737c516` is a local ancestor of this closing commit and awaits human push; no push is claimed. Previously recorded implementation/documentation SHAs remain pushed ancestors of `origin/main`.
@@ -91,6 +92,17 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- D1-I1 Pure MCP resource admission core — DONE | 5c337317 |
+  standard-library-only, transport-agnostic admission/read boundary for one explicitly selected,
+  identity-pinned remote resource server. HTTPS identities and effective origins are canonicalized
+  and pinned; private/reserved literal hosts, local suffixes, credentials, fragments, queries, and
+  tools-capable servers fail closed. Every allowed resource must be explicitly listed and advertised;
+  a SHA-256 snapshot fingerprint is re-verified before each read. Content is byte-bounded,
+  deterministically redacted/truncated, and returned only in an immutable external-only container with
+  routing and native-tool eligibility permanently false. Proof: 37 focused regressions, 507/507
+  discovery tests, validator 5/5, compileall/diff checks green, and six targeted source mutants killed.
+  Limitation: no transport, official SDK dependency, chat/GUI integration, or runtime MCP capability
+  is implemented; overall D1 remains BACKLOG pending D1-I2.
 - v3.0 Safe-Intelligence Foundations — DONE | 61390dca, 518785a9, 9641d1f1, 410cbdcf, 7907ebb1, e1a37c30, 935a6236, eaee322b
   explicit shared-credential rotation; generation-safe scheduled scans; bounded Cortex
   general-chat memory with stale-response rejection; provider-backed text-only Syntax across
@@ -562,6 +574,48 @@ Files: docs/windows_isolation_research.md, ARCHITECTURE.md, PLAN.md
       green. C4-I2 remains BACKLOG pending a supported host or explicitly approved
       candidate baseline in a new focused design/proof batch.
 
+## BATCH D1-I1 — pure MCP resource admission core (DONE)
+Files: agents/mcp_resource_core.py, test_mcp_resource_core.py
+- D1-I1  DONE | 5c337317 | Added a pure, standard-library-only MCP resource
+  admission/read core over an injected transport protocol. It admits exactly one
+  explicitly selected remote server at a time, canonicalizes and pins the HTTPS
+  identity plus effective origin (including non-default ports), requires an exact
+  server-reported identity, refuses any advertised tools capability, and admits only
+  an explicit unique resource allowlist whose canonical URIs are advertised by the
+  server. The SHA-256 fingerprint covers normalized identity, reported server
+  identity, normalized capabilities, and order-independent canonical advertised
+  resources; it is re-verified before every read. Content is bounded per resource,
+  per admission total, and by URI length, then deterministically redacted and
+  truncated before construction of an immutable external-only result container.
+  Revocation or successful re-admission invalidates the prior admission and cached
+  content. Transport exceptions are normalized to a bounded typed refusal.
+  Accept: non-HTTPS, non-remote literal hosts, local suffixes, userinfo, fragments,
+  malformed percent escapes, all query-bearing URLs, non-default/origin mismatches,
+  tools-capable servers, unknown/changed resources, duplicate/count/type violations,
+  changed identities/capabilities/resources, oversized content, and transport failures
+  fail closed; public IDNA and IPv6 identities canonicalize correctly; redaction and
+  truncation are deterministic; result containers cannot be publicly forged or
+  mutated and always carry `routing_eligible=False` and
+  `native_tool_eligible=False`. The module imports no MCP SDK and performs no
+  network, filesystem, subprocess, dynamic-code, JSON-RPC, GUI, tool, or local
+  mutation operation.
+  Decisions: v1 refuses literal loopback, private, reserved, link-local,
+  multicast, and unspecified IPv4/IPv6 addresses plus localhost/local-domain
+  suffixes; it conservatively refuses every query-bearing URL because an arbitrary
+  query value cannot be proven credential-free. A server advertising both resources
+  and tools is rejected wholesale rather than partially admitted, so D1-I1 is
+  intentionally incompatible with resource-and-tools servers even though the core
+  never invokes tools. D1-I1 adds no dependency. The official MCP SDK remains the
+  selected D1 transport choice, but exact-version and transitive-dependency review
+  is a mandatory D1-I2 prerequisite before adding it.
+  Proof: 37/37 focused tests; 507/507 discovery tests green with the one known
+  Windows symlink-privilege skip; validator 5/5; compileall and diff checks green.
+  Six targeted source mutants covering tools refusal, fingerprint verification,
+  allowlisting, bounds/redaction, transport normalization, and structural isolation
+  each produced an assertion RED and were killed; the original source remained
+  GREEN. Limitation: no real MCP transport, SDK, chat surface, or end-to-end server
+  exists, so D1 remains BACKLOG.
+
 ## BATCH D1-R — MCP integration safety review (DONE)
 Files: docs/mcp_integration_review.md, PLAN.md
 Review document: docs/mcp_integration_review.md
@@ -582,11 +636,16 @@ Review document: docs/mcp_integration_review.md
       symlink-privilege skip; validator 5/5; compileall and diff checks green.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
-- D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516): one explicitly
-      admitted, identity-pinned, read-only remote MCP resource server usable from chat;
-      server failure isolated. The selected v1 permits no invokable tools, no stdio, no local
+- D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516; pure admission
+      foundation D1-I1 DONE in commit 5c337317): one explicitly admitted,
+      identity-pinned, read-only remote MCP resource server usable from chat; server
+      failure isolated. The selected v1 permits no invokable tools, no stdio, no local
       MCP resources, and no MCP-caused local mutation; server content cannot enter
-      supervisor routing or native tool context. Review: docs/mcp_integration_review.md.
+      supervisor routing or native tool context. D1-I1 adds no transport or dependency
+      and is not user-integrated. Review: docs/mcp_integration_review.md. D1-I2 must
+      select an exact official MCP SDK version after transitive-dependency review and
+      add a read-only transport/chat integration without weakening the D1-I1
+      admission, isolation, bounds, redaction, or revocation contracts.
       Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
 - D3  DONE | 37f03ba2, 7d9d25c6, 518785a9 | Scheduled agents: an instance-local background
       scanner runs the real file categorization/move path at configurable 15-minute,
