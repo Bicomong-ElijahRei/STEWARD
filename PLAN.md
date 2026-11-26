@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-26 | 85038613 | SEC-1 dependency advisory remediation: upgraded cryptography from 43.0.1 to the reviewed non-vulnerable pin 50.0.2 and requests from 2.32.3 to the reviewed fixed pin 2.33.0; recorded the unchanged required transitive closure cffi==2.1.1, pycparser==3.12, certifi==2026.10.23, charset-normalizer==3.5.2, idna==3.20, and urllib3==2.8.0, and added exact cffi and pycparser pins; retained a synthetic Fernet known-answer fixture generated under 43.0.1 and proved byte-exact decryption under 50.0.2; decoupled the cryptography remediation from D1-I2; recorded the confirmed ChromaDB cleanup race in backlog; added no MCP package, transport, feature, GUI, or provider-behavior change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Remediate the reviewed cryptography and requests advisories while preserving existing Fernet credential readability and keeping D1-I2 limited to its separately reviewed MCP integration work.
 2026-11-26 | 9f1d9ace | D1-DEP MCP dependency and protocol review: documented a 13-section read-only review selecting the official MCP Python SDK at mcp==2.3.0 for a future D1-I2 implementation; recorded the complete 29-package Windows CPython 3.12 binary closure with reviewed artifact hashes, licenses, ownership, and release dates; rejected the narrow requests client and helper/placeholder alternatives; required cryptography==50.0.2 remediation for six current cryptography==43.0.1 advisories; and defined the future hash lock, stdio reachability boundary, transport implications, and D1-I2 acceptance gates; no dependency, lock, configuration, code, runtime, README, or ROADMAP change was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Satisfy the binding D1-I2 exact-version/transitive-dependency review prerequisite while keeping D1 BACKLOG and preserving the D1-R official-SDK, read-only, no-tools, no-stdio, no-local-resource boundary.
 2026-11-26 | 638d6ffc | D1-I1/D1-R resolution record: the official MCP SDK was selected, exact-version and transitive-dependency review was required before D1-I2, and a non-binding dependency-review backlog line was instructed but omitted from the ledger. | Restore the omitted proposed amendment while preserving the binding review and distinguishing non-binding backlog consideration from the selected SDK transport.
 2026-11-26 | 5c337317 | D1-I1 pure MCP resource admission core: added a standard-library-only, transport-agnostic admission/read boundary with HTTPS and effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers; added 37 focused regressions and killed six targeted source mutants; no transport, SDK dependency, network/filesystem/process access, GUI integration, tool surface, local MCP resource, or MCP-caused local mutation was introduced; 507/507 tests green with the one known Windows symlink-privilege skip. | Establish the fail-closed, identity-pinned resource admission foundation before selecting the official MCP SDK and transport for D1-I2, while keeping remote content structurally outside routing and native-tool authority.
@@ -75,17 +76,18 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: D1-I1 focused mutation-tested resource admission suite; 507/507 discovery tests green
+Implementation baseline: SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 508/508 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
+Dependency remediation baseline: SEC-1 cryptography and requests advisory remediation commit 85038613
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 507/507 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 508/508 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at verification: `origin/main` remains at `78a88b64`; D1-DEP review commit `9f1d9ace` and this ledger reconciliation are local, not yet published to origin at the time of writing. The preflight confirmed `78a88b64` was the starting `HEAD` and `origin/main` on branch `main`.
+Push state at verification: `origin/main` remains at `f6965379`; SEC-1 implementation commit `85038613` and this documentation closure are local, not yet published to origin at the time of writing. The preflight confirmed `f6965379` was the starting `HEAD` and `origin/main` on branch `main`.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -102,6 +104,14 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- SEC-1 Dependency advisory remediation — DONE | 85038613
+  upgraded the exact direct pins `cryptography==43.0.1` -> `cryptography==50.0.2` and
+  `requests==2.32.3` -> `requests==2.33.0`; pinned the unchanged required transitive
+  closure; retained a synthetic Fernet known-answer fixture generated under 43.0.1;
+  and proved byte-exact decryption under 50.0.2. No MCP package, transport, feature,
+  GUI, or provider-behavior change was introduced. Proof: 11/11 focused credential-path
+  tests and 508/508 discovery tests green with the one known Windows symlink-privilege
+  skip; validator 5/5; compileall and diff checks green.
 - D1-DEP MCP dependency and protocol review — DONE | 9f1d9ace
   read-only 13-section dependency decision selecting the official MCP Python SDK at
   `mcp==2.3.0` for a future D1-I2 implementation. The review records the complete
@@ -672,8 +682,10 @@ Review document: docs/mcp_dependency_review.md
       to STEWARD and inherits two advisories affecting the current requests pin.
       Candidate C is rejected because `httpx-sse` is only an SSE helper and
       `mcp-client==0.0.0` is an empty Python-3.13-only placeholder. The reviewed
-      `cryptography==43.0.1` pin is affected by six distinct advisory records; a future
-      D1-I2 must replace it with `cryptography==50.0.2` rather than merely adding MCP.
+      `cryptography==43.0.1` pin was affected by six distinct advisory records. That
+      separate remediation condition is now completed by SEC-1 commit `85038613`, which
+      replaced it with `cryptography==50.0.2` and proved cross-version Fernet
+      compatibility; D1-I2 must not re-apply the cryptography remediation.
       D1-I2 must use a complete exact-version/hash platform lock, repeat advisory checks,
       import only the SDK client API, and prove that no stdio configuration or process
       launch is reachable; the upstream eager stdio import means module absence from
@@ -685,6 +697,54 @@ Review document: docs/mcp_dependency_review.md
       29 unique closure versions/hashes, 29 linked governance rows, and a contiguous
       S1-S36 source register with all citations resolved and no append marker.
 
+## BATCH SEC-1 — dependency advisory remediation (DONE)
+Files: requirements.txt, test_fernet_compatibility.py, PLAN.md
+- SEC-1  DONE | 85038613 | Replaced `cryptography==43.0.1` with
+  `cryptography==50.0.2` and `requests==2.32.3` with `requests==2.33.0`. The
+  reviewed cryptography wheel for Windows CPython 3.12 x64 was verified as
+  `cryptography-50.0.2-cp311-abi3-win_amd64.whl` with SHA-256
+  `7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c`.
+  The complete resolved required transitive closure was recorded as
+  `cffi==2.1.1`, `pycparser==3.12`, `certifi==2026.10.23`,
+  `charset-normalizer==3.5.2`, `idna==3.20`, and `urllib3==2.8.0`; `cffi` and
+  `pycparser` received exact requirements pins, while the remaining transitive
+  versions were unchanged. The pip dry-run
+  environment delta contained only the two direct changes and no unexpected package.
+  Exact-version OSV queries immediately before installation returned zero advisories
+  for every new exact version and the complete relevant transitive closure.
+  Remediated cryptography advisories: GHSA-79v4-65xg-pq4g,
+  GHSA-r6ph-v2qm-q3c2, GHSA-m959-cc7f-wv43, GHSA-537c-gmf6-5ccf,
+  GHSA-jwv3-5hgf-82ww, and GHSA-m2h6-j472-rp4c. Remediated requests advisories:
+  GHSA-9hjg-9r4m-mvj7 and GHSA-gc5v-m9x4-r6x2.
+  Reachability analysis: GHSA-r6ph-v2qm-q3c2 (SECT subgroup validation),
+  GHSA-m959-cc7f-wv43 (peer-name DNS constraints), GHSA-jwv3-5hgf-82ww
+  (duplicate-intermediate X.509 path building), and GHSA-m2h6-j472-rp4c
+  (wildcard permittedSubtrees) are not plausibly reachable because STEWARD uses
+  cryptography only for Fernet symmetric encryption and does not perform X.509 path
+  validation or SECT/ECDSA/ECDH operations. The broader OpenSSL-in-wheel records are
+  also not plausibly reachable through that usage: GHSA-79v4-65xg-pq4g requires TLS
+  raw-public-key handshakes, while GHSA-537c-gmf6-5ccf concerns the affected
+  PKCS#7/S/MIME, CMS, and related OpenSSL APIs in the June 2026 advisory family;
+  STEWARD invokes none of those APIs, and ordinary Fernet AES-CBC/HMAC use is not
+  the affected mechanism. These reachability findings do not justify retaining the
+  affected pins. On the requests side, GHSA-9hjg-9r4m-mvj7 is plausibly reachable
+  if a user-configured provider URL is malicious and the HTTP path honors `.netrc`;
+  the upgrade removes that exposure. GHSA-gc5v-m9x4-r6x2 is not plausibly reachable
+  because it affects direct callers of `extract_zipped_paths()`, which STEWARD does
+  not call. This reachability analysis affects urgency only, not the remediation
+  decision.
+  Cross-version Fernet proof: before installation, cryptography 43.0.1 generated the
+  synthetic key and token retained as clearly labeled test constants; after
+  installation, cryptography 50.0.2 decrypted that token to byte-identical plaintext
+  `SEC-1 synthetic Fernet compatibility plaintext; not a credential.` The expected
+  and decrypted byte strings were equal. The retained regression keeps this known
+  answer permanently in the suite. Existing credential paths remain green: dual-read
+  legacy fallback, shared-credential migration and rollback, credential rotation, and
+  decryption-error handling. Proof: 11/11 focused credential tests; 508/508 discovery
+  tests green with the one known Windows symlink-privilege skip; validator 5/5;
+  compileall and diff checks green. No MCP package, transport, feature, GUI, provider
+  behavior, review-document rewrite, or ROADMAP change was introduced.
+
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516; pure admission
       foundation D1-I1 DONE in commit 5c337317; dependency review D1-DEP DONE in
@@ -694,10 +754,13 @@ Review document: docs/mcp_dependency_review.md
       mutation; server content cannot enter supervisor routing or native tool context.
       D1-I1 adds no transport or dependency and is not user-integrated. Reviews:
       docs/mcp_integration_review.md and docs/mcp_dependency_review.md. D1-DEP selects
-      the official `mcp==2.3.0` SDK for a future D1-I2 implementation and requires the
-      current `cryptography==43.0.1` pin to be replaced by `cryptography==50.0.2`, a
-      complete exact-version/hash platform lock, repeated advisory checks, and proof
-      that no stdio configuration or process launch is reachable. D1-I2 must add a
+      the official `mcp==2.3.0` SDK for a future D1-I2 implementation. Its separate
+      cryptography remediation condition was completed in SEC-1 commit `85038613`,
+      which replaced `cryptography==43.0.1` with `cryptography==50.0.2` and proved
+      cross-version Fernet compatibility; D1-I2 must not re-apply that remediation.
+      D1-I2 remains responsible for its own complete exact-version/hash platform lock,
+      repeated advisory checks, and proof that no stdio configuration or process launch
+      is reachable. D1-I2 must add a
       read-only transport/chat integration without weakening the D1-I1 admission,
       isolation, bounds, redaction, or revocation contracts.
       Accept: one real MCP server usable from chat; server failure isolated. Est 8-15h.
@@ -726,6 +789,7 @@ These items were removed from the active roadmap and from declared scope. Their 
 Common thread: each grants authority beyond the application's existing bounded mutation boundary, with no proportionate benefit for a local desktop tool. These decisions follow the same discipline as C4-R and C4-ISO, which deferred execution rather than claim a boundary that could not be proven.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
+- ChromaDB cleanup race on Windows | BACKLOG | The pre-upgrade baseline reproduction was confirmed: concurrent collection delete/recreate left ChromaDB's `data_level0.bin` open, so temporary-directory cleanup failed with `WinError 32`; investigate ChromaDB client/collection cleanup lifecycle separately and do not treat this SEC-1 dependency batch as a fix.
 - Orphaned retired desktop-control persona cleanup DONE | 2e0fe28e | Removed the active persona and routing surfaces; retained historical PLAN/ROADMAP records and added truthful OUT_OF_SCOPE refusal.
 - Conversation memory DONE | 2b9e5031, 9641d1f1, a099c0f2 | Supervisor retains bounded instance-local
   FILE_OP context; general Cortex chat retains at most 6 turns, 12,000 total characters, and
