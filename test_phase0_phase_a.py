@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import requests
 from cryptography.fernet import Fernet
 from collections import OrderedDict
 from types import SimpleNamespace
@@ -460,6 +461,43 @@ class RouterAssignmentTests(unittest.TestCase):
         self.assertEqual(result["_steward"]["failovers"], [
             {"failed_provider": "Primary", "fallback_provider": "Backup"}
         ])
+
+    def test_persistent_connection_failures_increment_count_and_cool_down(self):
+        self.add_provider(
+            "Unreachable", "https://unreachable.example/v1", "key", 1, "Cortex"
+        )
+
+        for expected_count in range(1, 5):
+            with patch(
+                "core.router.requests.post",
+                side_effect=requests.exceptions.ConnectionError("unreachable"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "All providers failed"):
+                    self.manager.route_request([], agent_name="Cortex")
+
+            provider = self.db.get_provider("Unreachable")
+            self.assertEqual(provider["failure_count"], expected_count)
+            if expected_count <= 3:
+                self.assertIsNone(provider["cooldown_until"])
+            else:
+                self.assertIsNotNone(provider["cooldown_until"])
+
+    def test_invalid_json_increments_count_and_cools_down_after_threshold(self):
+        self.add_provider("Malformed", "https://malformed.example/v1", "key", 1, "Cortex")
+        invalid_response = Mock(status_code=200, headers={}, text="not-json")
+        invalid_response.json.side_effect = ValueError("invalid JSON")
+
+        for expected_count in range(1, 5):
+            with patch("core.router.requests.post", return_value=invalid_response):
+                with self.assertRaisesRegex(RuntimeError, "All providers failed"):
+                    self.manager.route_request([], agent_name="Cortex")
+
+            provider = self.db.get_provider("Malformed")
+            self.assertEqual(provider["failure_count"], expected_count)
+            if expected_count <= 3:
+                self.assertIsNone(provider["cooldown_until"])
+            else:
+                self.assertIsNotNone(provider["cooldown_until"])
 
 
 class ImmutablePlanTests(unittest.TestCase):

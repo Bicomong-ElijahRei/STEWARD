@@ -96,6 +96,7 @@ class APIManager:
             except requests.exceptions.RequestException as exc:
                 provider_chain.append(f"{name}: Connection error")
                 last_error = f"{name}: {exc}"
+                self._register_transient_failure(db, provider)
                 continue
 
             status_code = response.status_code
@@ -136,6 +137,7 @@ class APIManager:
             except ValueError as exc:
                 provider_chain.append(f"{name}: Invalid JSON")
                 last_error = f"{name}: invalid response JSON ({exc})"
+                self._register_transient_failure(db, provider)
                 continue
 
             usage = data.get("usage") or {}
