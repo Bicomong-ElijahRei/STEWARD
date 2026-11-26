@@ -46,9 +46,12 @@ preview, explicit approval, and undo/redo.
   Deduplication is filesystem-identity-aware, concurrency is capped at 4 workers and 32
   outstanding files, and stopping the daemon cancels queued work without holding process exit.
 - API Hub: add/verify/discover providers, bind them to agent roles, enable/disable, and
-  rotate one explicitly selected shared credential by ID with endpoint/link validation.
+  rotate one explicitly selected shared credential by ID with endpoint/link validation. The
+  non-streaming health check reports total completed-request elapsed time, not time to first
+  byte or time to first token.
 - Multi-provider routing with latency-based selection, 429 key failover on the same
-  endpoint, 401/403 deactivation, 5xx cooldowns, and live failover visualization.
+  endpoint, 401/403 deactivation, 5xx/timeout/connection/invalid-JSON cooldowns, and live
+  failover visualization.
 
 ## Safety model
 - All file operations are confined to <root>/Incoming and <root>/Sorted. Paths are resolved
@@ -128,7 +131,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-515 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+518 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,

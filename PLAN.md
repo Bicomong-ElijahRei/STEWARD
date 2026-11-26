@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-27 | 5e8c474a, 0348dda5 | ROUTER-1 router failure accounting and provider timing truthfulness: routed persistent connection errors and malformed/non-object JSON through the shared transient-failure path, retained the audited distinct policies for 429, 401/403, 5xx, timeout, other non-2xx, and no-eligible-provider outcomes, renamed the validator's misnamed first-byte latency field to `elapsed_ms` and propagated total completed-request timing through validation and GUI wording, added three focused regressions with shared-increment and elapsed-time-producer mutation proof, and changed no provider schema, dependency, cooldown policy, provider ordering, or HTTP mode; discovery tests increased from 515 to 518 and all 518 passed with the one known Windows symlink-privilege skip. | Make provider failure accounting consistent for transport and response-validity failures, name the measured latency honestly, and derive PLAN publication state from current Git ancestry rather than repeating stale claims.
+
 2026-11-27 | (final commit SHA reported in handoff) | ChromaDB Windows cleanup lifecycle: closed the prior persistent client before agent reinitialization; closed newly created clients when collection initialization fails; made close failures observable while retaining the client reference for diagnosis or retry; added a shared standard-library finalization step after successful close because ChromaDB 1.5.9's Rust-owned SQLite pool can otherwise retain `chroma.sqlite3` after the shared system stops; added seven real-client lifecycle regressions covering both persistent agents, including immediate SQLite-file removal and concurrent delete/recreate; added no dependency, feature, GUI, provider-behavior, or protected-state change; 515/515 discovery tests green with the one known Windows symlink-privilege skip. | Deterministically release Windows file handles during RAG/code-index reinitialization, collection replacement, and teardown without suppressing close errors or reaching into Chroma internals.
 
 2026-11-26 | (final commit SHA reported in handoff) | D1-SURVEY published MCP server survey and admission decision: examined 10 published candidates against all seven D1-I1 rules using official Registry metadata, SEP-2127 server-card material, the MCP tools/resources specifications, and first-party vendor documentation; classified 8 as failing at least one rule and 2 as UNKNOWN, with 0 compatible candidates; recorded that read-only tools still trigger the `tools` capability and that Registry metadata and server cards cannot establish resource enumeration or fingerprint stability; recommended DEFER D1-I2 and retained D1 in BACKLOG; left the owner's server-content product choice open; added no MCP package, transport, configuration, code, feature, GUI, provider-behavior, or protected-state change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Prevent D1-I2 implementation from creating a resource path around a server that exposes tools or lacks proven resource semantics while preserving the existing D1 resources-only safety boundary and keeping the content decision with the owner. The one-commit gate prevents embedding this commit's own SHA in `PLAN.md`; the actual final SHA is reported in the handoff rather than represented by a false placeholder.
@@ -80,8 +82,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 515/515 discovery tests green
+Implementation baseline: ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 518/518 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
@@ -89,10 +91,11 @@ Dependency remediation baseline: SEC-1 cryptography and requests advisory remedi
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 515/515 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 518/518 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at verification: `origin/main` remains at `f6965379`; SEC-1 implementation commit `85038613` and this documentation closure are local, not yet published to origin at the time of writing. The preflight confirmed `f6965379` was the starting `HEAD` and `origin/main` on branch `main`.
+Push state at documentation verification (2026-11-27, before this closure commit): `origin/main` resolves to `d56bd1cdfd1c3ecd8c9cf1ed6efe578c9604aed1`. The named historical commits `f6965379665bf69602a27ee58800482f4b662ad3` and `8503861337c1a9f087219eba7ef9e1eea6ca8bbe` are published ancestors (each `git merge-base --is-ancestor <sha> origin/main` exit 0), as is `d56bd1cd` itself (exit 0). ROUTER-1 commits `5e8c474abe37f5d6cdceb6119a7dff773e34d184` and `0348dda5bf01cc2706729df5744fbaf7f3fa3a70` are local and not ancestors of `origin/main` (each exit 1); the pre-closure `HEAD` was `0348dda5` (exit 1). This documentation closure is also local until pushed.
+Publication-state convention: never copy a prior push-state claim forward. At every verification, resolve `origin/main` and current `HEAD`, run `git merge-base --is-ancestor <sha> origin/main` for every named commit and for current `HEAD`, and record each exit result (0 = published ancestor, 1 = not an ancestor, any other exit = verification failure). Re-derive the paragraph from those results at the time of writing.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
 Tests/Gates body. They are not rewritten because they are already public history; C7 commit
@@ -779,6 +782,29 @@ Files: requirements.txt, test_fernet_compatibility.py, PLAN.md
   tests green with the one known Windows symlink-privilege skip; validator 5/5;
   compileall and diff checks green. No MCP package, transport, feature, GUI, provider
   behavior, review-document rewrite, or ROADMAP change was introduced.
+
+## BATCH ROUTER-1 — router failure accounting and honest provider timing (DONE)
+Files: core/router.py, core/validator.py, gui/settings_tab.py, test_phase0_phase_a.py, ARCHITECTURE.md, README.md, PLAN.md
+- ROUTER-1  DONE | 5e8c474a, 0348dda5 | Corrected the two inconsistent transient
+  branches: persistent connection errors and malformed/non-object JSON now use the same
+  `_register_transient_failure` path as 5xx and request timeouts, increment the provider's
+  `failure_count`, and start the existing five-minute cooldown after the fourth failure.
+  The branch audit retained intentional existing policies: 429 applies `Retry-After` cooldown
+  without a failure increment; 401/403 deactivate without a failure increment or cooldown;
+  5xx and timeout increment and cool down after the fourth failure; other non-2xx responses
+  do not mutate provider failure state; and no eligible provider means there is no provider
+  record to mutate. Provider ordering, `providers.speed_score_ms`, the database schema,
+  dependencies, cooldown duration/threshold, and HTTP mode remain unchanged.
+  Separately, the validator's misnamed first-byte latency field was renamed to `elapsed_ms` and propagated
+  through `validate_provider`; the non-streaming health check measures total completed-request
+  elapsed time, not time to first byte or time to first token, and the GUI says "total request".
+  Proof: the discovery suite grew from 515 to 518 tests; persistent-connection-error and
+  invalid-JSON regressions were RED before the shared increment and GREEN afterward, and
+  targeted mutation removed the shared `failure_count` increment to prove both regressions
+  detect it. A measurement regression was RED without the `elapsed_ms` producer and GREEN
+  with it, and mutation removed that producer to prove the regression detects it. Final proof:
+  518/518 discovery tests green with the one known Windows symlink-privilege skip; validator
+  5/5; compileall and diff checks green.
 
 ## PHASE D — Research-backed horizon (WHAT only; each is a new threat surface review)
 - D1  BACKLOG | MCP support (re-scoped by D1-R, commit 9737c516; pure admission

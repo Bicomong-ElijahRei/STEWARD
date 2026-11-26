@@ -120,10 +120,18 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - Preflight runs only when dry_run=False; it rejects the WHOLE plan before the first mutation.
 
 ## Router semantics
-- Sort by speed_score_ms; cloud first, at most one local
-- 429 -> cooldown_until from Retry-After, record_usage, prefer another key on SAME endpoint
-- 401/403 -> is_active=0. 5xx -> failure_count++, >3 -> 5 min cooldown
-- Success resets failure_count/cooldown; injects `_steward` {provider, model, agent_name, failovers}
+- Sort by the existing `speed_score_ms`; cloud first, at most one local. Provider ordering and the
+  `providers.speed_score_ms` schema are unchanged.
+- 429 -> set `cooldown_until` from `Retry-After` (default 60 seconds), record usage, and prefer
+  another key on the same endpoint. Do not increment `failure_count`.
+- 401/403 -> set `is_active=0`. Do not increment `failure_count` or set a cooldown.
+- 5xx, request timeout, connection error, and malformed/non-object response JSON -> increment
+  `failure_count`; when the count exceeds 3 (the fourth failure), set a five-minute cooldown.
+- Other non-2xx responses -> retain the existing policy: report the HTTP failure without changing
+  `failure_count`, cooldown, or active state.
+- If no provider is eligible, fail the request without mutating a provider record.
+- Success resets `failure_count` and `cooldown_until`; injects `_steward`
+  {provider, model, agent_name, failovers}.
 - Tool-bearing requests only use providers with `supports_tools=True`; there is no fallback to
   a text-only provider.
 - Provider HTTP calls have a 30-second default timeout, so an in-flight daemon request cannot
@@ -131,6 +139,11 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - Supervisor categories map only to supported routing targets. OUT_OF_SCOPE is a non-actionable
   refusal, while malformed or arbitrary categories remain UNKNOWN; retired category emissions
   are normalized to OUT_OF_SCOPE without retaining the exact legacy token in active source.
+
+## Provider validation measurement
+- The API Hub health check is non-streaming. `ValidationResult.elapsed_ms` is the total elapsed
+  time of the completed request, not time to first byte or time to first token.
+- `validate_provider` propagates that value, and the GUI labels it "total request".
 
 ## Conversation and Syntax boundaries
 - Cortex general-chat memory is instance-local and bounded to 6 turns, 12,000 total characters,
@@ -344,7 +357,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_hygiene_scope.py — retired-persona registry/source removal, truthful OUT_OF_SCOPE classification/refusal, generic UNKNOWN, and non-delegation regressions
 - test_healing_controller.py — C4-I1 pure-controller regressions: structural hard bound, deterministic termination states, write-ahead journal ordering, pre-iteration journal-failure blocking, uncertain post-execution journal failure, bounded/redacted observations, cancellation safe boundary, controller-owned timeouts, no-execution spy/AST proof, no-auto-apply proof, and determinism
 - test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
-- Total discovery count is 507 (one expected Windows symlink-privilege skip)
+- Total discovery count is 518 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
