@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-27 | (final commit SHA reported in handoff) | ChromaDB Windows cleanup lifecycle: closed the prior persistent client before agent reinitialization; closed newly created clients when collection initialization fails; made close failures observable while retaining the client reference for diagnosis or retry; added a shared standard-library finalization step after successful close because ChromaDB 1.5.9's Rust-owned SQLite pool can otherwise retain `chroma.sqlite3` after the shared system stops; added seven real-client lifecycle regressions covering both persistent agents, including immediate SQLite-file removal and concurrent delete/recreate; added no dependency, feature, GUI, provider-behavior, or protected-state change; 515/515 discovery tests green with the one known Windows symlink-privilege skip. | Deterministically release Windows file handles during RAG/code-index reinitialization, collection replacement, and teardown without suppressing close errors or reaching into Chroma internals.
+
 2026-11-26 | (final commit SHA reported in handoff) | D1-SURVEY published MCP server survey and admission decision: examined 10 published candidates against all seven D1-I1 rules using official Registry metadata, SEP-2127 server-card material, the MCP tools/resources specifications, and first-party vendor documentation; classified 8 as failing at least one rule and 2 as UNKNOWN, with 0 compatible candidates; recorded that read-only tools still trigger the `tools` capability and that Registry metadata and server cards cannot establish resource enumeration or fingerprint stability; recommended DEFER D1-I2 and retained D1 in BACKLOG; left the owner's server-content product choice open; added no MCP package, transport, configuration, code, feature, GUI, provider-behavior, or protected-state change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Prevent D1-I2 implementation from creating a resource path around a server that exposes tools or lacks proven resource semantics while preserving the existing D1 resources-only safety boundary and keeping the content decision with the owner. The one-commit gate prevents embedding this commit's own SHA in `PLAN.md`; the actual final SHA is reported in the handoff rather than represented by a false placeholder.
 
 2026-11-26 | 85038613 | SEC-1 dependency advisory remediation: upgraded cryptography from 43.0.1 to the reviewed non-vulnerable pin 50.0.2 and requests from 2.32.3 to the reviewed fixed pin 2.33.0; recorded the unchanged required transitive closure cffi==2.1.1, pycparser==3.12, certifi==2026.10.23, charset-normalizer==3.5.2, idna==3.20, and urllib3==2.8.0, and added exact cffi and pycparser pins; retained a synthetic Fernet known-answer fixture generated under 43.0.1 and proved byte-exact decryption under 50.0.2; decoupled the cryptography remediation from D1-I2; recorded the confirmed ChromaDB cleanup race in backlog; added no MCP package, transport, feature, GUI, or provider-behavior change; 508/508 discovery tests green with the one known Windows symlink-privilege skip. | Remediate the reviewed cryptography and requests advisories while preserving existing Fernet credential readability and keeping D1-I2 limited to its separately reviewed MCP integration work.
@@ -78,8 +80,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 508/508 discovery tests green
+Implementation baseline: ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 515/515 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
@@ -87,7 +89,7 @@ Dependency remediation baseline: SEC-1 cryptography and requests advisory remedi
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 508/508 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 515/515 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
 Push state at verification: `origin/main` remains at `f6965379`; SEC-1 implementation commit `85038613` and this documentation closure are local, not yet published to origin at the time of writing. The preflight confirmed `f6965379` was the starting `HEAD` and `origin/main` on branch `main`.
@@ -107,6 +109,13 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- ChromaDB Windows cleanup lifecycle — DONE | (final commit SHA reported in handoff)
+  persistent RAG and code-index agents now close the prior ChromaDB client before reinitialization,
+  close newly created clients after initialization failures, and expose close failures instead of
+  suppressing them. A shared standard-library finalization step after successful close releases
+  ChromaDB 1.5.9's Rust-owned SQLite pool on Windows without using Chroma internals. Proof: seven
+  real-client lifecycle regressions for both agents, 40 related RAG/code-index tests, and 515/515
+  discovery tests green with the one expected Windows symlink-privilege skip.
 - SEC-1 Dependency advisory remediation — DONE | 85038613
   upgraded the exact direct pins `cryptography==43.0.1` -> `cryptography==50.0.2` and
   `requests==2.32.3` -> `requests==2.33.0`; pinned the unchanged required transitive
@@ -819,7 +828,7 @@ These items were removed from the active roadmap and from declared scope. Their 
 Common thread: each grants authority beyond the application's existing bounded mutation boundary, with no proportionate benefit for a local desktop tool. These decisions follow the same discipline as C4-R and C4-ISO, which deferred execution rather than claim a boundary that could not be proven.
 
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
-- ChromaDB cleanup race on Windows | BACKLOG | The pre-upgrade baseline reproduction was confirmed: concurrent collection delete/recreate left ChromaDB's `data_level0.bin` open, so temporary-directory cleanup failed with `WinError 32`; investigate ChromaDB client/collection cleanup lifecycle separately and do not treat this SEC-1 dependency batch as a fix.
+- ChromaDB cleanup race on Windows | DONE | (final commit SHA reported in handoff) | Fixed at the persistent-agent boundary for both RAG and code indexing. Reinitialization closes the existing client before creating its successor; initialization rollback closes a newly created client; close failures are observable and retain the client reference; and a shared post-close finalization pass releases ChromaDB 1.5.9's Rust-owned SQLite pool on Windows. Real-client regressions prove immediate `data_level0.bin` and `chroma.sqlite3` release after delete/recreate and teardown. No Chroma private internals, subprocess boundary, dependency, or protected-state change was introduced.
 - Orphaned retired desktop-control persona cleanup DONE | 2e0fe28e | Removed the active persona and routing surfaces; retained historical PLAN/ROADMAP records and added truthful OUT_OF_SCOPE refusal.
 - Conversation memory DONE | 2b9e5031, 9641d1f1, a099c0f2 | Supervisor retains bounded instance-local
   FILE_OP context; general Cortex chat retains at most 6 turns, 12,000 total characters, and

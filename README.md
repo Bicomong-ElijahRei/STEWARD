@@ -128,7 +128,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-507 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
+515 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
 credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
 scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
 read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
@@ -141,7 +141,8 @@ single-use approval, lifecycle invalidation, mutation refusal, and guarded real-
 Patch Review off-main worker/epoch/close/clear/single-flight behavior, truthful removed-scope
 refusal,
 and the C4-I1 pure iteration controller's hard bound, termination, journal, observation,
-cancellation, no-execution, and no-auto-apply guarantees.
+cancellation, no-execution, and no-auto-apply guarantees, plus persistent ChromaDB client
+reinitialization, rollback, close-failure, and Windows file-handle release behavior.
 
 ## Architecture
 See ARCHITECTURE.md for the module map and critical request paths.

@@ -24,6 +24,7 @@ file categorization.
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
 - `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, static import/call graph derivation and traversal, incremental replacement, scoped semantic/dependency retrieval
+- `agents/chroma_lifecycle.py` shared persistent-client close/finalization boundary used by RAG and code-index agents
 - `agents/coding_agent.py`  Syntax: provider-backed generation/debug/refactoring/review/explanation; text-only, no tools/files/processes
 - `agents/plan_agent.py`   PlanAgent: strict Cortex blueprint validation, immutable app-owned plan artifacts, single-use ID-bound review gate, separate text-only Syntax elaboration (C2: `1c66ecb9`)
 - `agents/patch_engine.py` C3-I1 pure patch staging: strict one-file artifact/schema validation, definition AST anchors, byte-preserving replace/insert splicing, deterministic diff, and outside-edit byte proof; no I/O, mutation, approval, persistence, or execution
@@ -200,6 +201,17 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   refuses and clears pending review state. A new proposal may replace only an unapproved preview;
   it cannot strand an approved artifact. Content recovery is scoped to the selected workspace
   fingerprint so one workspace cannot undo another workspace's operation.
+
+## ChromaDB lifecycle rules
+- RAGAgent and CodeIndexAgent own their persistent ChromaDB clients. Reinitialization closes the
+  existing client before creating its successor, and initialization rollback closes a newly created
+  client after collection setup fails.
+- Close failures are not suppressed: the agent clears its collection reference, retains the client
+  reference for diagnosis or retry, and raises a contextual `RuntimeError`.
+- ChromaDB 1.5.9's `Client.close()` stops the shared Chroma system, but its Rust-owned SQLite pool
+  can remain alive until Python finalizes the binding reference cycle. The shared lifecycle helper
+  therefore runs a standard-library collection pass after successful close. This releases
+  `chroma.sqlite3` on Windows without accessing Chroma internals or suppressing close errors.
 
 ## Code-index safety rules
 - `steward_code` is separate from Scout's `steward_docs`; clearing code context does not clear

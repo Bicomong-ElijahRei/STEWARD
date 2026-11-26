@@ -11,6 +11,8 @@ import os
 import threading
 from typing import Any, Dict, List, Optional
 
+from agents.chroma_lifecycle import close_chroma_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,40 +66,70 @@ class RAGAgent:
         """Initialize the persistent client and document collection."""
         if not self.available:
             return False
-        try:
-            import chromadb
-            os.makedirs(self.persist_directory, exist_ok=True)
-            self.client = chromadb.PersistentClient(path=self.persist_directory)
-            options = {}
-            if self.embedding_function is not None:
-                options["embedding_function"] = self.embedding_function
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                **options,
-            )
+        with self._lock:
+            existing_client = self.client
+            if existing_client is not None:
+                try:
+                    close_chroma_client(existing_client)
+                except Exception as exc:
+                    self.collection = None
+                    self.initialization_error = str(exc)
+                    logger.exception("RAGAgent: Failed to close existing ChromaDB client")
+                    raise RuntimeError(
+                        "Failed to close existing ChromaDB client"
+                    ) from exc
+                self.client = None
+                self.collection = None
+
+            client = None
+            try:
+                import chromadb
+                os.makedirs(self.persist_directory, exist_ok=True)
+                client = chromadb.PersistentClient(path=self.persist_directory)
+                options = {}
+                if self.embedding_function is not None:
+                    options["embedding_function"] = self.embedding_function
+                collection = client.get_or_create_collection(
+                    name=self.collection_name,
+                    **options,
+                )
+            except Exception as exc:
+                cleanup_error = None
+                if client is not None:
+                    try:
+                        close_chroma_client(client)
+                    except Exception as close_exc:
+                        cleanup_error = close_exc
+                        self.client = client
+                self.collection = None
+                message = str(exc)
+                if cleanup_error is not None:
+                    message = f"{message}; cleanup failed: {cleanup_error}"
+                self.initialization_error = message
+                logger.error("RAGAgent: Failed to initialize ChromaDB: %s", exc)
+                return False
+
+            self.client = client
+            self.collection = collection
             self.initialization_error = ""
             logger.info("RAGAgent: ChromaDB initialized")
             return True
-        except Exception as exc:
-            self.client = None
-            self.collection = None
-            self.initialization_error = str(exc)
-            logger.error("RAGAgent: Failed to initialize ChromaDB: %s", exc)
-            return False
 
     def close(self):
         """Release the persistent client, including its Windows file handles."""
         with self._lock:
             client = self.client
+            if client is None:
+                self.collection = None
+                return
+            try:
+                close_chroma_client(client)
+            except Exception as exc:
+                self.collection = None
+                logger.exception("RAGAgent: Failed to close ChromaDB cleanly")
+                raise RuntimeError("Failed to close ChromaDB client") from exc
             self.collection = None
             self.client = None
-        if client is not None:
-            try:
-                close = getattr(client, "close", None)
-                if callable(close):
-                    close()
-            except Exception as exc:
-                logger.warning("RAGAgent: Failed to close ChromaDB cleanly: %s", exc)
 
     @staticmethod
     def chunk_text(
