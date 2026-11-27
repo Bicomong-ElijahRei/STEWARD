@@ -40,6 +40,10 @@ preview, explicit approval, and undo/redo.
 - File operations: preview a plan, approve it by ID, and execute exactly the approved plan.
   Preview generations own plan publication and provider metadata, so discarded or superseded
   previews cannot become executable or overwrite newer results.
+- Bounded filesystem reports: Foldy can request duplicate-file, large-file, and advisory deletion-
+  candidate reports from Incoming/Sorted. The reports are deterministic, canonicalize paths, exclude
+  symlinks/junctions, and enforce file-count, depth, result-count, serialized-byte, path-length,
+  size-threshold, and age-threshold bounds. Deletion suggestions never delete or schedule deletion.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
   restart-persistent scheduled scans with cooperative cancellation.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
@@ -50,15 +54,17 @@ preview, explicit approval, and undo/redo.
   non-streaming health check reports total completed-request elapsed time, not time to first
   byte or time to first token.
 - Multi-provider routing with latency-based selection, 429 key failover on the same
-  endpoint, 401/403 deactivation, 5xx/timeout/connection/invalid-JSON cooldowns, and live
-  failover visualization.
+  endpoint, 401/403 deactivation, 404/5xx/timeout/connection/invalid-JSON cooldowns, and live
+  failover visualization. Persistent failures start the five-minute cooldown on the fourth failure.
 
 ## Safety model
 - All file operations are confined to <root>/Incoming and <root>/Sorted. Paths are resolved
   with realpath + commonpath + normcase; absolute paths and traversal cannot escape.
 - Reads are sandboxed too, so credentials outside the sandbox cannot be exfiltrated.
-- The dispatchable tool set is derived from the declared schema; undeclared tools
-  (bulk move, temp cleanup, deletion suggestion) are unreachable from a model-issued plan.
+- The dispatchable tool set is derived from the declared schema. Bulk move, empty-folder cleanup,
+  and temporary-file cleanup are unreachable from a model-issued plan. Deletion suggestions are
+  reachable only as bounded advisory reports: they never delete, schedule deletion, or create an
+  approved plan.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
   Plan preflight rejects occupied destinations, duplicate targets, and file/directory target
   collisions in either plan order, while the mutation primitive rechecks collisions immediately
@@ -131,13 +137,14 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-518 unit tests covering sandbox enforcement, plan approval, router failover, undo/redo,
-credential rotation/recovery, migration safety, daemon concurrency, generation-safe scheduled
-scans, bounded Cortex memory, provider-backed text-only Syntax, document RAG, bounded
-read-only code indexing/retrieval and static dependency-graph expansion, GUI lifecycle,
-no-overwrite filesystem publication, whole-plan collision preflight, partial-outcome journal
-truthfulness, durable journal recovery, cross-process journal serialization,
-schema-validated meta-prompting review gates, pure AST patch artifact/anchor/splicing/
+528 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
+concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
+Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
+expansion, GUI lifecycle, no-overwrite filesystem publication, whole-plan collision preflight,
+partial-outcome journal truthfulness, durable journal recovery, cross-process journal serialization,
+strict bounded read-only filesystem reports, schema-validated meta-prompting review gates,
+pure AST patch artifact/anchor/splicing/
 encoding/proof/determinism/purity safety, C3-I2 workspace admission, atomic replacement,
 journal/backup, and guarded content recovery, C3-I3 exact-diff review, immutable artifact,
 single-use approval, lifecycle invalidation, mutation refusal, and guarded real-file apply,
@@ -177,6 +184,10 @@ confirmation and a verified database/key/operation-log backup set.
 - GUI approval waits are bounded to 600 seconds. Live shared-credential migration confirmation
   is bounded to 300 seconds; timeout aborts before any live mutation.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
+- Bulk destructive filesystem utilities (`cleanup_temp_files`, `cleanup_empty_folders`, and
+  `batch_move`) are intentionally outside the active FileAgent schema and remain backlog-only.
+  The legacy `agent/core.py` `StewardAgent` is non-authoritative and has no runtime callers; the
+  active `agents/file_agent.py` is the provider/dispatch authority.
 - Cross-process journal locking is implemented and validated on Windows. The POSIX
   `fcntl.flock` path is present but has not been locally validated on this Windows host.
 - No packaging/installer yet.

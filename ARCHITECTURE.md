@@ -20,7 +20,8 @@ file categorization.
 - `core/discovery.py`   OpenRouter free-model discovery (Phase 4/5)
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}; supported categories route to specialists, OUT_OF_SCOPE is a truthful non-actionable refusal, and generic invalid categories remain UNKNOWN
-- `agents/file_agent.py` Foldy: tool schema, sandbox, plan approval, undo/redo, operation log
+- `agents/file_agent.py` Foldy: active tool schema, sandbox, plan approval, undo/redo, operation log; authoritative provider/dispatch surface for the three bounded filesystem reports
+- `agent/core.py` legacy compatibility `StewardAgent`; non-authoritative, with no runtime callers in the application
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
 - `agents/code_index_agent.py` Code context: separate `steward_code` collection; explicit-root bounded read-only indexing, AST/fallback chunks, static import/call graph derivation and traversal, incremental replacement, scoped semantic/dependency retrieval
@@ -34,7 +35,7 @@ file categorization.
 - `agents/mcp_resource_core.py` D1-I1 pure MCP resource admission core: standard-library-only, transport-agnostic admission/read boundary for one explicitly selected identity-pinned remote resource server; HTTPS/effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers. It imports no MCP SDK and performs no network, filesystem, subprocess, dynamic-code, JSON-RPC, GUI, tool, or local mutation operation
 - `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, truthful recovery states, and one bounded daemon-worker slot with epoch/closed-guarded UI marshaling
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
-- `agent/tools.py`       LEGACY module-level filesystem helpers; `tool_functions` dict is the dispatch target
+- `agent/tools.py`       filesystem helper implementations; `tool_functions` includes legacy mutation helpers, while the active FileAgent dispatch allowlist is derived from its own schema
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent/PlanAgent/PatchReviewManager; passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
@@ -116,8 +117,26 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - BOTH reads and writes are validated: read_file_content/get_file_info (file_path),
   list_directory/find_duplicates/find_large_files/suggest_deletions (directory)
 - Dispatch allowlist is DERIVED from _get_tool_definitions() inside _execute_tool_plan.
-  Undeclared tools (cleanup_temp_files, batch_move, ...) must stay unreachable.
+  Undeclared tools (cleanup_temp_files, cleanup_empty_folders, batch_move, ...) must stay unreachable.
 - Preflight runs only when dry_run=False; it rejects the WHOLE plan before the first mutation.
+
+## Bounded filesystem report contract
+- The active `agents/file_agent.py` schema exposes exactly three report tools:
+  `find_duplicates`, `find_large_files`, and `suggest_deletions`. Their schemas reject additional
+  properties, and runtime validation rejects missing/unexpected arguments, non-finite numbers,
+  and thresholds outside their documented ranges.
+- Report directory paths are canonicalized through the same Incoming/Sorted sandbox as all other
+  file operations. Sandbox refusal happens before threshold validation and before dispatch.
+- Traversal excludes symlinks and junctions, canonicalizes every visited path, sorts output
+  deterministically, and exposes explicit truncation/error markers. Bounds are 1,000 files visited,
+  depth 8, 50 result entries, 32,768 serialized bytes, 1,024-character directory paths, 10,240 MB
+  size thresholds, and 3,650-day age thresholds.
+- `suggest_deletions` is advisory only: it never deletes, schedules deletion, approves a plan,
+  or invokes external routing. The legacy `agent/core.py` `StewardAgent` is non-authoritative and
+  has no runtime callers; `agents/file_agent.py` is the active provider/dispatch authority.
+- `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` are destructive utilities kept
+  outside the active schema as backlog-only items. They must remain unreachable until separately
+  designed, bounded, and approved.
 
 ## Router semantics
 - Sort by the existing `speed_score_ms`; cloud first, at most one local. Provider ordering and the
@@ -125,9 +144,11 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - 429 -> set `cooldown_until` from `Retry-After` (default 60 seconds), record usage, and prefer
   another key on the same endpoint. Do not increment `failure_count`.
 - 401/403 -> set `is_active=0`. Do not increment `failure_count` or set a cooldown.
-- 5xx, request timeout, connection error, and malformed/non-object response JSON -> increment
-  `failure_count`; when the count exceeds 3 (the fourth failure), set a five-minute cooldown.
-- Other non-2xx responses -> retain the existing policy: report the HTTP failure without changing
+- 5xx, 404, request timeout, connection error, and malformed/non-object response JSON -> increment
+  `failure_count`; when the count exceeds 3 (the fourth failure), set a five-minute cooldown. A 404
+  normally identifies a persistently wrong endpoint; 400/422 retain their separate audited policy.
+- Other non-2xx responses (excluding the statuses named above) -> retain the existing policy:
+  report the HTTP failure without changing
   `failure_count`, cooldown, or active state.
 - If no provider is eligible, fail the request without mutating a provider record.
 - Success resets `failure_count` and `cooldown_until`; injects `_steward`

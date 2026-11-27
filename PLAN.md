@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-27 | b7619dc3, caab947c | TOOLS-1 bounded filesystem reports and persistent HTTP 404 accounting: exposed exactly three read-only reports (`find_duplicates`, `find_large_files`, and advisory-only `suggest_deletions`) through the active `agents/file_agent.py` schema with strict argument schemas, runtime validation, canonical sandbox paths, symlink/junction exclusion, deterministic ordering, explicit bounds, and no mutation or external-routing path; counted HTTP 404 as a persistent provider failure so the existing five-minute cooldown begins on the fourth failure while 400/422 remain unchanged; documented `agent/core.py` as a non-authoritative compatibility surface with no runtime callers; kept `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` outside the active schema as backlog-only destructive utilities; discovery tests increased from 518 to 528 and all 528 passed with the one known Windows symlink-privilege skip. | Provide useful, bounded, read-only filesystem insight without widening destructive authority, and stop a persistently missing provider endpoint from being retried without failure accounting. The final documentation commit SHA is reported in the handoff because a commit cannot contain its own SHA.
+
 2026-11-27 | 5e8c474a, 0348dda5 | ROUTER-1 router failure accounting and provider timing truthfulness: routed persistent connection errors and malformed/non-object JSON through the shared transient-failure path, retained the audited distinct policies for 429, 401/403, 5xx, timeout, other non-2xx, and no-eligible-provider outcomes, renamed the validator's misnamed first-byte latency field to `elapsed_ms` and propagated total completed-request timing through validation and GUI wording, added three focused regressions with shared-increment and elapsed-time-producer mutation proof, and changed no provider schema, dependency, cooldown policy, provider ordering, or HTTP mode; discovery tests increased from 515 to 518 and all 518 passed with the one known Windows symlink-privilege skip. | Make provider failure accounting consistent for transport and response-validity failures, name the measured latency honestly, and derive PLAN publication state from current Git ancestry rather than repeating stale claims.
 
 2026-11-27 | (final commit SHA reported in handoff) | ChromaDB Windows cleanup lifecycle: closed the prior persistent client before agent reinitialization; closed newly created clients when collection initialization fails; made close failures observable while retaining the client reference for diagnosis or retry; added a shared standard-library finalization step after successful close because ChromaDB 1.5.9's Rust-owned SQLite pool can otherwise retain `chroma.sqlite3` after the shared system stops; added seven real-client lifecycle regressions covering both persistent agents, including immediate SQLite-file removal and concurrent delete/recreate; added no dependency, feature, GUI, provider-behavior, or protected-state change; 515/515 discovery tests green with the one known Windows symlink-privilege skip. | Deterministically release Windows file handles during RAG/code-index reinitialization, collection replacement, and teardown without suppressing close errors or reaching into Chroma internals.
@@ -82,8 +84,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 518/518 discovery tests green
+Implementation baseline: TOOLS-1 bounded filesystem reports commit b7619dc3 and HTTP 404 provider-failure accounting commit caab947c; ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: TOOLS-1 strict schema/runtime validation, sandbox refusal, traversal, serialization, finite-number, advisory-only, and HTTP 404 threshold regressions; ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 528/528 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
@@ -91,10 +93,10 @@ Dependency remediation baseline: SEC-1 cryptography and requests advisory remedi
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 518/518 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 528/528 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at documentation verification (2026-11-27, before this closure commit): `origin/main` resolves to `d56bd1cdfd1c3ecd8c9cf1ed6efe578c9604aed1`. The named historical commits `f6965379665bf69602a27ee58800482f4b662ad3` and `8503861337c1a9f087219eba7ef9e1eea6ca8bbe` are published ancestors (each `git merge-base --is-ancestor <sha> origin/main` exit 0), as is `d56bd1cd` itself (exit 0). ROUTER-1 commits `5e8c474abe37f5d6cdceb6119a7dff773e34d184` and `0348dda5bf01cc2706729df5744fbaf7f3fa3a70` are local and not ancestors of `origin/main` (each exit 1); the pre-closure `HEAD` was `0348dda5` (exit 1). This documentation closure is also local until pushed.
+Push state at documentation verification (2026-11-27, before this closure commit): `origin/main` resolves to `20889777b41560aba0e7442081df8df4aa06d3bd`. The named historical commits `f6965379665bf69602a27ee58800482f4b662ad3` and `8503861337c1a9f087219eba7ef9e1eea6ca8bbe` are published ancestors (each `git merge-base --is-ancestor <sha> origin/main` exit 0), as is `20889777` itself (exit 0). ROUTER-1 commits `5e8c474abe37f5d6cdceb6119a7dff773e34d184` and `0348dda5bf01cc2706729df5744fbaf7f3fa3a70` are published ancestors (each exit 0). TOOLS-1 commits `b7619dc359759e8737bcda6b7963274a0ebe3e01` and `caab947c16fcd979055896f0303c640e83021ec4` are local and not ancestors of `origin/main` (each exit 1); the pre-closure `HEAD` was `caab947c` (exit 1). This documentation closure is also local until pushed.
 Publication-state convention: never copy a prior push-state claim forward. At every verification, resolve `origin/main` and current `HEAD`, run `git merge-base --is-ancestor <sha> origin/main` for every named commit and for current `HEAD`, and record each exit result (0 = published ancestor, 1 = not an ancestor, any other exit = verification failure). Re-derive the paragraph from those results at the time of writing.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
@@ -112,6 +114,20 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- TOOLS-1 Bounded filesystem reports and persistent HTTP 404 accounting — DONE | b7619dc3, caab947c
+  the active FileAgent now exposes exactly three bounded read-only reports: duplicate-file
+  detection, large-file detection, and advisory-only deletion suggestions. Strict schemas and
+  runtime validation reject extra or missing arguments and non-finite thresholds; paths are
+  canonicalized and sandboxed before dispatch; traversal excludes symlinks/junctions and is
+  deterministic. Bounds are 1,000 files visited, depth 8, 50 result entries, 32,768 serialized
+  bytes, 1,024-character directory paths, 10,240 MB size thresholds, and 3,650-day age thresholds.
+  The reports never mutate files or invoke external routing. HTTP 404 now increments provider
+  failure count and starts the existing five-minute cooldown on the fourth failure; 400/422 retain
+  their prior policy. Proof: 19/19 related tests and 528/528 discovery tests green with the one
+  known Windows symlink-privilege skip; validator 5/5; compileall and diff checks green. The
+  legacy `agent/core.py` StewardAgent is non-authoritative and has no runtime callers; bulk
+  destructive utilities (`cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move`) remain
+  outside the active schema as backlog-only items.
 - ChromaDB Windows cleanup lifecycle — DONE | (final commit SHA reported in handoff)
   persistent RAG and code-index agents now close the prior ChromaDB client before reinitialization,
   close newly created clients after initialization failures, and expose close failures instead of
@@ -783,6 +799,26 @@ Files: requirements.txt, test_fernet_compatibility.py, PLAN.md
   compileall and diff checks green. No MCP package, transport, feature, GUI, provider
   behavior, review-document rewrite, or ROADMAP change was introduced.
 
+## BATCH TOOLS-1 — bounded filesystem reports and persistent HTTP 404 accounting (DONE)
+Files: agent/tools.py, agents/file_agent.py, core/router.py, test_phase0_phase_a.py, ARCHITECTURE.md, README.md, PLAN.md
+- TOOLS-1  DONE | b7619dc3, caab947c | The active `agents/file_agent.py` provider schema exposes
+      exactly three bounded read-only reports: `find_duplicates`, `find_large_files`, and
+      `suggest_deletions`. Their schemas reject additional properties and runtime validation
+      rejects missing, unexpected, non-finite, or out-of-range arguments. Directory paths are
+      canonicalized and confined to Incoming/Sorted before threshold validation or dispatch;
+      traversal excludes symlinks/junctions, sorts deterministically, and exposes explicit
+      truncation/error markers. Bounds are 1,000 files visited, depth 8, 50 result entries,
+      32,768 serialized bytes, 1,024-character directory paths, 10,240 MB size thresholds, and
+      3,650-day age thresholds. `suggest_deletions` is advisory only: it never deletes, schedules
+      deletion, approves a plan, or invokes external routing. HTTP 404 now uses the established
+      persistent provider-failure path, so the five-minute cooldown begins on the fourth failure;
+      the audited 400/422 policy is unchanged. The legacy `agent/core.py` StewardAgent is
+      non-authoritative and has no runtime callers; the active FileAgent is the provider/dispatch
+      authority. `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` remain outside
+      the active schema as backlog-only destructive utilities. Proof: 19/19 related tests and
+      528/528 discovery tests green with the one known Windows symlink-privilege skip; validator
+      5/5; compileall and diff checks green.
+
 ## BATCH ROUTER-1 — router failure accounting and honest provider timing (DONE)
 Files: core/router.py, core/validator.py, gui/settings_tab.py, test_phase0_phase_a.py, ARCHITECTURE.md, README.md, PLAN.md
 - ROUTER-1  DONE | 5e8c474a, 0348dda5 | Corrected the two inconsistent transient
@@ -862,6 +898,9 @@ Common thread: each grants authority beyond the application's existing bounded m
   or in-flight file previews, and rejects stale responses/UI continuations across all specialist
   paths.
 - pytest migration of the suite
+- Bulk destructive filesystem utilities | BACKLOG | `cleanup_temp_files`, `cleanup_empty_folders`,
+  and `batch_move` are intentionally not exposed by the active FileAgent schema. Any future work
+  requires a separate safety design and approval path; TOOLS-1 adds no destructive authority.
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
 
