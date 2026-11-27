@@ -20,7 +20,8 @@ file categorization.
 - `core/discovery.py`   OpenRouter free-model discovery (Phase 4/5)
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}; supported categories route to specialists, OUT_OF_SCOPE is a truthful non-actionable refusal, and generic invalid categories remain UNKNOWN
-- `agents/file_agent.py` Foldy: active twelve-tool schema, sandbox, plan approval, undo/redo, operation log; authoritative provider/dispatch surface for three bounded filesystem reports and two bound recycle-bin cleanup tools
+- `agents/file_agent.py` Foldy: active thirteen-tool schema, sandbox, plan approval, undo/redo, operation log; authoritative provider/dispatch surface for three bounded filesystem reports, two bound recycle-bin cleanup tools, and one bound batch move tool
+- `agent/batch_move_core.py` pure bounded batch-move expansion and immutable exact-set binding; rejects unsafe or recursive patterns, links, and over-limit results before the FileAgent binds the app-owned source→destination set
 - `agent/core.py` legacy compatibility `StewardAgent`; non-authoritative, with no runtime callers in the application
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
@@ -101,6 +102,12 @@ C4-I1 pure healing controller (not user-integrated): injected executor + injecte
 C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   evaluates all 20 C4-I2 criteria and defers execution because no supported
   baseline is proven on this Windows Home host.
+MOVE-1 bound batch move (user-integrated): model call -> FileAgent accepts only sandboxed
+  `source_pattern` and `destination_folder` -> application expands a bounded, deterministic
+  source→destination set -> immutable path/identity/hash binding -> preview of every pair ->
+  whole-plan collision and bound re-verification -> write-ahead journal intent per move ->
+  no-overwrite publication. Unsafe, recursive, linked, over-limit, drifted, or conflicting
+  plans refuse before the first move; each move retains existing individual undo semantics.
 BULK-2 bound bulk cleanup (user-integrated): model call -> FileAgent accepts only `directory`
   -> application enumerates candidates under the canonical sandbox -> app-owned immutable binding
   -> preview shows every exact path and non-undoable recycle-bin semantics -> approval ID ->
@@ -125,7 +132,8 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - BOTH reads and writes are validated: read_file_content/get_file_info (file_path),
   list_directory/find_duplicates/find_large_files/suggest_deletions (directory)
 - Dispatch allowlist is DERIVED from _get_tool_definitions() inside _execute_tool_plan and contains
-  exactly twelve tools. Undeclared tools such as `batch_move` must stay unreachable.
+  exactly thirteen tools. `batch_move` is reachable only through its strict schema, app-owned
+  expansion, immutable binding, and whole-plan re-verification path; undeclared tools stay unreachable.
 - Preflight runs only when dry_run=False; it rejects the WHOLE plan before the first mutation.
 
 ## Bounded filesystem report contract
@@ -171,8 +179,9 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   entry; it cannot skip that entry and reverse an earlier move, rename, or folder creation.
   A successful delete entry retains the separately tested policy of being skipped in favor
   of an earlier reversible operation; changing that policy requires a separate decision.
-- The active FileAgent dispatch set contains exactly twelve tools. See
-  `docs/bulk_deletion_contract.md`.
+- The active FileAgent dispatch set contains exactly thirteen tools. BULK-1/BULK-2 cleanup
+  remains bounded by `docs/bulk_deletion_contract.md`; MOVE-1 adds the separately bound batch
+  move described above.
 
 ## Router semantics
 - Sort by the existing `speed_score_ms`; cloud first, at most one local. Provider ordering and the

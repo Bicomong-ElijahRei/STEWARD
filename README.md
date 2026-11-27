@@ -50,6 +50,11 @@ preview, explicit approval, and undo/redo.
   empty directories. The application enumerates and binds the exact candidate set, previews every
   path, and re-verifies the whole plan before removal. Removal uses the recycle bin only and
   cannot be undone; permanent bulk deletion is not exposed.
+- Bound batch move: Foldy exposes a thirteenth tool for moving files matched by a sandboxed
+  pattern into a sandboxed destination folder. The application expands and binds the exact
+  source→destination set, previews every pair, checks the whole plan, and journals each move
+  before publication. Unsafe, recursive, linked, over-limit, drifted, or conflicting plans are
+  refused; each moved file remains individually undoable.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
   restart-persistent scheduled scans with cooperative cancellation.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
@@ -67,7 +72,7 @@ preview, explicit approval, and undo/redo.
 - All file operations are confined to <root>/Incoming and <root>/Sorted. Paths are resolved
   with realpath + commonpath + normcase; absolute paths and traversal cannot escape.
 - Reads are sandboxed too, so credentials outside the sandbox cannot be exfiltrated.
-- The dispatchable tool set is derived from the declared schema and contains exactly twelve tools.
+- The dispatchable tool set is derived from the declared schema and contains exactly thirteen tools.
   The two cleanup tools accept only a sandboxed `directory`; application-owned binding supplies
   every candidate path. Any candidate-set or policy drift refuses the whole plan before removal.
   `send2trash` is the only removal primitive, and bulk cleanup is truthfully non-undoable.
@@ -144,13 +149,14 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-573 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+584 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
 HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
 concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
 Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
 expansion, GUI lifecycle, no-overwrite filesystem publication, whole-plan collision preflight,
 partial-outcome journal truthfulness, durable journal recovery, cross-process journal serialization,
-strict bounded read-only filesystem reports, bounded duplicate hashing, bulk-cleanup
+strict bounded read-only filesystem reports, bounded duplicate hashing, bound batch-move
+expansion/immutable binding/drift and collision refusal/individual undo, bulk-cleanup
 enumeration/exact-set binding/typed drift refusal/recycle-bin-only execution/truthful non-undoable
 journal semantics, schema-validated meta-prompting review gates,
 pure AST patch artifact/anchor/splicing/
