@@ -514,12 +514,12 @@ class BulkDeletionCoreTests(unittest.TestCase):
             if isinstance(node, ast.ImportFrom):
                 self.assertNotIn(node.module, {"send2trash", "shutil"})
 
-    def test_active_dispatch_allowlist_is_exactly_twelve_tools(self):
+    def test_active_dispatch_allowlist_is_exactly_thirteen_tools(self):
         expected = {
             "move_file", "delete_file", "rename_file", "create_folder",
             "list_directory", "read_file_content", "get_file_info",
             "find_duplicates", "find_large_files", "suggest_deletions",
-            "cleanup_temp_files", "cleanup_empty_folders",
+            "cleanup_temp_files", "cleanup_empty_folders", "batch_move",
         }
         with tempfile.TemporaryDirectory(prefix="steward_bulk_allowlist_") as tmp:
             os.makedirs(os.path.join(tmp, "Incoming"))
@@ -533,7 +533,7 @@ class BulkDeletionCoreTests(unittest.TestCase):
             definitions = agent._get_tool_definitions()
             names = {item["function"]["name"] for item in definitions}
             self.assertEqual(names, expected)
-            self.assertEqual(len(names), 12)
+            self.assertEqual(len(names), 13)
 
             approved_dispatch = Mock(return_value="listed")
             unapproved_dispatch = Mock(return_value="removed")
@@ -552,13 +552,13 @@ class BulkDeletionCoreTests(unittest.TestCase):
                 )
             with patch(
                 "agents.file_agent._legacy_tool_functions",
-                {"batch_move": unapproved_dispatch},
+                {"unapproved_tool": unapproved_dispatch},
             ):
                 unapproved_result = agent._execute_tool_plan(
                     [{
                         "function": {
-                            "name": "batch_move",
-                            "arguments": {"directory": "Incoming"},
+                            "name": "unapproved_tool",
+                            "arguments": {},
                         }
                     }],
                     dry_run=False,
@@ -570,7 +570,7 @@ class BulkDeletionCoreTests(unittest.TestCase):
             unapproved_dispatch.assert_not_called()
             self.assertTrue(any("listed" in line for line in approved_result))
             self.assertIn("Unapproved tool", unapproved_result[0])
-            self.assertIn("batch_move", unapproved_result[0])
+            self.assertIn("unapproved_tool", unapproved_result[0])
 
 
 if __name__ == "__main__":

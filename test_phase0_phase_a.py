@@ -1179,7 +1179,7 @@ class Tools1ReadOnlyUtilitiesTests(unittest.TestCase):
         agent._pending_plan_id = f"plan-{tool_name}"
         return agent.execute_pending_plan(agent._pending_plan_id)
 
-    def test_schema_allowlist_is_exactly_twelve_tools(self):
+    def test_schema_allowlist_is_exactly_thirteen_tools(self):
         with tempfile.TemporaryDirectory(prefix="steward_tools1_schema_") as tmp:
             agent = self.make_agent(tmp)
             definitions = agent._get_tool_definitions()
@@ -1188,10 +1188,10 @@ class Tools1ReadOnlyUtilitiesTests(unittest.TestCase):
                 "move_file", "delete_file", "rename_file", "create_folder",
                 "list_directory", "read_file_content", "get_file_info",
                 "find_duplicates", "find_large_files", "suggest_deletions",
-                "cleanup_temp_files", "cleanup_empty_folders",
+                "cleanup_temp_files", "cleanup_empty_folders", "batch_move",
             }
             self.assertEqual(names, expected)
-            self.assertNotIn("batch_move", names)
+            self.assertIn("batch_move", names)
 
             by_name = {
                 item["function"]["name"]: item["function"]

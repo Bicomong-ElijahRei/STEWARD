@@ -14,7 +14,7 @@ TWELVE_TOOLS = {
     "move_file", "delete_file", "rename_file", "create_folder",
     "list_directory", "read_file_content", "get_file_info",
     "find_duplicates", "find_large_files", "suggest_deletions",
-    "cleanup_temp_files", "cleanup_empty_folders",
+    "cleanup_temp_files", "cleanup_empty_folders", "batch_move",
 }
 
 
@@ -45,22 +45,23 @@ class BulkCleanupExposureTests(unittest.TestCase):
         agent._pending_plan_id = "bound-plan"
         return agent.execute_pending_plan("bound-plan")
 
-    def test_schema_allowlist_is_exactly_twelve_and_negative_dispatch_refused(self):
+    def test_schema_allowlist_is_exactly_thirteen_and_negative_dispatch_refused(self):
         with tempfile.TemporaryDirectory(prefix="steward_bulk_schema_") as tmp:
             os.makedirs(os.path.join(tmp, "Incoming"))
             os.makedirs(os.path.join(tmp, "Sorted"))
             agent = self.make_agent(tmp)
             names = {item["function"]["name"] for item in agent._get_tool_definitions()}
             self.assertEqual(names, TWELVE_TOOLS)
-            self.assertEqual(len(names), 12)
+            self.assertEqual(len(names), 13)
             legacy = Mock(return_value="moved")
-            with patch("agents.file_agent._legacy_tool_functions", {"batch_move": legacy}):
+            with patch("agents.file_agent._legacy_tool_functions", {"unapproved_tool": legacy}):
                 result = agent._execute_tool_plan(
-                    [{"function": {"name": "batch_move", "arguments": {}}}],
+                    [{"function": {"name": "unapproved_tool", "arguments": {}}}],
                     dry_run=False,
                 )
             legacy.assert_not_called()
             self.assertIn("Unapproved tool", result[0])
+            self.assertIn("unapproved_tool", result[0])
 
     def test_suffix_policy_excludes_log_and_backup(self):
         self.assertNotIn(".log", core.TEMPORARY_FILE_SUFFIXES)

@@ -47,6 +47,7 @@ from agent.journal_lock import (
     operation_journal_lock,
 )
 from agent import bulk_deletion_core as _bulk_core
+from agent import batch_move_core as _batch_core
 from agent.bulk_cleanup_execution import trash_paths as _trash_bound_paths
 from agent.tools import (
     move_file as _move_file,
@@ -277,14 +278,33 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         )
 
     def _bind_cleanup_calls(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace model cleanup arguments with app-owned immutable bindings."""
+        """Replace model arguments with app-owned immutable bindings."""
         bound_plan = copy.deepcopy(tool_calls)
         for call in bound_plan:
             function = call.get("function", {})
             name = function.get("name")
+            arguments = function.get("arguments")
+            if name == "batch_move":
+                if not isinstance(arguments, dict) or set(arguments) != {"source_pattern", "destination_folder"}:
+                    raise ValueError("batch_move accepts only source_pattern and destination_folder.")
+                pattern = arguments["source_pattern"]
+                destination = arguments["destination_folder"]
+                if not isinstance(pattern, str) or not isinstance(destination, str):
+                    raise ValueError("batch_move arguments must be strings.")
+                destination = self._sandbox_path(destination)
+                binding = _batch_core.enumerate_and_bind(pattern, destination, self.allowed_roots)
+                function["arguments"] = {
+                    "source_pattern": pattern,
+                    "destination_folder": destination,
+                    "_bound_batch_move": {
+                        "root": binding.root,
+                        "entries": [entry.__dict__ for entry in binding.entries],
+                        "binding_hash": binding.binding_hash,
+                    },
+                }
+                continue
             if name not in ("cleanup_temp_files", "cleanup_empty_folders"):
                 continue
-            arguments = function.get("arguments")
             if not isinstance(arguments, dict) or set(arguments) != {"directory"}:
                 raise ValueError("Cleanup accepts only a directory argument.")
             directory = self._sandbox_path(arguments.get("directory"))
@@ -293,16 +313,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 if name == "cleanup_temp_files"
                 else _bulk_core.CandidateKind.EMPTY_DIRECTORY
             )
-            enumeration = _bulk_core.enumerate_candidates(
-                directory,
-                allowed_roots=self.allowed_roots,
-                kind=kind,
-            )
+            enumeration = _bulk_core.enumerate_candidates(directory, allowed_roots=self.allowed_roots, kind=kind)
             binding = _bulk_core.bind_candidates(enumeration)
-            function["arguments"] = {
-                "directory": binding.root,
-                "_bound_cleanup": self._serialize_binding(binding),
-            }
+            function["arguments"] = {"directory": binding.root, "_bound_cleanup": self._serialize_binding(binding)}
         return bound_plan
 
     def _reverify_bound_cleanup(self, call: Dict[str, Any]) -> None:
@@ -319,17 +332,25 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             else _bulk_core.CandidateKind.EMPTY_DIRECTORY
         )
         try:
-            current = _bulk_core.enumerate_candidates(
-                binding.root,
-                allowed_roots=self.allowed_roots,
-                kind=kind,
-            )
+            current = _bulk_core.enumerate_candidates(binding.root, allowed_roots=self.allowed_roots, kind=kind)
         except _bulk_core.EnumerationRefusal as exc:
             raise ValueError(f"Cleanup binding refused: {exc.code.value}.") from exc
         verification = _bulk_core.reverify_binding(binding, current)
         if not verification.accepted:
             reasons = ", ".join(reason.code.value for reason in verification.reasons)
             raise ValueError(f"Cleanup binding refused: {reasons}.")
+
+    def _reverify_bound_batch_move(self, call: Dict[str, Any]) -> None:
+        arguments = call.get("function", {}).get("arguments", {})
+        data = arguments.get("_bound_batch_move")
+        if not isinstance(data, dict):
+            raise ValueError("batch_move plan is missing its application binding.")
+        entries = tuple(_batch_core.BatchMoveEntry(**item) for item in data["entries"])
+        binding = _batch_core.BatchMoveBinding(data["root"], entries, data["binding_hash"])
+        try:
+            _batch_core.reverify(binding, arguments["source_pattern"], arguments["destination_folder"], self.allowed_roots)
+        except _batch_core.BatchMoveRefusal as exc:
+            raise ValueError(f"batch_move binding refused: {exc.reason}.") from exc
 
     def _validate_mutation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Validate tool paths and arguments, returning canonical safe arguments."""
@@ -361,8 +382,13 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             elif set(safe_args) != {"directory"}:
                 raise ValueError("Cleanup accepts only a directory argument.")
         elif func_name == "batch_move":
-            safe_args["source_pattern"] = self._sandbox_path(args.get("source_pattern"))
-            safe_args["destination_folder"] = self._sandbox_path(args.get("destination_folder"))
+            if set(safe_args) not in ({"source_pattern", "destination_folder"}, {"source_pattern", "destination_folder", "_bound_batch_move"}):
+                raise ValueError("batch_move accepts only source_pattern and destination_folder.")
+            if not isinstance(safe_args.get("source_pattern"), str) or not isinstance(safe_args.get("destination_folder"), str):
+                raise ValueError("batch_move arguments must be strings.")
+            if not safe_args["source_pattern"].strip() or not safe_args["destination_folder"].strip():
+                raise ValueError("batch_move arguments must be non-empty strings.")
+            self._sandbox_path(os.path.join(self.allowed_roots[0], safe_args["destination_folder"]))
         elif func_name == "read_file_content":
             safe_args["file_path"] = self._sandbox_path(args.get("file_path"))
         elif func_name == "list_directory":
@@ -1214,6 +1240,33 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             {
                 "type": "function",
                 "function": {
+                    "name": "batch_move",
+                    "description": (
+                        "Move an application-expanded, sandbox-bound set of files "
+                        "matching a source pattern into a destination folder"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "source_pattern": {
+                                "type": "string",
+                                "maxLength": _batch_core.MAX_PATTERN_LENGTH,
+                                "description": "Sandbox-relative glob pattern; recursive ** is refused",
+                            },
+                            "destination_folder": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Destination folder within Incoming or Sorted",
+                            },
+                        },
+                        "required": ["source_pattern", "destination_folder"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "find_duplicates",
                     "description": (
                         "Read-only bounded report of duplicate files in a sandbox directory"
@@ -1506,6 +1559,22 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             )
             if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
                 self._reverify_bound_cleanup(tool_call)
+            elif func_name == "batch_move":
+                self._preflight_batch_move(tool_call)
+                for entry in self._batch_move_entries(tool_call):
+                    destination = entry.destination
+                    key = path_key(destination)
+                    if key in planned_destinations:
+                        previous = planned_destinations[key]
+                        raise ValueError(f"Plan conflict: operations {previous + 1} and {index + 1} both target '{destination}'.")
+                    if key in planned_folders:
+                        previous = planned_folders[key]
+                        raise ValueError(f"Plan conflict: operations {previous + 1} and {index + 1} target '{destination}' as both a file and a directory.")
+                    for folder_key, previous in planned_folders.items():
+                        if is_ancestor(key, folder_key):
+                            raise ValueError(f"Plan conflict: operation {index + 1} targets file '{destination}', which cannot contain directory '{folder_key}'.")
+                    planned_destinations[key] = index
+                    produced_sources.add(path_key(entry.source))
 
             if func_name == "create_folder":
                 folder = safe_args["path"]
@@ -1583,6 +1652,49 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         ]
         for call in cleanup_calls:
             self._reverify_bound_cleanup(call)
+
+    def _batch_move_entries(self, call):
+        data = call["function"]["arguments"].get("_bound_batch_move")
+        if not isinstance(data, dict):
+            raise ValueError("batch_move plan is missing its application binding.")
+        return tuple(_batch_core.BatchMoveEntry(**item) for item in data["entries"])
+
+    def _preflight_batch_move(self, call):
+        entries = self._batch_move_entries(call)
+        destinations = {}
+        for entry in entries:
+            key = os.path.normcase(os.path.abspath(entry.destination))
+            if key in destinations:
+                raise ValueError(f"Plan conflict: batch_move targets '{entry.destination}' more than once.")
+            destinations[key] = entry.source
+            if os.path.lexists(entry.destination):
+                raise ValueError(f"Plan conflict: destination already exists: '{entry.destination}'.")
+        for entry in entries:
+            for other in entries:
+                if os.path.normcase(os.path.abspath(entry.destination)) == os.path.normcase(os.path.abspath(other.source)):
+                    raise ValueError("Plan conflict: batch_move destination collides with a source file.")
+        self._reverify_bound_batch_move(call)
+
+    def _execute_bound_batch_move(self, call):
+        entries = self._batch_move_entries(call)
+        if not entries:
+            return "No batch_move matches."
+        try:
+            with self._journal_process_lock():
+                self._refresh_operation_log_from_disk()
+                self._reverify_bound_batch_move(call)
+                results = []
+                for entry in entries:
+                    result = self._execute_mutation_locked(
+                        "move_file", {"source": entry.source, "destination": entry.destination},
+                        "move", entry.source, entry.destination, _move_file,
+                    )
+                    if result.startswith("Error"):
+                        return "Error: batch_move stopped: " + result
+                    results.append(result)
+                return "Moved " + str(len(results)) + " file(s)."
+        except JournalLockError as exc:
+            return "Error: operation was not started because the journal lock could not be acquired: " + str(exc)
 
     def _execute_bound_cleanup(
         self,
@@ -1704,6 +1816,13 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     )
                     + f"  Affected paths: {len(candidates)}; omitted: 0"
                 )
+            elif func_name == "batch_move":
+                entries = self._batch_move_entries(tool_call)
+                preview = (
+                    f"[Dry Run] batch_move {args.get('source_pattern', '')} → {args.get('destination_folder', '')}\n"
+                    + "".join(f"  → {item.source} → {item.destination}\n" for item in entries)
+                    + f"  Affected paths: {len(entries)}; omitted: 0"
+                )
             else:
                 preview = f"[Dry Run] {func_name}({json.dumps(args, indent=2)})"
             results.append(preview)
@@ -1724,6 +1843,14 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
                 try:
                     result = self._execute_bound_cleanup(tool_call, tool_calls)
+                except Exception as exc:
+                    result = f"Error: {exc}"
+                results.append(f"  → {result}")
+                continue
+
+            if func_name == "batch_move":
+                try:
+                    result = self._execute_bound_batch_move(tool_call)
                 except Exception as exc:
                     result = f"Error: {exc}"
                 results.append(f"  → {result}")
