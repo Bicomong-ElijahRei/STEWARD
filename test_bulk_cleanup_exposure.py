@@ -189,6 +189,28 @@ class BulkCleanupExposureTests(unittest.TestCase):
             result = agent.undo_last()
             self.assertIn("cannot undo bulk cleanup", result.lower())
 
+    def test_bulk_cleanup_refuses_without_undoing_an_earlier_move(self):
+        with tempfile.TemporaryDirectory(prefix="steward_bulk_undo_move_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            source = self.write(incoming, "keep.txt")
+            destination = os.path.join(sorted_dir, "keep.txt")
+            agent = self.make_agent(tmp)
+
+            self.assertTrue(agent.move_file(source, destination).startswith("Moved"))
+            entry = agent._begin_mutation("bulk_cleanup", tmp)
+            agent._complete_mutation(
+                entry, "cleanup completed", {"undoable": False}
+            )
+
+            result = agent.undo_last()
+
+            self.assertIn("cannot undo bulk cleanup", result.lower())
+            self.assertTrue(os.path.isfile(destination))
+            self.assertFalse(os.path.exists(source))
+
     def test_execution_ast_has_no_permanent_removal_primitive(self):
         from agent import bulk_cleanup_execution
         tree = ast.parse(inspect.getsource(bulk_cleanup_execution))
