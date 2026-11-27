@@ -108,6 +108,14 @@ MOVE-1 bound batch move (user-integrated): model call -> FileAgent accepts only 
   whole-plan collision and bound re-verification -> write-ahead journal intent per move ->
   no-overwrite publication. Unsafe, recursive, linked, over-limit, drifted, or conflicting
   plans refuse before the first move; each move retains existing individual undo semantics.
+  BATCH MOVE-F1 strengthens the binding: every version, root, count, and ordered entry field
+  is length-framed with the sibling bulk-deletion core's 8-byte big-endian prefix, and the
+  ordered entry count is hashed. Binding version v2 therefore refuses a previously constructed
+  v1 binding. The existing whole-plan preflight is the one collision authority: it reserves
+  batch sources and destinations against every other call, and `_reverify_batch_move_plan(plan)`
+  re-verifies every batch_move binding before the first mutation. Cross-call destination overlap,
+  source/destination dependency, and drift in any later batch binding refuse the whole plan
+  with zero moves.
 BULK-2 bound bulk cleanup (user-integrated): model call -> FileAgent accepts only `directory`
   -> application enumerates candidates under the canonical sandbox -> app-owned immutable binding
   -> preview shows every exact path and non-undoable recycle-bin semantics -> approval ID ->
@@ -141,6 +149,8 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   `find_duplicates`, `find_large_files`, and `suggest_deletions`. Their schemas reject additional
   properties, and runtime validation rejects missing/unexpected arguments, non-finite numbers,
   and thresholds outside their documented ranges.
+- The active FileAgent dispatch set exposes exactly thirteen tools in total, including the three
+  report tools, the two cleanup tools, `batch_move`, and the seven remaining file-management tools.
 - Report directory paths are canonicalized through the same Incoming/Sorted sandbox as all other
   file operations. Sandbox refusal happens before threshold validation and before dispatch.
 - Traversal excludes symlinks and junctions, canonicalizes every visited path, sorts output
@@ -156,7 +166,9 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   are reported as skipped rather than as unique or duplicate.
 - `cleanup_temp_files` and `cleanup_empty_folders` are the two active destructive cleanup tools.
   Their only model argument is `directory`; application enumeration supplies the exact candidate
-  binding. `batch_move` remains outside the active schema as a backlog-only item.
+  binding. `batch_move` is the active thirteenth tool; its only model arguments are
+  `source_pattern` and `destination_folder`, and application-owned expansion supplies the exact
+  source→destination binding.
 
 ## Bulk-cleanup contract
 - BULK-1 enumeration/binding in `agent/bulk_deletion_core.py` remains read-only; BULK-2 execution
