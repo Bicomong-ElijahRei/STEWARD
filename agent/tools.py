@@ -300,6 +300,8 @@ REPORT_MAX_SERIALIZED_BYTES = 32768
 REPORT_MAX_DIRECTORY_PATH_LENGTH = 1024
 REPORT_MAX_SIZE_MB = 10240
 REPORT_MAX_AGE_DAYS = 3650
+REPORT_MAX_HASH_FILE_BYTES = 64 * 1024 * 1024
+REPORT_MAX_HASH_TOTAL_BYTES = 256 * 1024 * 1024
 
 
 def _is_link_or_junction(path):
@@ -384,6 +386,53 @@ def _limit_result_lines(lines):
     return lines[:REPORT_MAX_RESULT_ENTRIES], omitted
 
 
+def _same_file_snapshot(first, second):
+    """Compare stable identity fields available from stat and fstat results."""
+    for attribute in ("st_size", "st_mtime_ns", "st_dev", "st_ino"):
+        first_value = getattr(first, attribute, None)
+        second_value = getattr(second, attribute, None)
+        if (
+            first_value is not None
+            and second_value is not None
+            and first_value != second_value
+        ):
+            return False
+    return True
+
+
+def _hash_file_within_budget(filepath, remaining_total_bytes):
+    """Hash one complete file only when both read-byte limits admit it."""
+    try:
+        initial_stat = os.stat(filepath, follow_symlinks=False)
+    except (OSError, PermissionError, IOError):
+        return None, 0, "inaccessible"
+    file_size = initial_stat.st_size
+    if file_size > REPORT_MAX_HASH_FILE_BYTES:
+        return None, 0, "oversized"
+    if file_size > remaining_total_bytes:
+        return None, 0, "cumulative-limit"
+
+    file_hash = hashlib.sha256()
+    bytes_read = 0
+    try:
+        with open(filepath, "rb") as handle:
+            opened_stat = os.fstat(handle.fileno())
+            if not _same_file_snapshot(initial_stat, opened_stat):
+                return None, 0, "changed"
+            while bytes_read < file_size:
+                chunk = handle.read(min(8192, file_size - bytes_read))
+                if not chunk:
+                    return None, bytes_read, "changed"
+                file_hash.update(chunk)
+                bytes_read += len(chunk)
+            final_stat = os.fstat(handle.fileno())
+            if not _same_file_snapshot(initial_stat, final_stat):
+                return None, bytes_read, "changed"
+    except (OSError, PermissionError, IOError):
+        return None, bytes_read, "inaccessible"
+    return file_hash.hexdigest(), bytes_read, None
+
+
 def find_duplicates(directory, progress_callback=None):
     """Return a deterministic, bounded report of duplicate files."""
     try:
@@ -398,25 +447,50 @@ def find_duplicates(directory, progress_callback=None):
         hash_map = {}
         duplicate_pairs = []
         skipped = 0
+        oversized = 0
+        cumulative_limit = 0
+        changed = 0
+        total_bytes_read = 0
         for filepath in all_files:
-            try:
-                file_hash = hashlib.sha256()
-                with open(filepath, "rb") as handle:
-                    for chunk in iter(lambda: handle.read(8192), b""):
-                        file_hash.update(chunk)
-                digest = file_hash.hexdigest()
-            except (OSError, PermissionError, IOError):
+            digest, bytes_read, skip_reason = _hash_file_within_budget(
+                filepath, REPORT_MAX_HASH_TOTAL_BYTES - total_bytes_read
+            )
+            total_bytes_read += bytes_read
+            if skip_reason:
                 skipped += 1
+                if skip_reason == "oversized":
+                    oversized += 1
+                elif skip_reason == "cumulative-limit":
+                    cumulative_limit += 1
+                elif skip_reason == "changed":
+                    changed += 1
                 continue
             if digest in hash_map:
                 duplicate_pairs.append((filepath, hash_map[digest]))
             else:
                 hash_map[digest] = filepath
 
+        skip_details = []
+        if oversized:
+            skip_details.append(f"Skipped {oversized} oversized file(s).")
+        if cumulative_limit:
+            skip_details.append(
+                f"Skipped {cumulative_limit} file(s) due to the cumulative "
+                "hashing read-byte limit."
+            )
+        if changed:
+            skip_details.append(f"Skipped {changed} changed file(s).")
+        if skipped:
+            inaccessible = skipped - oversized - cumulative_limit - changed
+            if inaccessible:
+                skip_details.append(
+                    f"Skipped {inaccessible} inaccessible file(s)."
+                )
+
         if not duplicate_pairs:
             message = "No duplicate files found."
-            if skipped:
-                message += f" Skipped {skipped} inaccessible file(s)."
+            if skip_details:
+                message += " " + " ".join(skip_details)
             return bounded_report_output(message)
 
         lines = [f"  {duplicate}  (duplicate of {original})"
@@ -425,8 +499,8 @@ def find_duplicates(directory, progress_callback=None):
         report = "Duplicate pairs:\n" + "\n".join(lines)
         if omitted:
             report += f"\n  [result entries truncated: {omitted} omitted]"
-        if skipped:
-            report += f"\nSkipped {skipped} inaccessible file(s)."
+        if skip_details:
+            report += "\n" + " ".join(skip_details)
         return bounded_report_output(report)
     except Exception as exc:
         return bounded_report_output(f"Error: {exc}")
