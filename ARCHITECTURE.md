@@ -20,7 +20,7 @@ file categorization.
 - `core/discovery.py`   OpenRouter free-model discovery (Phase 4/5)
 - `core/validator.py`   latency/intelligence/tool probes
 - `agents/supervisor.py` Cortex: intent -> strict JSON {agent, action}; supported categories route to specialists, OUT_OF_SCOPE is a truthful non-actionable refusal, and generic invalid categories remain UNKNOWN
-- `agents/file_agent.py` Foldy: active tool schema, sandbox, plan approval, undo/redo, operation log; authoritative provider/dispatch surface for the three bounded filesystem reports
+- `agents/file_agent.py` Foldy: active twelve-tool schema, sandbox, plan approval, undo/redo, operation log; authoritative provider/dispatch surface for three bounded filesystem reports and two bound recycle-bin cleanup tools
 - `agent/core.py` legacy compatibility `StewardAgent`; non-authoritative, with no runtime callers in the application
 - `agent/journal_lock.py` persistent sidecar + OS-managed cross-process operation-journal lock
 - `agents/rag_agent.py`     Scout: persistent ChromaDB ingestion, chunking, embeddings, retrieval, source replacement
@@ -36,7 +36,8 @@ file categorization.
 - `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, truthful recovery states, and one bounded daemon-worker slot with epoch/closed-guarded UI marshaling
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
 - `agent/tools.py`       filesystem helper implementations; `tool_functions` includes legacy mutation helpers, while the active FileAgent dispatch allowlist is derived from its own schema; duplicate hashing has per-file and cumulative read budgets
-- `agent/bulk_deletion_core.py` BULK-1 internal read-only bulk-cleanup preparation: canonical sandboxed enumeration, link exclusion, traversal bounds, deterministic temporary-file/empty-directory sets, immutable exact-set binding, and typed whole-set re-verification; no mutation or active dispatch route
+- `agent/bulk_deletion_core.py` BULK-1 read-only bulk-cleanup preparation: canonical sandboxed enumeration, link exclusion, traversal bounds, deterministic temporary-file/empty-directory sets, immutable exact-set binding, and typed whole-set re-verification
+- `agent/bulk_cleanup_execution.py` BULK-2 recycle-bin-only execution boundary: its sole removal primitive is `send2trash.send2trash`; it contains no permanent-removal primitive
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent/PlanAgent/PatchReviewManager; passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
@@ -100,12 +101,12 @@ C4-I1 pure healing controller (not user-integrated): injected executor + injecte
 C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   evaluates all 20 C4-I2 criteria and defers execution because no supported
   baseline is proven on this Windows Home host.
-BULK-1 bulk-deletion preparation (not user-integrated): explicit canonical root plus allowed
-  roots -> sandbox/path admission -> bounded link-free traversal -> deterministic temporary-file
-  or deepest-first empty-directory enumeration -> immutable records -> exact ordered-set SHA-256
-  binding -> whole-set re-verification. The core contains no deletion operation and is not
-  imported by the active FileAgent dispatch path. The active schema/dispatch remains exactly ten
-  tools; future destructive exposure is a separately reviewed `send2trash` path.
+BULK-2 bound bulk cleanup (user-integrated): model call -> FileAgent accepts only `directory`
+  -> application enumerates candidates under the canonical sandbox -> app-owned immutable binding
+  -> preview shows every exact path and non-undoable recycle-bin semantics -> approval ID ->
+  whole-plan re-verification of every cleanup binding -> write-ahead journal intent ->
+  `send2trash` only. Any added, removed, reordered, identity-changed, root-changed, policy-changed,
+  or hash-mismatched candidate refuses the entire plan before the first removal.
 D1-I1 pure MCP resource admission (not user-integrated): explicit server identity +
   exact expected server identity -> canonical HTTPS identity/effective origin -> explicit
   canonical resource allowlist -> injected transport server snapshot -> tools-capability,
@@ -123,8 +124,8 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - _sandbox_path: realpath + abspath + commonpath + normcase; cross-drive ValueError is expected
 - BOTH reads and writes are validated: read_file_content/get_file_info (file_path),
   list_directory/find_duplicates/find_large_files/suggest_deletions (directory)
-- Dispatch allowlist is DERIVED from _get_tool_definitions() inside _execute_tool_plan.
-  Undeclared tools (cleanup_temp_files, cleanup_empty_folders, batch_move, ...) must stay unreachable.
+- Dispatch allowlist is DERIVED from _get_tool_definitions() inside _execute_tool_plan and contains
+  exactly twelve tools. Undeclared tools such as `batch_move` must stay unreachable.
 - Preflight runs only when dry_run=False; it rejects the WHOLE plan before the first mutation.
 
 ## Bounded filesystem report contract
@@ -145,27 +146,29 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   file whose initial size fits both budgets is admitted. Size, `mtime_ns`, device, and inode are
   compared before and after hashing; changed, inaccessible, oversized, and cumulative-budget files
   are reported as skipped rather than as unique or duplicate.
-- `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` are destructive utilities kept
-  outside the active schema as backlog-only items. They must remain unreachable until separately
-  designed, bounded, and approved.
+- `cleanup_temp_files` and `cleanup_empty_folders` are the two active destructive cleanup tools.
+  Their only model argument is `directory`; application enumeration supplies the exact candidate
+  binding. `batch_move` remains outside the active schema as a backlog-only item.
 
-## Bulk-deletion preparation contract
-- BULK-1 is an internal, read-only preparation core in `agent/bulk_deletion_core.py`; it does not
-  delete, trash, move, or mutate anything and is not reachable as a chat tool.
+## Bulk-cleanup contract
+- BULK-1 enumeration/binding in `agent/bulk_deletion_core.py` remains read-only; BULK-2 execution
+  in `agent/bulk_cleanup_execution.py` is restricted to `send2trash.send2trash`.
 - Roots and allowed roots are canonicalized. The canonical root must be a directory contained by
   a canonical allowed root. Supplied and canonical roots are bounded to 1,024 characters.
 - Traversal excludes symlinks and junctions, rechecks canonical containment, and refuses the
   entire result on a path-length, depth-8, 1,000-file, 1,000-candidate, or traversal-I/O failure.
-- Temporary files use the exact legacy suffix set and normalized-path ordering. Empty-directory
-  candidates are the bottom-up removable closure, ordered deepest-first.
+- Temporary candidates use `.tmp`, `.temp`, `.cache`, `.swp`, `thumbs.db`, and `desktop.ini`;
+  `.log` and `.bak` are excluded. Empty-directory candidates are the bottom-up removable closure,
+  ordered deepest-first.
 - Candidate/enumeration/binding/verification records are frozen and use tuples. Identity is
-  canonical path plus size and `mtime_ns`; the binding SHA-256 covers version, identity policy,
-  root, count, and every ordered entry's path, kind, size, and `mtime_ns`.
-- Re-verification accepts only an exact match. Added, removed, changed, reordered, root, policy,
-  or hash discrepancies refuse the whole binding with typed reasons.
-- The active FileAgent dispatch set remains exactly ten tools. Future destructive exposure is
-  intended to use `send2trash` and requires a separately reviewed approval/execution path;
-  permanent bulk removal is not being exposed. See `docs/bulk_deletion_contract.md`.
+  canonical path plus size and `mtime_ns`; the binding SHA-256 covers version, identity and
+  candidate policies, root, count, and every ordered entry's path, kind, size, and `mtime_ns`.
+- Re-verification accepts only an exact match. Added, removed, changed, reordered, root, identity-
+  policy, candidate-policy, or hash discrepancies refuse the whole binding with typed reasons.
+- Every cleanup binding in a multi-call plan is re-verified before the first removal. Journal
+  intent is persisted before removal and completion afterward. Bulk cleanup is non-undoable.
+- The active FileAgent dispatch set contains exactly twelve tools. See
+  `docs/bulk_deletion_contract.md`.
 
 ## Router semantics
 - Sort by the existing `speed_score_ms`; cloud first, at most one local. Provider ordering and the

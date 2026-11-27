@@ -46,9 +46,10 @@ preview, explicit approval, and undo/redo.
   size-threshold, and age-threshold bounds. Duplicate hashing is bounded to 64 MiB per file and
   256 MiB per report, with stable file-identity checks around the read. Deletion suggestions never
   delete or schedule deletion.
-- Internal bulk-cleanup preparation: a pure, read-only core can enumerate a deterministic bounded
-  set of temporary files or removable empty directories and bind that exact set for review. It is
-  not a chat capability and exposes no destructive operation.
+- Bound bulk cleanup: Foldy exposes exactly two cleanup tools for temporary files and removable
+  empty directories. The application enumerates and binds the exact candidate set, previews every
+  path, and re-verifies the whole plan before removal. Removal uses the recycle bin only and
+  cannot be undone; permanent bulk deletion is not exposed.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
   restart-persistent scheduled scans with cooperative cancellation.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
@@ -66,11 +67,11 @@ preview, explicit approval, and undo/redo.
 - All file operations are confined to <root>/Incoming and <root>/Sorted. Paths are resolved
   with realpath + commonpath + normcase; absolute paths and traversal cannot escape.
 - Reads are sandboxed too, so credentials outside the sandbox cannot be exfiltrated.
-- The dispatchable tool set is derived from the declared schema and remains exactly ten tools.
-  Bulk move, empty-folder cleanup, and temporary-file cleanup are unreachable from a model-issued
-  plan. Deletion suggestions are reachable only as bounded advisory reports: they never delete,
-  schedule deletion, or create an approved plan. BULK-1's internal bulk-cleanup core only prepares
-  and re-verifies a bounded candidate set; it has no mutation primitive or active dispatch route.
+- The dispatchable tool set is derived from the declared schema and contains exactly twelve tools.
+  The two cleanup tools accept only a sandboxed `directory`; application-owned binding supplies
+  every candidate path. Any candidate-set or policy drift refuses the whole plan before removal.
+  `send2trash` is the only removal primitive, and bulk cleanup is truthfully non-undoable.
+  Deletion suggestions remain bounded advisory reports and never delete.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
   Plan preflight rejects occupied destinations, duplicate targets, and file/directory target
   collisions in either plan order, while the mutation primitive rechecks collisions immediately
@@ -143,14 +144,15 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-562 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+572 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
 HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
 concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
 Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
 expansion, GUI lifecycle, no-overwrite filesystem publication, whole-plan collision preflight,
 partial-outcome journal truthfulness, durable journal recovery, cross-process journal serialization,
-strict bounded read-only filesystem reports, bounded duplicate hashing, pure bulk-deletion
-enumeration/exact-set binding/typed refusal, schema-validated meta-prompting review gates,
+strict bounded read-only filesystem reports, bounded duplicate hashing, bulk-cleanup
+enumeration/exact-set binding/typed drift refusal/recycle-bin-only execution/truthful non-undoable
+journal semantics, schema-validated meta-prompting review gates,
 pure AST patch artifact/anchor/splicing/
 encoding/proof/determinism/purity safety, C3-I2 workspace admission, atomic replacement,
 journal/backup, and guarded content recovery, C3-I3 exact-diff review, immutable artifact,
@@ -165,7 +167,7 @@ reinitialization, rollback, close-failure, and Windows file-handle release behav
 See ARCHITECTURE.md for the module map and critical request paths.
 See PLAN.md for scope, status, and the roadmap.
 See docs/MIGRATION_GUIDE.md for the guarded shared-credential migration workflow.
-See docs/bulk_deletion_contract.md for BULK-1's six decisions and exact-set binding contract.
+See docs/bulk_deletion_contract.md for bulk-cleanup decisions, exact-set binding, and execution contract.
 Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires explicit
 confirmation and a verified database/key/operation-log backup set.
 
