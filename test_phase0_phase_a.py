@@ -988,7 +988,7 @@ class H3UndeclaredTests(unittest.TestCase):
             self.assertIn("Error", result)
             self.assertIn("nonexistent_tool", result)
 
-    def test_cleanup_temp_files_cannot_execute_via_plan(self):
+    def test_cleanup_temp_files_requires_application_binding(self):
         with tempfile.TemporaryDirectory(prefix="steward_h3_") as tmp:
             directory = os.path.join(tmp, "Incoming")
             os.makedirs(directory)
@@ -1003,7 +1003,7 @@ class H3UndeclaredTests(unittest.TestCase):
                 result = approve_plan(agent)
             mock_fn.assert_not_called()
             self.assertIn("Error", result)
-            self.assertIn("cleanup_temp_files", result)
+            self.assertIn("binding", result)
 
     def test_batch_move_rejected_via_plan(self):
         with tempfile.TemporaryDirectory(prefix="steward_h3_") as tmp:
@@ -1179,7 +1179,7 @@ class Tools1ReadOnlyUtilitiesTests(unittest.TestCase):
         agent._pending_plan_id = f"plan-{tool_name}"
         return agent.execute_pending_plan(agent._pending_plan_id)
 
-    def test_schema_allowlist_adds_exactly_three_bounded_read_only_tools(self):
+    def test_schema_allowlist_is_exactly_twelve_tools(self):
         with tempfile.TemporaryDirectory(prefix="steward_tools1_schema_") as tmp:
             agent = self.make_agent(tmp)
             definitions = agent._get_tool_definitions()
@@ -1188,10 +1188,9 @@ class Tools1ReadOnlyUtilitiesTests(unittest.TestCase):
                 "move_file", "delete_file", "rename_file", "create_folder",
                 "list_directory", "read_file_content", "get_file_info",
                 "find_duplicates", "find_large_files", "suggest_deletions",
+                "cleanup_temp_files", "cleanup_empty_folders",
             }
             self.assertEqual(names, expected)
-            self.assertNotIn("cleanup_temp_files", names)
-            self.assertNotIn("cleanup_empty_folders", names)
             self.assertNotIn("batch_move", names)
 
             by_name = {
@@ -1865,7 +1864,7 @@ class Batch2BTests(unittest.TestCase):
             agent = self.make_agent(tmp)
             self.assertEqual(agent._operation_log, [])
 
-    def test_preview_flags_doomed_plan_without_executing(self):
+    def test_cleanup_preview_requires_application_binding(self):
         with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
             agent = self.make_agent(tmp)
             plan = [{"function": {"name": "cleanup_temp_files",

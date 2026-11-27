@@ -29,7 +29,7 @@ class BulkDeletionCoreTests(unittest.TestCase):
             kind=kind,
         )
 
-    def test_core_bounds_and_suffix_policy_match_legacy_cleanup_rules(self):
+    def test_core_bounds_and_suffix_policy_exclude_diagnostic_and_backup_files(self):
         from agent import tools
 
         self.assertEqual(core.MAX_FILES_VISITED, tools.REPORT_MAX_FILES_VISITED)
@@ -41,10 +41,12 @@ class BulkDeletionCoreTests(unittest.TestCase):
         self.assertEqual(
             core.TEMPORARY_FILE_SUFFIXES,
             (
-                ".tmp", ".temp", ".cache", ".log", ".bak", ".swp",
+                ".tmp", ".temp", ".cache", ".swp",
                 "thumbs.db", "desktop.ini",
             ),
         )
+        self.assertNotIn(".log", core.TEMPORARY_FILE_SUFFIXES)
+        self.assertNotIn(".bak", core.TEMPORARY_FILE_SUFFIXES)
 
     def test_candidate_records_and_binding_are_immutable(self):
         with tempfile.TemporaryDirectory(prefix="steward_bulk_immutable_") as tmp:
@@ -512,11 +514,12 @@ class BulkDeletionCoreTests(unittest.TestCase):
             if isinstance(node, ast.ImportFrom):
                 self.assertNotIn(node.module, {"send2trash", "shutil"})
 
-    def test_active_dispatch_allowlist_remains_exactly_ten_tools(self):
+    def test_active_dispatch_allowlist_is_exactly_twelve_tools(self):
         expected = {
             "move_file", "delete_file", "rename_file", "create_folder",
             "list_directory", "read_file_content", "get_file_info",
             "find_duplicates", "find_large_files", "suggest_deletions",
+            "cleanup_temp_files", "cleanup_empty_folders",
         }
         with tempfile.TemporaryDirectory(prefix="steward_bulk_allowlist_") as tmp:
             os.makedirs(os.path.join(tmp, "Incoming"))
@@ -530,7 +533,7 @@ class BulkDeletionCoreTests(unittest.TestCase):
             definitions = agent._get_tool_definitions()
             names = {item["function"]["name"] for item in definitions}
             self.assertEqual(names, expected)
-            self.assertEqual(len(names), 10)
+            self.assertEqual(len(names), 12)
 
             approved_dispatch = Mock(return_value="listed")
             unapproved_dispatch = Mock(return_value="removed")
@@ -549,12 +552,12 @@ class BulkDeletionCoreTests(unittest.TestCase):
                 )
             with patch(
                 "agents.file_agent._legacy_tool_functions",
-                {"cleanup_temp_files": unapproved_dispatch},
+                {"batch_move": unapproved_dispatch},
             ):
                 unapproved_result = agent._execute_tool_plan(
                     [{
                         "function": {
-                            "name": "cleanup_temp_files",
+                            "name": "batch_move",
                             "arguments": {"directory": "Incoming"},
                         }
                     }],
@@ -567,6 +570,7 @@ class BulkDeletionCoreTests(unittest.TestCase):
             unapproved_dispatch.assert_not_called()
             self.assertTrue(any("listed" in line for line in approved_result))
             self.assertIn("Unapproved tool", unapproved_result[0])
+            self.assertIn("batch_move", unapproved_result[0])
 
 
 if __name__ == "__main__":

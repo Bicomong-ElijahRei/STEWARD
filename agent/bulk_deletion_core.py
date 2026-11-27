@@ -1,8 +1,8 @@
-"""Pure enumeration and set binding for a future bulk-removal exposure.
+"""Pure enumeration and set binding for the bound bulk-removal exposure.
 
 This module reads and stats filesystem entries but never removes or mutates
-anything. It is intentionally not imported by the active FileAgent dispatch
-surface.
+anything. The active FileAgent dispatch surface imports its enumeration and
+binding APIs, while removal remains in a separate recycle-bin-only module.
 """
 
 from __future__ import annotations
@@ -20,13 +20,15 @@ MAX_DIRECTORY_DEPTH = 8
 MAX_PATH_LENGTH = 1024
 IDENTITY_POLICY = "path-size-mtime-ns-v1"
 BINDING_VERSION = "steward-bulk-binding-v1"
+EMPTY_DIRECTORY_POLICY = "empty-directory-closure-v1"
 
+# Diagnostic logs and backups are evidence/recovery artifacts, not clearly
+# temporary files. Excluding them prevents model-dispatchable cleanup from
+# selecting them by filename alone.
 TEMPORARY_FILE_SUFFIXES = (
     ".tmp",
     ".temp",
     ".cache",
-    ".log",
-    ".bak",
     ".swp",
     "thumbs.db",
     "desktop.ini",
@@ -54,6 +56,7 @@ class RefusalCode(str, Enum):
     ROOT_CHANGED = "root_changed"
     BINDING_HASH_MISMATCH = "binding_hash_mismatch"
     IDENTITY_POLICY_CHANGED = "identity_policy_changed"
+    CANDIDATE_POLICY_CHANGED = "candidate_policy_changed"
 
 
 _ENUMERATION_MESSAGES = {
@@ -96,6 +99,7 @@ class CandidateEntry:
 class EnumerationResult:
     root: str
     candidates: tuple[CandidateEntry, ...]
+    candidate_policy: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,7 @@ class BoundCandidateSet:
     candidates: tuple[CandidateEntry, ...]
     binding_hash: str
     identity_policy: str = IDENTITY_POLICY
+    candidate_policy: str = ""
 
 
 @dataclass(frozen=True)
@@ -292,7 +297,16 @@ def enumerate_candidates(
     if len(paths) > MAX_CANDIDATES_VISITED:
         raise EnumerationRefusal(RefusalCode.CANDIDATE_COUNT_EXCEEDED)
     candidates = tuple(_identity(path, selected_kind) for path in paths)
-    return EnumerationResult(root=canonical_root, candidates=candidates)
+    policy = (
+        "temporary-suffixes:" + "|".join(TEMPORARY_FILE_SUFFIXES)
+        if selected_kind == CandidateKind.TEMPORARY_FILE
+        else EMPTY_DIRECTORY_POLICY
+    )
+    return EnumerationResult(
+        root=canonical_root,
+        candidates=candidates,
+        candidate_policy=policy,
+    )
 
 
 def _update_framed(digest, value: bytes) -> None:
@@ -300,11 +314,16 @@ def _update_framed(digest, value: bytes) -> None:
     digest.update(value)
 
 
-def binding_hash(root: str, candidates: Iterable[CandidateEntry]) -> str:
-    """Hash the exact ordered set and each entry's selected identity."""
+def binding_hash(
+    root: str,
+    candidates: Iterable[CandidateEntry],
+    candidate_policy: str = "",
+) -> str:
+    """Hash the exact ordered set, identity policy, and candidate policy."""
     digest = hashlib.sha256()
     _update_framed(digest, BINDING_VERSION.encode("ascii"))
     _update_framed(digest, IDENTITY_POLICY.encode("ascii"))
+    _update_framed(digest, candidate_policy.encode("utf-8", errors="surrogatepass"))
     _update_framed(digest, root.encode("utf-8", errors="surrogatepass"))
     entries = tuple(candidates)
     _update_framed(digest, len(entries).to_bytes(8, "big"))
@@ -328,7 +347,10 @@ def bind_candidates(enumeration: EnumerationResult) -> BoundCandidateSet:
     return BoundCandidateSet(
         root=enumeration.root,
         candidates=candidates,
-        binding_hash=binding_hash(enumeration.root, candidates),
+        binding_hash=binding_hash(
+            enumeration.root, candidates, enumeration.candidate_policy
+        ),
+        candidate_policy=enumeration.candidate_policy,
     )
 
 
@@ -383,9 +405,17 @@ def reverify_binding(
         reasons.append(
             RefusalReason(RefusalCode.IDENTITY_POLICY_CHANGED, 1)
         )
+    if binding.candidate_policy != current.candidate_policy:
+        reasons.append(
+            RefusalReason(RefusalCode.CANDIDATE_POLICY_CHANGED, 1)
+        )
 
-    expected_hash = binding_hash(binding.root, bound_entries)
-    expected_current_hash = binding_hash(current.root, current_entries)
+    expected_hash = binding_hash(
+        binding.root, bound_entries, binding.candidate_policy
+    )
+    expected_current_hash = binding_hash(
+        current.root, current_entries, current.candidate_policy
+    )
     if (
         expected_hash != binding.binding_hash
         or expected_current_hash != binding.binding_hash

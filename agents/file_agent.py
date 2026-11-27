@@ -46,6 +46,8 @@ from agent.journal_lock import (
     JournalLockError,
     operation_journal_lock,
 )
+from agent import bulk_deletion_core as _bulk_core
+from agent.bulk_cleanup_execution import trash_paths as _trash_bound_paths
 from agent.tools import (
     move_file as _move_file,
     delete_file as _delete_file,
@@ -237,6 +239,98 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             safe_args["age_days_threshold"] = age_days
         return safe_args
 
+    @staticmethod
+    def _serialize_binding(binding: _bulk_core.BoundCandidateSet) -> Dict[str, Any]:
+        return {
+            "root": binding.root,
+            "candidates": [
+                {
+                    "path": entry.path,
+                    "kind": entry.kind.value,
+                    "size": entry.size,
+                    "mtime_ns": entry.mtime_ns,
+                }
+                for entry in binding.candidates
+            ],
+            "binding_hash": binding.binding_hash,
+            "identity_policy": binding.identity_policy,
+            "candidate_policy": binding.candidate_policy,
+        }
+
+    @staticmethod
+    def _deserialize_binding(data: Dict[str, Any]) -> _bulk_core.BoundCandidateSet:
+        candidates = tuple(
+            _bulk_core.CandidateEntry(
+                path=item["path"],
+                kind=_bulk_core.CandidateKind(item["kind"]),
+                size=int(item["size"]),
+                mtime_ns=int(item["mtime_ns"]),
+            )
+            for item in data["candidates"]
+        )
+        return _bulk_core.BoundCandidateSet(
+            root=data["root"],
+            candidates=candidates,
+            binding_hash=data["binding_hash"],
+            identity_policy=data["identity_policy"],
+            candidate_policy=data["candidate_policy"],
+        )
+
+    def _bind_cleanup_calls(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace model cleanup arguments with app-owned immutable bindings."""
+        bound_plan = copy.deepcopy(tool_calls)
+        for call in bound_plan:
+            function = call.get("function", {})
+            name = function.get("name")
+            if name not in ("cleanup_temp_files", "cleanup_empty_folders"):
+                continue
+            arguments = function.get("arguments")
+            if not isinstance(arguments, dict) or set(arguments) != {"directory"}:
+                raise ValueError("Cleanup accepts only a directory argument.")
+            directory = self._sandbox_path(arguments.get("directory"))
+            kind = (
+                _bulk_core.CandidateKind.TEMPORARY_FILE
+                if name == "cleanup_temp_files"
+                else _bulk_core.CandidateKind.EMPTY_DIRECTORY
+            )
+            enumeration = _bulk_core.enumerate_candidates(
+                directory,
+                allowed_roots=self.allowed_roots,
+                kind=kind,
+            )
+            binding = _bulk_core.bind_candidates(enumeration)
+            function["arguments"] = {
+                "directory": binding.root,
+                "_bound_cleanup": self._serialize_binding(binding),
+            }
+        return bound_plan
+
+    def _reverify_bound_cleanup(self, call: Dict[str, Any]) -> None:
+        function = call.get("function", {})
+        name = function.get("name")
+        arguments = function.get("arguments", {})
+        data = arguments.get("_bound_cleanup")
+        if not isinstance(data, dict):
+            raise ValueError("Cleanup plan is missing its application binding.")
+        binding = self._deserialize_binding(data)
+        kind = (
+            _bulk_core.CandidateKind.TEMPORARY_FILE
+            if name == "cleanup_temp_files"
+            else _bulk_core.CandidateKind.EMPTY_DIRECTORY
+        )
+        try:
+            current = _bulk_core.enumerate_candidates(
+                binding.root,
+                allowed_roots=self.allowed_roots,
+                kind=kind,
+            )
+        except _bulk_core.EnumerationRefusal as exc:
+            raise ValueError(f"Cleanup binding refused: {exc.code.value}.") from exc
+        verification = _bulk_core.reverify_binding(binding, current)
+        if not verification.accepted:
+            reasons = ", ".join(reason.code.value for reason in verification.reasons)
+            raise ValueError(f"Cleanup binding refused: {reasons}.")
+
     def _validate_mutation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Validate tool paths and arguments, returning canonical safe arguments."""
         safe_args = copy.deepcopy(args)
@@ -261,6 +355,11 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 raise PermissionError("Refusing to delete a configured sandbox root.")
         elif func_name in ("cleanup_empty_folders", "cleanup_temp_files"):
             safe_args["directory"] = self._sandbox_path(args.get("directory"))
+            if "_bound_cleanup" in safe_args:
+                if set(safe_args) != {"directory", "_bound_cleanup"}:
+                    raise ValueError("Cleanup accepts only a directory argument.")
+            elif set(safe_args) != {"directory"}:
+                raise ValueError("Cleanup accepts only a directory argument.")
         elif func_name == "batch_move":
             safe_args["source_pattern"] = self._sandbox_path(args.get("source_pattern"))
             safe_args["destination_folder"] = self._sandbox_path(args.get("destination_folder"))
@@ -731,6 +830,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
     def _undo_last_locked(self) -> str:
         with self._lock:
             saw_delete = False
+            saw_bulk_cleanup = False
             for entry in reversed(self._operation_log):
                 if entry.get("state") == "uncertain":
                     return (
@@ -740,6 +840,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 if entry.get("undone", False) or not entry.get("success", False):
                     continue
                 operation = entry["operation"]
+                if operation == "bulk_cleanup":
+                    saw_bulk_cleanup = True
+                    continue
                 if operation == "delete":
                     saw_delete = True
                     continue
@@ -821,6 +924,8 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     else:
                         self._mark_transition_failed(entry, "undo")
                     return f"Undo failed: {exc}"
+            if saw_bulk_cleanup:
+                return "Cannot undo bulk cleanup (sent to recycle bin)"
             if saw_delete:
                 return "Cannot undo delete (sent to recycle bin)"
             return "No operations to undo."
@@ -1069,6 +1174,50 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             {
                 "type": "function",
                 "function": {
+                    "name": "cleanup_temp_files",
+                    "description": (
+                        "Preview and trash application-enumerated temporary files "
+                        "in a sandbox directory; deletion cannot be undone by the operation log"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Directory within Incoming or Sorted",
+                            },
+                        },
+                        "required": ["directory"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "cleanup_empty_folders",
+                    "description": (
+                        "Preview and trash application-enumerated empty folders "
+                        "in a sandbox directory; deletion cannot be undone by the operation log"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Directory within Incoming or Sorted",
+                            },
+                        },
+                        "required": ["directory"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "find_duplicates",
                     "description": (
                         "Read-only bounded report of duplicate files in a sandbox directory"
@@ -1209,7 +1358,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                                     )
                 return assistant_msg.get("content", "No action needed.")
 
-            parsed_plan = self._parse_tool_plan(tool_calls)
+            parsed_plan = self._bind_cleanup_calls(
+                self._parse_tool_plan(tool_calls)
+            )
             results = self._execute_tool_plan(
                 parsed_plan, dry_run=dry_run, confirm_callback=confirm_callback
             )
@@ -1314,6 +1465,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             return f"Unapproved tool: {func_name}"
         try:
             self._validate_mutation(func_name, args)
+            if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
+                if not isinstance(args.get("_bound_cleanup"), dict):
+                    return "Cleanup plan is missing its application binding."
         except (OSError, TypeError, ValueError) as exc:
             return str(exc)
         return None
@@ -1354,6 +1508,8 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             safe_args = self._validate_mutation(
                 func_name, tool_call["function"]["arguments"]
             )
+            if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
+                self._reverify_bound_cleanup(tool_call)
 
             if func_name == "create_folder":
                 folder = safe_args["path"]
@@ -1422,6 +1578,88 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     )
                 produced_sources.add(source_key)
             produced_sources.add(key)
+    def _reverify_cleanup_plan(self, tool_calls: List[Dict[str, Any]]) -> None:
+        cleanup_calls = [
+            call
+            for call in tool_calls
+            if call.get("function", {}).get("name")
+            in ("cleanup_temp_files", "cleanup_empty_folders")
+        ]
+        for call in cleanup_calls:
+            self._reverify_bound_cleanup(call)
+
+    def _execute_bound_cleanup(
+        self,
+        call: Dict[str, Any],
+        plan: List[Dict[str, Any]],
+    ) -> str:
+        """Execute one app-bound set with whole-plan preflight and journaling."""
+        function = call["function"]
+        name = function["name"]
+        args = function["arguments"]
+        data = args.get("_bound_cleanup")
+        if not isinstance(data, dict):
+            return "Error: Cleanup plan is missing its application binding."
+        binding = self._deserialize_binding(data)
+        paths = tuple(entry.path for entry in binding.candidates)
+        if not paths:
+            return "No cleanup candidates. Deletion cannot be undone by the operation log."
+        try:
+            with self._journal_process_lock():
+                self._refresh_operation_log_from_disk()
+                # Re-verify every bound set immediately before the first removal.
+                self._reverify_cleanup_plan(plan)
+                try:
+                    entry = self._begin_mutation(
+                        "bulk_cleanup", binding.root, None
+                    )
+                except Exception as exc:
+                    return (
+                        "Error: operation was not started because durable operation "
+                        f"history could not be recorded: {exc}"
+                    )
+                try:
+                    outcomes = _trash_bound_paths(paths)
+                    failures = [item for item in outcomes if item["outcome"] != "trashed"]
+                    result = (
+                        f"Trashed {len(outcomes) - len(failures)} of {len(outcomes)} "
+                        "cleanup item(s) to the recycle bin. Deletion cannot be undone "
+                        "by the operation log."
+                    )
+                    if failures:
+                        result += f" {len(failures)} item(s) could not be trashed."
+                    metadata = {
+                        "binding_hash": binding.binding_hash,
+                        "candidate_policy": binding.candidate_policy,
+                        "outcomes": outcomes,
+                        "undoable": False,
+                    }
+                    try:
+                        self._complete_mutation(entry, result, metadata)
+                    except Exception as journal_error:
+                        entry["success"] = False
+                        entry["state"] = "uncertain"
+                        entry["result"] = (
+                            "Filesystem cleanup completed, but durable history could not "
+                            f"be finalized: {journal_error}"
+                        )
+                        return f"Error: {entry['result']}"
+                    return result
+                except Exception as exc:
+                    entry["result"] = f"Error: {exc}"
+                    entry["success"] = False
+                    entry["state"] = "failed"
+                    try:
+                        self._save_operation_log()
+                    except Exception as journal_error:
+                        return f"Error: {exc} (operation history could not be finalized: {journal_error})"
+                    return f"Error: {exc}"
+        except JournalLockError as exc:
+            return (
+                "Error: operation was not started because the journal lock could "
+                f"not be acquired: {exc}"
+            )
+
     def _execute_tool_plan(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -1459,7 +1697,19 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 json.dumps(args),
                 dry_run,
             )
-            preview = f"[Dry Run] {func_name}({json.dumps(args, indent=2)})"
+            if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
+                data = args.get("_bound_cleanup", {})
+                candidates = data.get("candidates", [])
+                preview = (
+                    f"[Dry Run] {func_name} on {args.get('directory', '')}\n"
+                    "  Deletion cannot be undone by the operation log.\n"
+                    + "".join(
+                        f"  → {item['path']}\n" for item in candidates
+                    )
+                    + f"  Affected paths: {len(candidates)}; omitted: 0"
+                )
+            else:
+                preview = f"[Dry Run] {func_name}({json.dumps(args, indent=2)})"
             results.append(preview)
             logger.info(preview)
 
@@ -1473,6 +1723,14 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
             if confirm_callback and not confirm_callback(func_name, args):
                 results.append("  → (cancelled by user)")
+                continue
+
+            if func_name in ("cleanup_temp_files", "cleanup_empty_folders"):
+                try:
+                    result = self._execute_bound_cleanup(tool_call, tool_calls)
+                except Exception as exc:
+                    result = f"Error: {exc}"
+                results.append(f"  → {result}")
                 continue
 
             if func_name not in _legacy_tool_functions:
