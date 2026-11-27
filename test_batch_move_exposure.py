@@ -25,8 +25,22 @@ class BatchMoveExposureTests(unittest.TestCase):
     def test_pattern_refusals_and_recursive_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self.make_agent(tmp)
-            for pattern in (os.path.abspath("*.txt"), "C:\\Windows\\*.txt", "\\\\server\\share\\*.txt", "..\\*.txt", "**/*.txt", "x" * (core.MAX_PATTERN_LENGTH + 1)):
-                with self.assertRaises(core.BatchMoveRefusal): core.enumerate_and_bind(pattern, os.path.join(tmp, "Sorted"), agent.allowed_roots)
+            cases = (
+                (os.path.abspath("*.txt"), "absolute_pattern"),
+                ("C:\\Windows\\*.txt", "absolute_pattern"),
+                ("\\\\server\\share\\*.txt", "absolute_pattern"),
+                ("..\\*.txt", "traversal_refused"),
+                ("**/*.txt", "recursive_pattern_refused"),
+                ("x" * (core.MAX_PATTERN_LENGTH + 1), "pattern_too_long"),
+            )
+            for pattern, reason in cases:
+                with self.subTest(pattern=pattern):
+                    try:
+                        core.enumerate_and_bind(pattern, os.path.join(tmp, "Sorted"), agent.allowed_roots)
+                    except core.BatchMoveRefusal as caught:
+                        self.assertEqual(caught.reason, reason)
+                    else:
+                        self.fail(f"expected {reason} refusal for {pattern!r}")
     def test_preview_and_exact_moves(self):
         with tempfile.TemporaryDirectory() as tmp:
             incoming = os.path.join(tmp, "Incoming"); sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(incoming); os.makedirs(sorted_dir); self.write(incoming, "a.txt"); self.write(incoming, "b.txt")
@@ -48,8 +62,8 @@ class BatchMoveExposureTests(unittest.TestCase):
             os.makedirs(os.path.join(tmp, "Incoming")); os.makedirs(os.path.join(tmp, "Sorted")); agent = self.make_agent(tmp)
             expected = {"list_directory", "read_file_content", "get_file_info", "find_duplicates", "find_large_files", "suggest_deletions", "cleanup_temp_files", "cleanup_empty_folders", "batch_move", "move_file", "rename_file", "delete_file", "create_folder"}
             self.assertEqual({item["function"]["name"] for item in agent._get_tool_definitions()}, expected)
-            with self.assertRaises(ValueError):
-                agent._bind_cleanup_calls([{"function": {"name": "batch_move", "arguments": {"paths": ["a.txt"], "destination_folder": "Sorted"}}}])
+            with self.assertRaisesRegex(ValueError, "accepts only source_pattern and destination_folder"):
+                agent._validate_mutation("batch_move", {"paths": ["a.txt"], "destination_folder": "Sorted"})
 
     def test_match_limit_boundary_and_over_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +101,80 @@ class BatchMoveExposureTests(unittest.TestCase):
                 result = agent._execute_tool_plan(plan, dry_run=False)
                 self.assertIn("conflict", result[0].lower()); self.assertTrue(os.path.isfile(os.path.join(incoming, "a.txt")))
 
+    def test_binding_hash_distinguishes_field_boundaries_and_entry_count(self):
+        def entry(source, destination, size=1):
+            return core.BatchMoveEntry(source, destination, size, 1, 2, 3)
 
+        left = core._hash("root", (entry("a", "bc"),))
+        right = core._hash("root", (entry("ab", "c"),))
+        self.assertNotEqual(left, right)
+        self.assertNotEqual(
+            core._hash("root", (entry("a", "b"),)),
+            core._hash("root", (entry("a", "b"), entry("a", "b"))),
+        )
+
+    def assert_plan_refused_with_zero_moves(self, agent, plan, untouched):
+        result = agent._execute_tool_plan(plan, dry_run=False)
+        self.assertRegex(result[0].lower(), r"conflict|refus|binding_changed")
+        for path in untouched:
+            self.assertTrue(os.path.isfile(path), path)
+
+    def test_cross_call_move_and_batch_destination_collision_refuses_zero_moves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = os.path.join(tmp, "Incoming"); sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming); os.makedirs(sorted_dir)
+            source_a = self.write(incoming, "a.txt")
+            self.write(incoming, "b.txt")
+            agent = self.make_agent(tmp)
+            destination = os.path.join(sorted_dir, "b.txt")
+            plan = [
+                {"function": {"name": "move_file", "arguments": {"source": source_a, "destination": destination}}},
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "b.txt", "destination_folder": "Sorted"}}},
+            ]
+            plan = agent._bind_cleanup_calls(plan)
+            self.assert_plan_refused_with_zero_moves(agent, plan, (source_a,))
+
+    def test_cross_call_batch_destination_overlap_refuses_zero_moves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = os.path.join(tmp, "Incoming"); sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming); os.makedirs(sorted_dir)
+            source = self.write(incoming, "a.txt")
+            agent = self.make_agent(tmp)
+            plan = [
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "*.txt", "destination_folder": "Sorted"}}},
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "*.txt", "destination_folder": "Sorted"}}},
+            ]
+            plan = agent._bind_cleanup_calls(plan)
+            self.assert_plan_refused_with_zero_moves(agent, plan, (source,))
+
+    def test_cross_call_batch_destination_used_as_another_call_source_refuses_zero_moves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = os.path.join(tmp, "Incoming"); sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming); os.makedirs(sorted_dir)
+            source = self.write(incoming, "a.txt")
+            batch_destination = os.path.join(sorted_dir, "a.txt")
+            agent = self.make_agent(tmp)
+            plan = [
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "*.txt", "destination_folder": "Sorted"}}},
+                {"function": {"name": "move_file", "arguments": {"source": batch_destination, "destination": os.path.join(sorted_dir, "moved.txt")}}},
+            ]
+            plan = agent._bind_cleanup_calls(plan)
+            self.assert_plan_refused_with_zero_moves(agent, plan, (source,))
+
+    def test_drift_in_second_batch_binding_refuses_before_first_batch_move(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = os.path.join(tmp, "Incoming"); sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming); os.makedirs(sorted_dir)
+            first_source = self.write(incoming, "a.txt")
+            second_source = self.write(incoming, "b.log")
+            agent = self.make_agent(tmp)
+            plan = [
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "*.txt", "destination_folder": "Sorted"}}},
+                {"function": {"name": "batch_move", "arguments": {"source_pattern": "*.log", "destination_folder": "Sorted"}}},
+            ]
+            plan = agent._bind_cleanup_calls(plan)
+            self.write(incoming, "c.log")
+            self.assert_plan_refused_with_zero_moves(agent, plan, (first_source, second_source))
 
 
 if __name__ == "__main__": unittest.main()

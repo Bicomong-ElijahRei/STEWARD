@@ -1539,7 +1539,9 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         approved = {t["function"]["name"] for t in self._get_tool_definitions()}
         planned_destinations = {}
         planned_folders = {}
+        planned_sources = set()
         produced_sources = set()
+        self._reverify_batch_move_plan(tool_calls)
 
         def path_key(path):
             return os.path.normcase(os.path.abspath(path))
@@ -1564,17 +1566,24 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 for entry in self._batch_move_entries(tool_call):
                     destination = entry.destination
                     key = path_key(destination)
+                    source_key = path_key(entry.source)
                     if key in planned_destinations:
                         previous = planned_destinations[key]
                         raise ValueError(f"Plan conflict: operations {previous + 1} and {index + 1} both target '{destination}'.")
                     if key in planned_folders:
                         previous = planned_folders[key]
                         raise ValueError(f"Plan conflict: operations {previous + 1} and {index + 1} target '{destination}' as both a file and a directory.")
+                    if source_key in planned_destinations:
+                        previous = planned_destinations[source_key]
+                        raise ValueError(f"Plan conflict: operation {index + 1} consumes the output of operation {previous + 1}.")
+                    if source_key in planned_sources:
+                        raise ValueError(f"Plan conflict: operation {index + 1} consumes a source already used by the plan.")
                     for folder_key, previous in planned_folders.items():
                         if is_ancestor(key, folder_key):
                             raise ValueError(f"Plan conflict: operation {index + 1} targets file '{destination}', which cannot contain directory '{folder_key}'.")
                     planned_destinations[key] = index
-                    produced_sources.add(path_key(entry.source))
+                    planned_sources.add(source_key)
+                    produced_sources.add(key)
 
             if func_name == "create_folder":
                 folder = safe_args["path"]
@@ -1615,6 +1624,11 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     f"Plan conflict: operations {previous + 1} and {index + 1} "
                     f"both target '{destination}'."
                 )
+            if key in planned_sources:
+                raise ValueError(
+                    f"Plan conflict: operation {index + 1} targets '{destination}', "
+                    "which is already a source used by the plan."
+                )
             if key in planned_folders:
                 previous = planned_folders[key]
                 raise ValueError(
@@ -1641,8 +1655,23 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                         "Plan conflict: a later operation depends on the output of "
                         "an earlier operation."
                     )
+                if source_key in planned_sources:
+                    raise ValueError(
+                        "Plan conflict: an operation consumes a source already used "
+                        "by the plan."
+                    )
+                planned_sources.add(source_key)
                 produced_sources.add(source_key)
             produced_sources.add(key)
+    def _reverify_batch_move_plan(self, tool_calls: List[Dict[str, Any]]) -> None:
+        batch_calls = [
+            call
+            for call in tool_calls
+            if call.get("function", {}).get("name") == "batch_move"
+        ]
+        for call in batch_calls:
+            self._reverify_bound_batch_move(call)
+
     def _reverify_cleanup_plan(self, tool_calls: List[Dict[str, Any]]) -> None:
         cleanup_calls = [
             call
@@ -1673,15 +1702,15 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             for other in entries:
                 if os.path.normcase(os.path.abspath(entry.destination)) == os.path.normcase(os.path.abspath(other.source)):
                     raise ValueError("Plan conflict: batch_move destination collides with a source file.")
-        self._reverify_bound_batch_move(call)
 
-    def _execute_bound_batch_move(self, call):
+    def _execute_bound_batch_move(self, call, plan):
         entries = self._batch_move_entries(call)
         if not entries:
             return "No batch_move matches."
         try:
             with self._journal_process_lock():
                 self._refresh_operation_log_from_disk()
+                self._reverify_batch_move_plan(plan)
                 self._reverify_bound_batch_move(call)
                 results = []
                 for entry in entries:
@@ -1850,7 +1879,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
             if func_name == "batch_move":
                 try:
-                    result = self._execute_bound_batch_move(tool_call)
+                    result = self._execute_bound_batch_move(tool_call, tool_calls)
                 except Exception as exc:
                     result = f"Error: {exc}"
                 results.append(f"  → {result}")

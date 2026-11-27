@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 MAX_PATTERN_LENGTH = 1024
 MAX_MATCHED_FILES = 1000
-BINDING_VERSION = "steward-batch-move-binding-v1"
+BINDING_VERSION = "steward-batch-move-binding-v2"
 
 
 class BatchMoveRefusal(Exception):
@@ -70,17 +70,24 @@ def _static_root(pattern: str, allowed_roots):
     return sandbox_root, candidate
 
 
+def _update_framed(digest, value: bytes) -> None:
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
+
+
 def _hash(root, entries):
     digest = hashlib.sha256()
-    digest.update(BINDING_VERSION.encode("ascii"))
-    digest.update(root.encode("utf-8", "surrogatepass"))
+    _update_framed(digest, BINDING_VERSION.encode("ascii"))
+    _update_framed(digest, root.encode("utf-8", "surrogatepass"))
+    entries = tuple(entries)
+    _update_framed(digest, len(entries).to_bytes(8, "big"))
     for entry in entries:
-        digest.update(entry.source.encode("utf-8", "surrogatepass"))
-        digest.update(entry.destination.encode("utf-8", "surrogatepass"))
-        digest.update(str(entry.size).encode("ascii"))
-        digest.update(str(entry.mtime_ns).encode("ascii"))
-        digest.update(str(entry.device).encode("ascii"))
-        digest.update(str(entry.inode).encode("ascii"))
+        _update_framed(digest, entry.source.encode("utf-8", "surrogatepass"))
+        _update_framed(digest, entry.destination.encode("utf-8", "surrogatepass"))
+        _update_framed(digest, str(entry.size).encode("ascii"))
+        _update_framed(digest, str(entry.mtime_ns).encode("ascii"))
+        _update_framed(digest, str(entry.device).encode("ascii"))
+        _update_framed(digest, str(entry.inode).encode("ascii"))
     return digest.hexdigest()
 
 
