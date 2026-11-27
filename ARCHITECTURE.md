@@ -167,6 +167,10 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   policy, candidate-policy, or hash discrepancies refuse the whole binding with typed reasons.
 - Every cleanup binding in a multi-call plan is re-verified before the first removal. Journal
   intent is persisted before removal and completion afterward. Bulk cleanup is non-undoable.
+- Undo refuses immediately when the newest successful operation is a completed bulk-cleanup
+  entry; it cannot skip that entry and reverse an earlier move, rename, or folder creation.
+  A successful delete entry retains the separately tested policy of being skipped in favor
+  of an earlier reversible operation; changing that policy requires a separate decision.
 - The active FileAgent dispatch set contains exactly twelve tools. See
   `docs/bulk_deletion_contract.md`.
 
@@ -412,7 +416,7 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
 - test_hashing_read_budget.py — BULK-1 duplicate-hashing per-file/cumulative budgets, inaccessible files, growth races, and stat-to-open replacement races
 - test_bulk_deletion_core.py — BULK-1 canonical sandbox, link exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, exact-set binding, typed refusals, non-mutation, and ten-tool dispatch regressions
-- Total discovery count is 562 (one expected Windows symlink-privilege skip)
+- Total discovery count is 573 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

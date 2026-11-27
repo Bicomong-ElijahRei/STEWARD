@@ -17,6 +17,7 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-28 | 9e83747c | UNDO-1 non-undoable undo boundary: completed bulk-cleanup journal entries now refuse undo immediately instead of being skipped in favor of an earlier reversible operation; added a real move-then-bulk-cleanup regression proving the refusal and that the earlier moved file remains untouched; left the explicitly tested delete skip policy unchanged and recorded it as a separate backlog decision; discovery tests increased from 572 to 573 with the one known Windows symlink-privilege skip; added no schema, tool, GUI, provider, dependency, ROADMAP, redo, or protected-state change. | Ensure undo never reverses an earlier operation across a newer non-undoable bulk-cleanup entry.
 2026-11-28 | 0a9045d3 | BULK-2 bound recycle-bin bulk cleanup: exposed exactly `cleanup_temp_files` and `cleanup_empty_folders` through the twelve-tool FileAgent schema; model calls accept only a sandboxed `directory`, while application enumeration supplies immutable exact candidate, identity-policy, candidate-policy, and SHA-256 bindings; every cleanup binding in a multi-call plan is re-verified before the first removal; drift in added, removed, reordered, identity-changed, root-changed, policy-changed, or hash-mismatched candidates refuses the whole plan; removal is restricted to `send2trash.send2trash`; journal intent precedes removal and records `undoable: False`; `.log` and `.bak` are excluded; empty folders are removed deepest-first; added focused regressions including whole-plan preflight, live-policy drift, undo blocking, AST removal isolation, and spy checks; killed the cleanup re-verification mutant; kept all 572 discovery tests green with the one known Windows symlink-privilege skip; added no permanent-removal primitive, dependency, permission, ROADMAP change, or persistent-state write. | Make bounded bulk cleanup model-dispatchable without granting model-selected paths, permanent deletion, partial-plan drift acceptance, or undo semantics.
 2026-11-28 | 9f37d9f, 62ae399 | BULK-1 bounded duplicate hashing and pure bulk-deletion preparation: bounded duplicate hashing to 64 MiB per file and 256 MiB per report with size/mtime/device/inode checks before and after hashing; added an internal read-only enumeration and exact-set binding core with canonical sandbox enforcement, symlink/junction exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, SHA-256 set binding, typed whole-set re-verification refusals, and deepest-first empty-directory closure; documented the six BULK-1 decisions in `docs/bulk_deletion_contract.md`; added six hashing and 28 bulk-core focused regressions, killed four hashing and 20 core targeted mutants, and kept all 562 discovery tests green with the one known Windows symlink-privilege skip; added no chat capability, schema entry, dependency, permission, runtime route, destructive operation, or ROADMAP change. | Make duplicate reports and any future bulk-cleanup approval bounded and reviewable without exposing destructive authority. Future destructive bulk removal is intended to use `send2trash` and requires a separately reviewed approval/execution path; permanent bulk removal is not being exposed.
 
@@ -87,8 +88,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: BULK-2 bound recycle-bin bulk cleanup commit 0a9045d3; BULK-1 bounded duplicate hashing commit 9f37d9f and pure bulk-deletion enumeration/set-binding core commit 62ae399; TOOLS-1 bounded filesystem reports commit b7619dc3 and HTTP 404 provider-failure accounting commit caab947c; ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: BULK-2 twelve-tool dispatch, argument refusal, app-owned binding, whole-plan drift refusal, live-policy drift, recycle-bin-only execution, deepest-first empty-folder ordering, journal-before-removal, undo blocking, and mutation-proof regressions; BULK-1 duplicate hashing per-file/cumulative budgets and race guards plus pure-core canonical sandbox, link exclusion, traversal bounds, deterministic ordering, immutable records, exact-set binding, typed whole-set refusal, non-mutation, and twelve-tool dispatch regressions; TOOLS-1 strict schema/runtime validation, sandbox refusal, traversal, serialization, finite-number, advisory-only, and HTTP 404 threshold regressions; ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 572/572 discovery tests green
+Implementation baseline: UNDO-1 non-undoable undo boundary commit 9e83747c; BULK-2 bound recycle-bin bulk cleanup commit 0a9045d3; BULK-1 bounded duplicate hashing commit 9f37d9f and pure bulk-deletion enumeration/set-binding core commit 62ae399; TOOLS-1 bounded filesystem reports commit b7619dc3 and HTTP 404 provider-failure accounting commit caab947c; ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: UNDO-1 immediate refusal at a completed bulk-cleanup entry with the earlier move proven untouched and mutation proof; BULK-2 twelve-tool dispatch, argument refusal, app-owned binding, whole-plan drift refusal, live-policy drift, recycle-bin-only execution, deepest-first empty-folder ordering, journal-before-removal, undo blocking, and mutation-proof regressions; BULK-1 duplicate hashing per-file/cumulative budgets and race guards plus pure-core canonical sandbox, link exclusion, traversal bounds, deterministic ordering, immutable records, exact-set binding, typed whole-set refusal, non-mutation, and twelve-tool dispatch regressions; TOOLS-1 strict schema/runtime validation, sandbox refusal, traversal, serialization, finite-number, advisory-only, and HTTP 404 threshold regressions; ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 573/573 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
@@ -96,10 +97,10 @@ Dependency remediation baseline: SEC-1 cryptography and requests advisory remedi
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 572/572 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 573/573 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at documentation verification (2026-11-28, after implementation commit, before this closure commit): `origin/main` resolves to `d670d47d149280eb3bf861ecd09c4776a228e241` and is itself a published ancestor (exit 0). BULK-2 implementation commit `0a9045d37ab2f5144484816946cead145c32a8e3` is local and is not an ancestor of `origin/main` (exit 1); the pre-closure `HEAD` was `0a9045d3` (exit 1). This documentation closure is also local until pushed.
+Push state at documentation verification (2026-11-28, after implementation commit, before this closure commit): `origin/main` resolves to `c7c669d2f8a429b70da1e59b79b1840e82e7d1c7` and is itself a published ancestor (exit 0). Prior closure commit `c7c669d2f8a429b70da1e59b79b1840e82e7d1c7` and BULK-2 implementation commit `0a9045d37ab2f5144484816946cead145c32a8e3` are published ancestors of `origin/main` (exit 0 each). UNDO-1 implementation commit `9e83747cce5e4dd015636205c5028dad206da4f7` and current `HEAD` `9e83747cce5e4dd015636205c5028dad206da4f7` are not ancestors of `origin/main` (exit 1 each). This documentation closure is also local until pushed.
 Publication-state convention: never copy a prior push-state claim forward. At every verification, resolve `origin/main` and current `HEAD`, run `git merge-base --is-ancestor <sha> origin/main` for every named commit and for current `HEAD`, and record each exit result (0 = published ancestor, 1 = not an ancestor, any other exit = verification failure). Re-derive the paragraph from those results at the time of writing.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
@@ -124,12 +125,25 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
   re-verified before the first removal; added, removed, reordered, identity-changed, root-changed,
   policy-changed, or hash-mismatched candidates refuse the whole plan. `.log` and `.bak` are
   excluded, empty folders are deepest-first, and removal uses only `send2trash.send2trash`.
-  Journal intent precedes removal, metadata records `undoable: False`, and undo cannot consume an
-  earlier unrelated operation. Proof: focused exposure/core/phase suites 255/255; full discovery
+  Journal intent precedes removal, metadata records `undoable: False`, and undo refuses
+  immediately at the completed bulk-cleanup entry without consuming an earlier unrelated
+  operation. Proof: focused exposure/core/phase suites 255/255; full discovery
   572/572 with the one known Windows symlink-privilege skip; removal of the re-verification guard
   made all seven drift classes reach `send2trash`, proving the mutant was killed; validator 5/5;
   compileall and diff checks green. The active dispatch set is exactly twelve tools; no permanent
   removal, dependency, permission, ROADMAP change, or persistent-state write was added.
+- UNDO-1 Refuse undo at a non-undoable entry — DONE | 9e83747c
+  A completed bulk-cleanup entry now refuses undo immediately and cannot be skipped in favor
+  of an earlier reversible operation. A real move followed by a completed non-undoable
+  bulk-cleanup entry proves that the refusal is returned and the earlier moved file remains
+  untouched at its destination. The regression was RED before the fix and GREEN afterward;
+  restoring the old `continue` made it RED again. The delete branch remains unchanged because
+  `Batch2BTests.test_delete_entry_skipped_and_never_marked_undone` explicitly requires undo
+  to skip a delete and reverse an earlier move. Proof: focused undo/delete set 4/4; full
+  discovery increased from 572 to 573 and passed 573/573 with the one known Windows
+  symlink-privilege skip; validator 5/5; compileall and diff checks green. No schema, tool,
+  GUI, provider, dependency, ROADMAP, redo, or protected-state change was made.
+- UNDO-1-POLICY  BACKLOG | Decide whether a successful delete entry should refuse undo immediately instead of preserving the explicitly tested skip-and-reverse-earlier-operation policy; `test_phase0_phase_a.py:1800` asserts that undo skips delete and undoes an earlier move; no code change is authorized until that policy is decided separately.
 - BULK-1 Bounded duplicate hashing and pure bulk-deletion preparation — DONE | 9f37d9f, 62ae399
   duplicate hashing is bounded to 64 MiB per file and 256 MiB per report and verifies size,
   `mtime_ns`, device, and inode before and after hashing, skipping changed, inaccessible,
@@ -245,6 +259,18 @@ Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies 
 ## Freeze line
 v2.0 FROZEN as of 33e2b281. All remediation and housekeeping closed.
 v2.1 closed: 4a, 4b, and 4c complete. v2.2 Visuals & RAG complete through C5. v2.3 Learning & Rules closed at f1d98141. v2.4 Hierarchical Swarm & Scheduling closed at 7d9d25c6. v3.0 safe-intelligence foundations current through the FS-S5 journal-serialization closure eaee322b. New findings go to the backlog.
+
+## BATCH UNDO-1 — refuse undo at a non-undoable entry
+Files: agents/file_agent.py, test_bulk_cleanup_exposure.py, ARCHITECTURE.md, README.md, PLAN.md
+- UNDO-1  DONE | 9e83747c | A completed bulk-cleanup entry now refuses undo immediately
+  instead of being skipped in favor of an earlier reversible operation. A real move followed by
+  a completed `undoable: False` bulk-cleanup entry proves that the refusal is returned and the
+  earlier moved file remains untouched at its destination. The regression was RED before the fix,
+  GREEN afterward, and RED again when the old `continue` was restored. The delete branch remains
+  unchanged because `test_phase0_phase_a.py:1800` explicitly requires undo to skip a delete and
+  reverse an earlier move; that policy is recorded as one backlog line. Proof: focused undo/delete
+  set 4/4; full discovery increased from 572 to 573 and passed 573/573 with the one known Windows
+  symlink-privilege skip; validator 5/5; compileall and diff checks green.
 
 ## BATCH FS-SAFETY-1 — filesystem journal truthfulness and plan conflicts
 Files: agent/tools.py, agents/file_agent.py, test_filesystem_journal_hardening.py, ARCHITECTURE.md, README.md, PLAN.md
