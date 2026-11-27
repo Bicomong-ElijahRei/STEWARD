@@ -119,6 +119,15 @@ class APIManager:
                 last_error = self._http_error(name, response)
                 continue
 
+            # A 404 normally means the configured endpoint URL is wrong, not
+            # that this request payload is invalid. Count it like other
+            # persistent endpoint failures; 400/422 retain their prior policy.
+            if status_code == 404:
+                self._register_transient_failure(db, provider)
+                provider_chain.append(f"{name}: {status_code}")
+                last_error = self._http_error(name, response)
+                continue
+
             if 500 <= status_code <= 599:
                 self._register_transient_failure(db, provider)
                 provider_chain.append(f"{name}: {status_code}")

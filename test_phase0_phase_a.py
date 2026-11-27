@@ -482,6 +482,50 @@ class RouterAssignmentTests(unittest.TestCase):
             else:
                 self.assertIsNotNone(provider["cooldown_until"])
 
+    def test_404_increments_count_and_cools_down_only_at_fourth_failure(self):
+        self.add_provider(
+            "MissingEndpoint", "https://missing.example/v1", "key", 1, "Cortex"
+        )
+        response = FakeResponse(status_code=404, payload={"error": "not found"})
+
+        with patch.object(
+            APIManager,
+            "_register_transient_failure",
+            side_effect=APIManager._register_transient_failure,
+        ) as register_failure:
+            for expected_count in range(1, 5):
+                with patch("core.router.requests.post", return_value=response):
+                    with self.assertRaisesRegex(RuntimeError, "All providers failed"):
+                        self.manager.route_request([], agent_name="Cortex")
+
+                provider = self.db.get_provider("MissingEndpoint")
+                self.assertEqual(provider["failure_count"], expected_count)
+                if expected_count <= 3:
+                    self.assertIsNone(provider["cooldown_until"])
+                else:
+                    self.assertIsNotNone(provider["cooldown_until"])
+                register_failure.assert_called_once()
+                register_failure.reset_mock()
+
+        self.add_provider(
+            "InvalidRequest", "https://invalid.example/v1", "key", 1, "Cortex"
+        )
+        for status_code in (400, 422):
+            with self.subTest(status_code=status_code):
+                response = FakeResponse(
+                    status_code=status_code, payload={"error": "invalid request"}
+                )
+                with patch(
+                    "core.router.requests.post", return_value=response
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "All providers failed"):
+                        self.manager.route_request([], agent_name="Cortex")
+
+                provider = self.db.get_provider("InvalidRequest")
+                self.assertEqual(provider["failure_count"], 0)
+                self.assertIsNone(provider["cooldown_until"])
+                self.assertEqual(provider["is_active"], 1)
+
     def test_invalid_json_increments_count_and_cools_down_after_threshold(self):
         self.add_provider("Malformed", "https://malformed.example/v1", "key", 1, "Cortex")
         invalid_response = Mock(status_code=200, headers={}, text="not-json")
