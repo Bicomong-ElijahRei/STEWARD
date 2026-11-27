@@ -9,6 +9,140 @@ import schedule
 from watchdog.events import FileSystemEventHandler
 
 
+DEFAULT_MAX_WATCH_DEPTH = 8
+DEFAULT_MAX_WATCHED_DIRECTORIES = 256
+DENIED_DIRECTORIES = frozenset({
+    ".git", "venv", "__pycache__", "node_modules", "rag_index", "media",
+})
+
+
+class RecursiveScopeRefusal(ValueError):
+    """Raised before observer start when recursive coverage exceeds its bounds."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _canonical_directory(path):
+    return os.path.realpath(os.path.abspath(os.fspath(path)))
+
+
+def _path_key(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _is_link_or_junction(path):
+    """Return whether a path is a symlink or Windows junction/reparse link."""
+    if os.path.islink(path):
+        return True
+    is_junction = getattr(os.path, "isjunction", None)
+    return bool(is_junction and is_junction(path))
+
+
+def _is_within(path, root):
+    try:
+        return os.path.commonpath((_path_key(path), _path_key(root))) == _path_key(root)
+    except ValueError:
+        return False
+
+
+def build_monitor_scope(
+    watch_root,
+    destination_roots=(),
+    recursive=False,
+    max_depth=DEFAULT_MAX_WATCH_DEPTH,
+    max_directory_count=DEFAULT_MAX_WATCHED_DIRECTORIES,
+):
+    """Build a deterministic watcher/scan scope without following links.
+
+    Recursive mode is represented by a set of ordinary directories. Each is
+    scheduled separately with ``recursive=False`` so the application, rather
+    than the observer library, owns the traversal bound and exclusions.
+    """
+    root = _canonical_directory(watch_root)
+    destinations = tuple(dict.fromkeys(
+        _canonical_directory(item) for item in destination_roots if item
+    ))
+    if isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < 0:
+        raise ValueError("max_depth must be a non-negative integer")
+    if (
+        isinstance(max_directory_count, bool)
+        or not isinstance(max_directory_count, int)
+        or max_directory_count < 1
+    ):
+        raise ValueError("max_directory_count must be a positive integer")
+    if not os.path.isdir(root):
+        raise RecursiveScopeRefusal("watch_root_not_found", "Watched root does not exist.")
+    if _is_link_or_junction(root):
+        raise RecursiveScopeRefusal("watch_root_is_link", "Watched root is a link or junction.")
+    if any(_is_within(root, item) for item in destinations):
+        raise RecursiveScopeRefusal(
+            "watch_root_excluded", "Watched root is an excluded destination root."
+        )
+    if not recursive:
+        return {
+            "recursive": False,
+            "watched_roots": (root,),
+            "excluded_roots": destinations,
+            "denied_directories": tuple(sorted(DENIED_DIRECTORIES)),
+            "bounds": {
+                "max_depth": max_depth,
+                "max_directory_count": max_directory_count,
+            },
+            "destination_rule": "flatten",
+        }
+
+    watched = []
+    pending = [(root, 0)]
+    while pending:
+        current, depth = pending.pop(0)
+        if depth > max_depth:
+            raise RecursiveScopeRefusal(
+                "depth_limit_exceeded",
+                f"Recursive monitoring exceeds maximum depth {max_depth}.",
+            )
+        if len(watched) >= max_directory_count:
+            raise RecursiveScopeRefusal(
+                "directory_limit_exceeded",
+                "Recursive monitoring exceeds maximum directory count.",
+            )
+        watched.append(current)
+        try:
+            entries = sorted(os.scandir(current), key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise RecursiveScopeRefusal(
+                "directory_scan_failed", f"Could not inspect '{current}': {exc}"
+            ) from exc
+        children = []
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            child = os.path.realpath(os.path.abspath(entry.path))
+            if _is_link_or_junction(entry.path):
+                continue
+            if entry.name.casefold() in DENIED_DIRECTORIES:
+                continue
+            if any(_is_within(child, item) for item in destinations):
+                continue
+            children.append((child, depth + 1))
+        pending.extend(children)
+    return {
+        "recursive": True,
+        "watched_roots": tuple(watched),
+        "excluded_roots": destinations,
+        "denied_directories": tuple(sorted(DENIED_DIRECTORIES)),
+        "bounds": {
+            "max_depth": max_depth,
+            "max_directory_count": max_directory_count,
+        },
+        "destination_rule": "flatten",
+    }
+
+
 class FileCreationHandler(FileSystemEventHandler):
     """Categorize newly-created files with bounded background concurrency."""
 
@@ -16,14 +150,16 @@ class FileCreationHandler(FileSystemEventHandler):
     MAX_WORKERS = 4
     MAX_PENDING_FILES = 32
 
-    def __init__(self, agent, dest_base, root):
+    def __init__(self, agent, dest_base, root, scope=None):
         self.agent = agent
         self.dest_base = dest_base
         self.root = root
+        self.scope = scope
         # filepath -> filesystem identity. Keeping the path as the ordered key
         # preserves the existing inspection contract while allowing a file
         # recreated at the same path to be processed again.
         self.last_processed = OrderedDict()
+        self._in_flight = set()
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._pending_slots = threading.BoundedSemaphore(self.MAX_PENDING_FILES)
@@ -62,26 +198,51 @@ class FileCreationHandler(FileSystemEventHandler):
             self._pending_slots.release()
             return False
 
+    def _path_in_scope(self, filepath):
+        if not self.scope:
+            return True
+        canonical = os.path.realpath(os.path.abspath(filepath))
+        excluded = self.scope.get("excluded_roots", ())
+        if any(_is_within(canonical, item) for item in excluded):
+            return False
+        watched = self.scope.get("watched_roots", ())
+        return any(_is_within(canonical, item) for item in watched)
+
     def on_created(self, event):
         if event.is_directory or self._stopped.is_set():
-            return
+            return False
         filepath = event.src_path
+        if not self._path_in_scope(filepath):
+            return False
         identity = self._file_identity(filepath) or ("missing", filepath)
         with self._lock:
             previous_identity = self.last_processed.get(filepath)
             if previous_identity == identity:
                 self.last_processed.move_to_end(filepath)
-                return
+                return False
+            if len(self.last_processed) >= self.MAX_TRACKED_FILES:
+                evictable = next(
+                    (
+                        path for path in self.last_processed
+                        if path not in self._in_flight
+                    ),
+                    None,
+                )
+                if evictable is None:
+                    return False
+                self.last_processed.pop(evictable, None)
             self.last_processed[filepath] = identity
             self.last_processed.move_to_end(filepath)
-            while len(self.last_processed) > self.MAX_TRACKED_FILES:
-                self.last_processed.popitem(last=False)
+            self._in_flight.add(filepath)
         if not self._enqueue_file(filepath):
             # A stop raced with backpressure. Remove only this identity so a
             # later restart can reconsider the path if necessary.
             with self._lock:
+                self._in_flight.discard(filepath)
                 if self.last_processed.get(filepath) == identity:
                     self.last_processed.pop(filepath, None)
+            return False
+        return True
 
     @staticmethod
     def _wait_until_stable(filepath, timeout=10.0, interval=0.5):
@@ -107,6 +268,8 @@ class FileCreationHandler(FileSystemEventHandler):
             try:
                 self._process_file(filepath)
             finally:
+                with self._lock:
+                    self._in_flight.discard(filepath)
                 self._queue.task_done()
                 self._pending_slots.release()
 
@@ -152,6 +315,9 @@ class ScheduledScanner:
         destination_path=None,
         on_scan=None,
         stop_timeout=5.0,
+        recursive=False,
+        max_depth=DEFAULT_MAX_WATCH_DEPTH,
+        max_directory_count=DEFAULT_MAX_WATCHED_DIRECTORIES,
     ):
         if isinstance(interval_minutes, bool) or interval_minutes <= 0:
             raise ValueError("interval_minutes must be greater than zero")
@@ -160,6 +326,9 @@ class ScheduledScanner:
         self.incoming_path = incoming_path
         self.destination_path = destination_path
         self.on_scan = on_scan
+        self.recursive = recursive
+        self.max_depth = max_depth
+        self.max_directory_count = max_directory_count
         self.stop_timeout = float(stop_timeout)
         if self.stop_timeout < 0:
             raise ValueError("stop_timeout must be non-negative")
@@ -244,6 +413,24 @@ class ScheduledScanner:
                 self.last_error = str(exc)
             cancel_event.wait(0.25)
 
+    def _monitor_scope(self):
+        """Return the same bounded scope contract used by the watcher."""
+        root = os.path.realpath(os.path.abspath(self.file_agent.root_path))
+        incoming = os.path.realpath(os.path.abspath(
+            self.incoming_path or os.path.join(root, "Incoming")
+        ))
+        destination = os.path.realpath(os.path.abspath(
+            self.destination_path or os.path.join(root, "Sorted")
+        ))
+        sorted_root = os.path.realpath(os.path.abspath(os.path.join(root, "Sorted")))
+        return build_monitor_scope(
+            incoming,
+            [sorted_root, destination],
+            recursive=self.recursive,
+            max_depth=self.max_depth,
+            max_directory_count=self.max_directory_count,
+        )
+
     def _scan(self, cancel_event=None, generation=None):
         """Categorize files currently present in Incoming."""
         with self._state_lock:
@@ -294,13 +481,23 @@ class ScheduledScanner:
                 return summary
 
             try:
-                filenames = sorted(os.listdir(incoming))
-            except OSError as exc:
-                summary["error"] = str(exc)
+                scope = self._monitor_scope()
+            except RecursiveScopeRefusal as exc:
+                summary["error"] = exc.code
                 self._commit_scan(summary, generation, cancel_event)
                 return summary
+            files = []
+            for watched_root in scope["watched_roots"]:
+                try:
+                    filenames = sorted(os.listdir(watched_root))
+                except OSError as exc:
+                    summary["error"] = str(exc)
+                    self._commit_scan(summary, generation, cancel_event)
+                    return summary
+                for filename in filenames:
+                    files.append(os.path.join(watched_root, filename))
 
-            for filename in filenames:
+            for filepath in files:
                 if cancel_event.is_set():
                     summary["cancelled"] = True
                     summary["error"] = "scan_cancelled"
@@ -310,8 +507,8 @@ class ScheduledScanner:
                         summary["skipped"] = True
                         summary["error"] = "stale_generation"
                         return summary
-                filepath = os.path.join(incoming, filename)
-                if not os.path.isfile(filepath):
+                filename = os.path.basename(filepath)
+                if not os.path.isfile(filepath) or _is_link_or_junction(filepath):
                     continue
                 try:
                     result = self.file_agent.categorise_file(

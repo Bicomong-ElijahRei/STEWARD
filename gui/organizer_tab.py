@@ -14,7 +14,12 @@ import json
 import threading
 import logging
 
-from agent.daemon import FileCreationHandler, ScheduledScanner
+from agent.daemon import (
+    FileCreationHandler,
+    RecursiveScopeRefusal,
+    ScheduledScanner,
+    build_monitor_scope,
+)
 from watchdog.observers import Observer
 from gui.anim import SafeTick, lerp_color
 from utils.helpers import sanitize_category, get_app_data_dir
@@ -106,6 +111,7 @@ class OrganizerTab(ctk.CTkFrame):
         self.dest_var = ctk.StringVar(value=os.path.join(os.getcwd(), "Sorted"))
         self.schedule_enabled_var = ctk.BooleanVar(value=False)
         self.schedule_interval_var = ctk.StringVar(value="1 hr")
+        self.recursive_monitor_var = ctk.BooleanVar(value=False)
         self.preview_rows = []
         self.pending_operations = []
         self._preview_generation = 0
@@ -245,6 +251,17 @@ class OrganizerTab(ctk.CTkFrame):
             hover_color=NEON_CYAN,
         )
         self.schedule_checkbox.pack(side="left", padx=(0, 12))
+
+        self.recursive_monitor_checkbox = ctk.CTkCheckBox(
+            schedule_row,
+            text="Recursive Monitoring (bounded)",
+            variable=self.recursive_monitor_var,
+            command=self._on_recursive_monitoring_changed,
+            font=FONT_ROUNDED,
+            fg_color=NEON_CYAN,
+            hover_color=NEON_CYAN,
+        )
+        self.recursive_monitor_checkbox.pack(side="left", padx=(0, 12))
 
         ctk.CTkLabel(
             schedule_row,
@@ -793,6 +810,9 @@ class OrganizerTab(ctk.CTkFrame):
             )
             self.schedule_interval_var.set(label)
         self.schedule_enabled_var.set(bool(state.get("enabled", False)))
+        recursive_monitor_var = getattr(self, "recursive_monitor_var", None)
+        if recursive_monitor_var is not None:
+            recursive_monitor_var.set(bool(state.get("recursive_monitoring", False)))
         last_scan = state.get("last_scan_time")
         if isinstance(last_scan, str) and last_scan:
             self._last_scheduled_scan_time = last_scan
@@ -803,6 +823,10 @@ class OrganizerTab(ctk.CTkFrame):
             "enabled": bool(self.schedule_enabled_var.get()),
             "interval_minutes": self.SCHEDULE_INTERVALS.get(
                 self.schedule_interval_var.get(), 60
+            ),
+            "recursive_monitoring": bool(
+                getattr(self, "recursive_monitor_var", None)
+                and self.recursive_monitor_var.get()
             ),
             "last_scan_time": self._last_scheduled_scan_time,
         }
@@ -847,6 +871,10 @@ class OrganizerTab(ctk.CTkFrame):
             incoming_path=self.watched_var.get(),
             destination_path=self.dest_var.get(),
             on_scan=self._on_scheduled_scan_complete,
+            recursive=bool(
+                getattr(self, "recursive_monitor_var", None)
+                and self.recursive_monitor_var.get()
+            ),
         )
         self.scheduled_scanner = scanner
         if not scanner.start():
@@ -873,6 +901,12 @@ class OrganizerTab(ctk.CTkFrame):
 
     def _on_schedule_interval_changed(self, _value=None):
         """Apply a new interval immediately and persist it."""
+        if self.schedule_enabled_var.get():
+            self._start_scheduled_scan()
+        self._save_schedule_state()
+
+    def _on_recursive_monitoring_changed(self):
+        """Apply the current recursive scope immediately and persist it."""
         if self.schedule_enabled_var.get():
             self._start_scheduled_scan()
         self._save_schedule_state()
@@ -914,21 +948,59 @@ class OrganizerTab(ctk.CTkFrame):
 
     def start_daemon(self):
         if self.daemon_running:
-            return
+            return None
         watch_path = self.watched_var.get()
         dest_path = self.dest_var.get()
         if not os.path.exists(watch_path):
             messagebox.showerror("Error", f"Watched folder does not exist: {watch_path}")
-            return
+            return None
 
-        event_handler = FileCreationHandler(self.file_agent, dest_path, self.gui)
+        recursive = bool(
+            getattr(self, "recursive_monitor_var", None)
+            and self.recursive_monitor_var.get()
+        )
+        root = os.path.realpath(os.path.abspath(self.file_agent.root_path))
+        sorted_root = os.path.realpath(os.path.abspath(os.path.join(root, "Sorted")))
+        try:
+            scope = build_monitor_scope(
+                watch_path,
+                [sorted_root, dest_path],
+                recursive=recursive,
+            )
+        except RecursiveScopeRefusal as exc:
+            messagebox.showerror(
+                "Recursive monitoring refused",
+                f"{exc.code}: {exc}",
+            )
+            self._log(f"Daemon start refused ({exc.code}): {exc}")
+            return {
+                "started": False,
+                "refused": exc.code,
+                "message": str(exc),
+                "scope": None,
+            }
+
+        event_handler = FileCreationHandler(
+            self.file_agent, dest_path, self.gui, scope=scope
+        )
         self.observer = Observer()
-        self.observer.schedule(event_handler, watch_path, recursive=False)
+        for watched_root in scope["watched_roots"]:
+            self.observer.schedule(event_handler, watched_root, recursive=False)
         self.observer.start()
         self.daemon_handler = event_handler
         self.daemon_running = True
         self.daemon_status_label.configure(text="Daemon: RUNNING", text_color="#10B981")
-        self._log(f"Daemon started. Watching: {watch_path}")
+        self._log(
+            f"Daemon started. Recursive: {scope['recursive']}; "
+            f"watched roots: {scope['watched_roots']}; "
+            f"bounds: {scope['bounds']}"
+        )
+        return {
+            "started": True,
+            "refused": None,
+            "message": None,
+            "scope": scope,
+        }
 
     def stop_daemon(self):
         if self.observer and self.daemon_running:
