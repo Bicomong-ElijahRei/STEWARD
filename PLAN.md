@@ -17,6 +17,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 7. Items may be DEFERRED forever without shame. Deferred is a decision, not a failure.
 
 ## Changelog
+2026-11-28 | 9f37d9f, 62ae399 | BULK-1 bounded duplicate hashing and pure bulk-deletion preparation: bounded duplicate hashing to 64 MiB per file and 256 MiB per report with size/mtime/device/inode checks before and after hashing; added an internal read-only enumeration and exact-set binding core with canonical sandbox enforcement, symlink/junction exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, SHA-256 set binding, typed whole-set re-verification refusals, and deepest-first empty-directory closure; documented the six BULK-1 decisions in `docs/bulk_deletion_contract.md`; added six hashing and 28 bulk-core focused regressions, killed four hashing and 20 core targeted mutants, and kept all 562 discovery tests green with the one known Windows symlink-privilege skip; added no chat capability, schema entry, dependency, permission, runtime route, destructive operation, or ROADMAP change. | Make duplicate reports and any future bulk-cleanup approval bounded and reviewable without exposing destructive authority. Future destructive bulk removal is intended to use `send2trash` and requires a separately reviewed approval/execution path; permanent bulk removal is not being exposed.
+
 2026-11-27 | b7619dc3, caab947c | TOOLS-1 bounded filesystem reports and persistent HTTP 404 accounting: exposed exactly three read-only reports (`find_duplicates`, `find_large_files`, and advisory-only `suggest_deletions`) through the active `agents/file_agent.py` schema with strict argument schemas, runtime validation, canonical sandbox paths, symlink/junction exclusion, deterministic ordering, explicit bounds, and no mutation or external-routing path; counted HTTP 404 as a persistent provider failure so the existing five-minute cooldown begins on the fourth failure while 400/422 remain unchanged; documented `agent/core.py` as a non-authoritative compatibility surface with no runtime callers; kept `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` outside the active schema as backlog-only destructive utilities; discovery tests increased from 518 to 528 and all 528 passed with the one known Windows symlink-privilege skip. | Provide useful, bounded, read-only filesystem insight without widening destructive authority, and stop a persistently missing provider endpoint from being retried without failure accounting. The final documentation commit SHA is reported in the handoff because a commit cannot contain its own SHA.
 
 2026-11-27 | 5e8c474a, 0348dda5 | ROUTER-1 router failure accounting and provider timing truthfulness: routed persistent connection errors and malformed/non-object JSON through the shared transient-failure path, retained the audited distinct policies for 429, 401/403, 5xx, timeout, other non-2xx, and no-eligible-provider outcomes, renamed the validator's misnamed first-byte latency field to `elapsed_ms` and propagated total completed-request timing through validation and GUI wording, added three focused regressions with shared-increment and elapsed-time-producer mutation proof, and changed no provider schema, dependency, cooldown policy, provider ordering, or HTTP mode; discovery tests increased from 515 to 518 and all 518 passed with the one known Windows symlink-privilege skip. | Make provider failure accounting consistent for transport and response-validity failures, name the measured latency honestly, and derive PLAN publication state from current Git ancestry rather than repeating stale claims.
@@ -84,8 +86,8 @@ the code wins on behavior, this file wins on intent — fix this file in the sam
 (future entries above this line, newest first)
 
 ## Ground state
-Implementation baseline: TOOLS-1 bounded filesystem reports commit b7619dc3 and HTTP 404 provider-failure accounting commit caab947c; ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
-Acceptance baseline: TOOLS-1 strict schema/runtime validation, sandbox refusal, traversal, serialization, finite-number, advisory-only, and HTTP 404 threshold regressions; ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 528/528 discovery tests green
+Implementation baseline: BULK-1 bounded duplicate hashing commit 9f37d9f and pure bulk-deletion enumeration/set-binding core commit 62ae399; TOOLS-1 bounded filesystem reports commit b7619dc3 and HTTP 404 provider-failure accounting commit caab947c; ROUTER-1 router failure-accounting commit 5e8c474a and provider timing-truthfulness commit 0348dda5; ChromaDB Windows cleanup lifecycle (final commit SHA reported in handoff); SEC-1 dependency advisory remediation commit 85038613; D1-I1 pure MCP resource admission core commit 5c337317; HYG-1 Patch Review worker and retired-scope cleanup commits 0acf370, 2e0fe28e
+Acceptance baseline: BULK-1 duplicate hashing per-file/cumulative budgets and race guards plus pure-core canonical sandbox, link exclusion, traversal bounds, deterministic ordering, immutable records, exact-set binding, typed whole-set refusal, non-mutation, and ten-tool dispatch regressions; TOOLS-1 strict schema/runtime validation, sandbox refusal, traversal, serialization, finite-number, advisory-only, and HTTP 404 threshold regressions; ROUTER-1 transient-failure and total-elapsed-time regressions; ChromaDB persistent-agent lifecycle regressions and related RAG/code-index suite; SEC-1 cross-version Fernet known-answer regression and focused credential-path suite; 562/562 discovery tests green
 Review baseline: D1-R MCP integration safety review commit 9737c516
 Survey baseline: D1-SURVEY published MCP server survey and DEFER decision; final commit SHA is reported in the handoff because a commit cannot contain its own SHA
 Dependency review baseline: D1-DEP MCP dependency and protocol review commit 9f1d9ace
@@ -93,10 +95,10 @@ Dependency remediation baseline: SEC-1 cryptography and requests advisory remedi
 Execution review baseline: C4-R execution safety review commit 8f3cb0da
 Isolation research baseline: C4-ISO Windows isolation research and decision commit 3afe56aa
 Documentation baseline: C4 documentation reconciliation commit 7b427437
-Suite: 528/528 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
+Suite: 562/562 unit tests green with one expected Windows symlink-privilege skip; validator 5/5; compileall and diff checks green
 Roadmap denominator (scope removal only): whole ROADMAP 22/27 checked (81.48%) before -> 22/24 checked (91.67%) after; active Phase D 1/5 checked (20%) before -> 1/2 checked (50%) after. The completion percentage increased only because scope was removed, not because work was completed.
 Scope declaration baseline: SCOPE-R1 documentation-only amendment commit e7a462d2; HYG-1 commit 2e0fe28e subsequently removed the orphaned active persona/routing without adding capability; D1-R commit 9737c516 re-scoped the still-BACKLOG D1 MCP item to one read-only remote resource server without adding capability.
-Push state at documentation verification (2026-11-27, before this closure commit): `origin/main` resolves to `20889777b41560aba0e7442081df8df4aa06d3bd`. The named historical commits `f6965379665bf69602a27ee58800482f4b662ad3` and `8503861337c1a9f087219eba7ef9e1eea6ca8bbe` are published ancestors (each `git merge-base --is-ancestor <sha> origin/main` exit 0), as is `20889777` itself (exit 0). ROUTER-1 commits `5e8c474abe37f5d6cdceb6119a7dff773e34d184` and `0348dda5bf01cc2706729df5744fbaf7f3fa3a70` are published ancestors (each exit 0). TOOLS-1 commits `b7619dc359759e8737bcda6b7963274a0ebe3e01` and `caab947c16fcd979055896f0303c640e83021ec4` are local and not ancestors of `origin/main` (each exit 1); the pre-closure `HEAD` was `caab947c` (exit 1). This documentation closure is also local until pushed.
+Push state at documentation verification (2026-11-28, before this closure commit): `origin/main` resolves to `e6fdc1c16a657558f00e28ba3037b4e94566ddce` and is itself a published ancestor (exit 0). BULK-1 implementation commits `9f37d9fd333e4d3bb6b405bea99a8b3d45609176` and `62ae399396c59b9bd0fd6674bb9540bc4233fa38` are local and are not ancestors of `origin/main` (each exit 1); the pre-closure `HEAD` was `62ae399` (exit 1). This documentation closure is also local until pushed.
 Publication-state convention: never copy a prior push-state claim forward. At every verification, resolve `origin/main` and current `HEAD`, run `git merge-base --is-ancestor <sha> origin/main` for every named commit and for current `HEAD`, and record each exit result (0 = published ancestor, 1 = not an ancestor, any other exit = verification failure). Re-derive the paragraph from those results at the time of writing.
 Bare-subject deviation ledger: `8e8d4f34`, `9dbf774d`, and `96dcfe14` are confirmed
 pushed ancestors with bare commit subjects and no structured Problem/Design/Fix/Impact/
@@ -114,6 +116,22 @@ Invariants: The agent must never write to, delete, or recreate steward.db or sec
 Tool split: Qwen agent-mode sandbox proves safety fixes off-tree; human applies + verifies; Cline/Kimi/Antigravity for volume. Never two writers on one file.
 
 ## Implemented
+- BULK-1 Bounded duplicate hashing and pure bulk-deletion preparation — DONE | 9f37d9f, 62ae399
+  duplicate hashing is bounded to 64 MiB per file and 256 MiB per report and verifies size,
+  `mtime_ns`, device, and inode before and after hashing, skipping changed, inaccessible,
+  oversized, and cumulative-budget files truthfully. A new internal read-only core enumerates
+  temporary-file candidates or the deepest-first empty-directory closure, enforces canonical
+  sandbox roots, excludes symlinks/junctions, and refuses whole enumerations on path-length,
+  depth, file-count, candidate-count, or traversal-I/O failures. Frozen records bind the exact
+  ordered set by canonical path, size, and `mtime_ns`; the SHA-256 binding also covers the
+  identity policy, root, count, kind, and order. Re-verification refuses the whole binding on
+  added, removed, changed, reordered, root, policy, or hash drift. Proof: 6/6 hashing, 28/28
+  bulk-core, 34/34 combined focused, and 562/562 discovery tests green with the one known
+  Windows symlink-privilege skip; validator 5/5; compileall and diff checks green; four
+  hashing and 20 core targeted mutants killed. The core is not imported or exposed by the
+  active FileAgent dispatch path, which remains exactly ten tools; no destructive operation,
+  chat capability, schema entry, dependency, permission, or runtime route was added. The six
+  decisions are documented in `docs/bulk_deletion_contract.md`.
 - TOOLS-1 Bounded filesystem reports and persistent HTTP 404 accounting — DONE | b7619dc3, caab947c
   the active FileAgent now exposes exactly three bounded read-only reports: duplicate-file
   detection, large-file detection, and advisory-only deletion suggestions. Strict schemas and
@@ -889,6 +907,17 @@ These items were removed from the active roadmap and from declared scope. Their 
 
 Common thread: each grants authority beyond the application's existing bounded mutation boundary, with no proportionate benefit for a local desktop tool. These decisions follow the same discipline as C4-R and C4-ISO, which deferred execution rather than claim a boundary that could not be proven.
 
+## BATCH BULK-1 — bounded duplicate hashing and pure bulk-deletion preparation (DONE)
+Files: agent/tools.py, agent/bulk_deletion_core.py, test_hashing_read_budget.py, test_bulk_deletion_core.py, docs/bulk_deletion_contract.md, ARCHITECTURE.md, README.md, PLAN.md
+- BULK-1  DONE | 9f37d9f, 62ae399 | Six binding decisions are recorded in
+      `docs/bulk_deletion_contract.md`: (1) expose preparation only, never execution;
+      (2) canonicalize and sandbox the root and allowed roots; (3) use bounded, link-free
+      traversal and refuse the whole result on I/O or bound failure; (4) retain deterministic
+      temporary-file and deepest-first empty-directory ordering; (5) use immutable records and
+      an SHA-256 hash of the exact ordered set and identity policy; and (6) re-verify the whole
+      binding with typed refusals for any membership, identity, order, root, policy, or hash
+      discrepancy. Future destructive exposure is not part of BULK-1 and remains backlog-only.
+
 ## Cross-cutting v2.1 backlog (not phases; do anytime post-freeze)
 - ChromaDB cleanup race on Windows | DONE | (final commit SHA reported in handoff) | Fixed at the persistent-agent boundary for both RAG and code indexing. Reinitialization closes the existing client before creating its successor; initialization rollback closes a newly created client; close failures are observable and retain the client reference; and a shared post-close finalization pass releases ChromaDB 1.5.9's Rust-owned SQLite pool on Windows. Real-client regressions prove immediate `data_level0.bin` and `chroma.sqlite3` release after delete/recreate and teardown. No Chroma private internals, subprocess boundary, dependency, or protected-state change was introduced.
 - Orphaned retired desktop-control persona cleanup DONE | 2e0fe28e | Removed the active persona and routing surfaces; retained historical PLAN/ROADMAP records and added truthful OUT_OF_SCOPE refusal.
@@ -898,9 +927,11 @@ Common thread: each grants authority beyond the application's existing bounded m
   or in-flight file previews, and rejects stale responses/UI continuations across all specialist
   paths.
 - pytest migration of the suite
-- Bulk destructive filesystem utilities | BACKLOG | `cleanup_temp_files`, `cleanup_empty_folders`,
-  and `batch_move` are intentionally not exposed by the active FileAgent schema. Any future work
-  requires a separate safety design and approval path; TOOLS-1 adds no destructive authority.
+- Bulk destructive filesystem exposure | BACKLOG | BULK-1 now provides a pure, bounded
+  preview/set-binding core, but `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move`
+  remain intentionally absent from the active FileAgent schema. Any future destructive tool
+  requires a separately reviewed `send2trash`-based approval/execution path; permanent bulk
+  removal is not being exposed.
 - Windows installer / packaging
 - Broader test coverage beyond safety (router perf, GUI smoke)
 

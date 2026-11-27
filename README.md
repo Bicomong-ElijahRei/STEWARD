@@ -43,7 +43,12 @@ preview, explicit approval, and undo/redo.
 - Bounded filesystem reports: Foldy can request duplicate-file, large-file, and advisory deletion-
   candidate reports from Incoming/Sorted. The reports are deterministic, canonicalize paths, exclude
   symlinks/junctions, and enforce file-count, depth, result-count, serialized-byte, path-length,
-  size-threshold, and age-threshold bounds. Deletion suggestions never delete or schedule deletion.
+  size-threshold, and age-threshold bounds. Duplicate hashing is bounded to 64 MiB per file and
+  256 MiB per report, with stable file-identity checks around the read. Deletion suggestions never
+  delete or schedule deletion.
+- Internal bulk-cleanup preparation: a pure, read-only core can enumerate a deterministic bounded
+  set of temporary files or removable empty directories and bind that exact set for review. It is
+  not a chat capability and exposes no destructive operation.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
   restart-persistent scheduled scans with cooperative cancellation.
 - Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
@@ -61,10 +66,11 @@ preview, explicit approval, and undo/redo.
 - All file operations are confined to <root>/Incoming and <root>/Sorted. Paths are resolved
   with realpath + commonpath + normcase; absolute paths and traversal cannot escape.
 - Reads are sandboxed too, so credentials outside the sandbox cannot be exfiltrated.
-- The dispatchable tool set is derived from the declared schema. Bulk move, empty-folder cleanup,
-  and temporary-file cleanup are unreachable from a model-issued plan. Deletion suggestions are
-  reachable only as bounded advisory reports: they never delete, schedule deletion, or create an
-  approved plan.
+- The dispatchable tool set is derived from the declared schema and remains exactly ten tools.
+  Bulk move, empty-folder cleanup, and temporary-file cleanup are unreachable from a model-issued
+  plan. Deletion suggestions are reachable only as bounded advisory reports: they never delete,
+  schedule deletion, or create an approved plan. BULK-1's internal bulk-cleanup core only prepares
+  and re-verifies a bounded candidate set; it has no mutation primitive or active dispatch route.
 - The whole plan is preflighted before the first mutation; unsafe plans abort atomically.
   Plan preflight rejects occupied destinations, duplicate targets, and file/directory target
   collisions in either plan order, while the mutation primitive rechecks collisions immediately
@@ -137,13 +143,14 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-528 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+562 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
 HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
 concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
 Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
 expansion, GUI lifecycle, no-overwrite filesystem publication, whole-plan collision preflight,
 partial-outcome journal truthfulness, durable journal recovery, cross-process journal serialization,
-strict bounded read-only filesystem reports, schema-validated meta-prompting review gates,
+strict bounded read-only filesystem reports, bounded duplicate hashing, pure bulk-deletion
+enumeration/exact-set binding/typed refusal, schema-validated meta-prompting review gates,
 pure AST patch artifact/anchor/splicing/
 encoding/proof/determinism/purity safety, C3-I2 workspace admission, atomic replacement,
 journal/backup, and guarded content recovery, C3-I3 exact-diff review, immutable artifact,
@@ -158,6 +165,7 @@ reinitialization, rollback, close-failure, and Windows file-handle release behav
 See ARCHITECTURE.md for the module map and critical request paths.
 See PLAN.md for scope, status, and the roadmap.
 See docs/MIGRATION_GUIDE.md for the guarded shared-credential migration workflow.
+See docs/bulk_deletion_contract.md for BULK-1's six decisions and exact-set binding contract.
 Use `python tools/migrate_live.py --dry-run` to preview; live mutation requires explicit
 confirmation and a verified database/key/operation-log backup set.
 
@@ -186,8 +194,11 @@ confirmation and a verified database/key/operation-log backup set.
 - Sandbox roots are fixed to Incoming/ and Sorted/ under the working directory.
 - Bulk destructive filesystem utilities (`cleanup_temp_files`, `cleanup_empty_folders`, and
   `batch_move`) are intentionally outside the active FileAgent schema and remain backlog-only.
-  The legacy `agent/core.py` `StewardAgent` is non-authoritative and has no runtime callers; the
-  active `agents/file_agent.py` is the provider/dispatch authority.
+  BULK-1 adds only an internal, read-only enumeration/set-binding core; it exposes no destructive
+  operation or new chat capability. A future destructive implementation is intended to use
+  `send2trash` and requires a separately reviewed approval/execution path; permanent bulk removal
+  is not being exposed. The legacy `agent/core.py` `StewardAgent` is non-authoritative and has no
+  runtime callers; the active `agents/file_agent.py` is the provider/dispatch authority.
 - Cross-process journal locking is implemented and validated on Windows. The POSIX
   `fcntl.flock` path is present but has not been locally validated on this Windows host.
 - No packaging/installer yet.

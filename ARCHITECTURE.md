@@ -35,7 +35,8 @@ file categorization.
 - `agents/mcp_resource_core.py` D1-I1 pure MCP resource admission core: standard-library-only, transport-agnostic admission/read boundary for one explicitly selected identity-pinned remote resource server; HTTPS/effective-origin pinning, explicit resource allowlisting, SHA-256 snapshot re-verification, byte bounds, deterministic redaction/truncation, typed refusals, single-admission revocation, and immutable external-only result containers. It imports no MCP SDK and performs no network, filesystem, subprocess, dynamic-code, JSON-RPC, GUI, tool, or local mutation operation
 - `gui/patch_review_dialog.py` C3-I3 workspace/target picker, exact-diff preview, explicit approval/apply, truthful recovery states, and one bounded daemon-worker slot with epoch/closed-guarded UI marshaling
 - `agent/content_replace.py` C3-I2 atomic overwrite primitive: same-directory verified staging plus `os.replace`, with regular-file, same-directory, and pre/post hash guards
-- `agent/tools.py`       filesystem helper implementations; `tool_functions` includes legacy mutation helpers, while the active FileAgent dispatch allowlist is derived from its own schema
+- `agent/tools.py`       filesystem helper implementations; `tool_functions` includes legacy mutation helpers, while the active FileAgent dispatch allowlist is derived from its own schema; duplicate hashing has per-file and cumulative read budgets
+- `agent/bulk_deletion_core.py` BULK-1 internal read-only bulk-cleanup preparation: canonical sandboxed enumeration, link exclusion, traversal bounds, deterministic temporary-file/empty-directory sets, immutable exact-set binding, and typed whole-set re-verification; no mutation or active dispatch route
 - `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent/PlanAgent/PatchReviewManager; passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
@@ -99,6 +100,12 @@ C4-I1 pure healing controller (not user-integrated): injected executor + injecte
 C4-ISO isolation decision (research only): `docs/windows_isolation_research.md`
   evaluates all 20 C4-I2 criteria and defers execution because no supported
   baseline is proven on this Windows Home host.
+BULK-1 bulk-deletion preparation (not user-integrated): explicit canonical root plus allowed
+  roots -> sandbox/path admission -> bounded link-free traversal -> deterministic temporary-file
+  or deepest-first empty-directory enumeration -> immutable records -> exact ordered-set SHA-256
+  binding -> whole-set re-verification. The core contains no deletion operation and is not
+  imported by the active FileAgent dispatch path. The active schema/dispatch remains exactly ten
+  tools; future destructive exposure is a separately reviewed `send2trash` path.
 D1-I1 pure MCP resource admission (not user-integrated): explicit server identity +
   exact expected server identity -> canonical HTTPS identity/effective origin -> explicit
   canonical resource allowlist -> injected transport server snapshot -> tools-capability,
@@ -134,9 +141,31 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
 - `suggest_deletions` is advisory only: it never deletes, schedules deletion, approves a plan,
   or invokes external routing. The legacy `agent/core.py` `StewardAgent` is non-authoritative and
   has no runtime callers; `agents/file_agent.py` is the active provider/dispatch authority.
+- Duplicate hashing reads at most 64 MiB from one file and 256 MiB across one report. Only a
+  file whose initial size fits both budgets is admitted. Size, `mtime_ns`, device, and inode are
+  compared before and after hashing; changed, inaccessible, oversized, and cumulative-budget files
+  are reported as skipped rather than as unique or duplicate.
 - `cleanup_temp_files`, `cleanup_empty_folders`, and `batch_move` are destructive utilities kept
   outside the active schema as backlog-only items. They must remain unreachable until separately
   designed, bounded, and approved.
+
+## Bulk-deletion preparation contract
+- BULK-1 is an internal, read-only preparation core in `agent/bulk_deletion_core.py`; it does not
+  delete, trash, move, or mutate anything and is not reachable as a chat tool.
+- Roots and allowed roots are canonicalized. The canonical root must be a directory contained by
+  a canonical allowed root. Supplied and canonical roots are bounded to 1,024 characters.
+- Traversal excludes symlinks and junctions, rechecks canonical containment, and refuses the
+  entire result on a path-length, depth-8, 1,000-file, 1,000-candidate, or traversal-I/O failure.
+- Temporary files use the exact legacy suffix set and normalized-path ordering. Empty-directory
+  candidates are the bottom-up removable closure, ordered deepest-first.
+- Candidate/enumeration/binding/verification records are frozen and use tuples. Identity is
+  canonical path plus size and `mtime_ns`; the binding SHA-256 covers version, identity policy,
+  root, count, and every ordered entry's path, kind, size, and `mtime_ns`.
+- Re-verification accepts only an exact match. Added, removed, changed, reordered, root, policy,
+  or hash discrepancies refuse the whole binding with typed reasons.
+- The active FileAgent dispatch set remains exactly ten tools. Future destructive exposure is
+  intended to use `send2trash` and requires a separately reviewed approval/execution path;
+  permanent bulk removal is not being exposed. See `docs/bulk_deletion_contract.md`.
 
 ## Router semantics
 - Sort by the existing `speed_score_ms`; cloud first, at most one local. Provider ordering and the
@@ -378,7 +407,9 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_hygiene_scope.py — retired-persona registry/source removal, truthful OUT_OF_SCOPE classification/refusal, generic UNKNOWN, and non-delegation regressions
 - test_healing_controller.py — C4-I1 pure-controller regressions: structural hard bound, deterministic termination states, write-ahead journal ordering, pre-iteration journal-failure blocking, uncertain post-execution journal failure, bounded/redacted observations, cancellation safe boundary, controller-owned timeouts, no-execution spy/AST proof, no-auto-apply proof, and determinism
 - test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
-- Total discovery count is 518 (one expected Windows symlink-privilege skip)
+- test_hashing_read_budget.py — BULK-1 duplicate-hashing per-file/cumulative budgets, inaccessible files, growth races, and stat-to-open replacement races
+- test_bulk_deletion_core.py — BULK-1 canonical sandbox, link exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, exact-set binding, typed refusals, non-mutation, and ten-tool dispatch regressions
+- Total discovery count is 562 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
