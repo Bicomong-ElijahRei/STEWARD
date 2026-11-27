@@ -1118,6 +1118,316 @@ class H2ApprovedReadTests(unittest.TestCase):
             self.assertNotIn("Error", result)
 
 
+class Tools1ReadOnlyUtilitiesTests(unittest.TestCase):
+    """Bounded, read-only utility reports exposed through FileAgent's schema."""
+
+    def make_agent(self, root):
+        log_path = os.path.join(root, "operations.json")
+        with patch.object(FileAgent, "OPERATION_LOG_PATH", log_path):
+            agent = FileAgent(api_manager=Mock(), root_path=root)
+        agent.OPERATION_LOG_PATH = log_path
+        return agent
+
+    def execute_tool(self, agent, tool_name, arguments):
+        agent._pending_plan = [{
+            "function": {"name": tool_name, "arguments": arguments}
+        }]
+        agent._pending_plan_id = f"plan-{tool_name}"
+        return agent.execute_pending_plan(agent._pending_plan_id)
+
+    def test_schema_allowlist_adds_exactly_three_bounded_read_only_tools(self):
+        with tempfile.TemporaryDirectory(prefix="steward_tools1_schema_") as tmp:
+            agent = self.make_agent(tmp)
+            definitions = agent._get_tool_definitions()
+            names = {item["function"]["name"] for item in definitions}
+            expected = {
+                "move_file", "delete_file", "rename_file", "create_folder",
+                "list_directory", "read_file_content", "get_file_info",
+                "find_duplicates", "find_large_files", "suggest_deletions",
+            }
+            self.assertEqual(names, expected)
+            self.assertNotIn("cleanup_temp_files", names)
+            self.assertNotIn("cleanup_empty_folders", names)
+            self.assertNotIn("batch_move", names)
+
+            by_name = {
+                item["function"]["name"]: item["function"]
+                for item in definitions
+            }
+            for name in ("find_duplicates", "find_large_files", "suggest_deletions"):
+                parameters = by_name[name]["parameters"]
+                self.assertEqual(parameters["additionalProperties"], False)
+                self.assertEqual(parameters["properties"]["directory"]["maxLength"], 1024)
+            self.assertEqual(
+                by_name["find_large_files"]["parameters"]["properties"]["size_mb"],
+                {"type": "number", "minimum": 0, "maximum": 10240},
+            )
+            self.assertEqual(
+                by_name["suggest_deletions"]["parameters"]["properties"]["size_mb_threshold"],
+                {"type": "integer", "minimum": 0, "maximum": 10240},
+            )
+            self.assertEqual(
+                by_name["suggest_deletions"]["parameters"]["properties"]["age_days_threshold"],
+                {"type": "integer", "minimum": 0, "maximum": 3650},
+            )
+
+    def test_hostile_paths_are_refused_for_each_report_without_dispatch(self):
+        with tempfile.TemporaryDirectory(prefix="steward_tools1_hostile_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            os.makedirs(outside)
+            junction = os.path.join(incoming, "junction")
+            if os.name == "nt":
+                completed = subprocess.run(
+                    ["cmd.exe", "/c", "mklink", "/J", junction, outside],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+            else:
+                os.symlink(outside, junction, target_is_directory=True)
+
+            hostile_paths = {
+                "relative_outside": "outside",
+                "traversal": os.path.join("Incoming", "..", "outside"),
+                "absolute_outside": outside,
+                "junction_component": junction,
+            }
+            for tool_name in (
+                "find_duplicates", "find_large_files", "suggest_deletions"
+            ):
+                for case_name, path in hostile_paths.items():
+                    with self.subTest(tool=tool_name, case=case_name):
+                        agent = self.make_agent(tmp)
+                        spy = Mock(return_value="must not run")
+                        with patch(
+                            "agents.file_agent._legacy_tool_functions",
+                            {tool_name: spy},
+                        ):
+                            result = self.execute_tool(agent, tool_name, {"directory": path})
+                        self.assertIn("Error", result)
+                        self.assertIn("Sandbox violation", result)
+                        spy.assert_not_called()
+
+
+    def test_report_arguments_are_runtime_bounded_before_dispatch(self):
+        cases = (
+            ("find_duplicates", {"directory": "Incoming", "unexpected": True}),
+            ("find_large_files", {"directory": "Incoming", "size_mb": -1}),
+            ("find_large_files", {"directory": "Incoming", "size_mb": 10241}),
+            ("find_large_files", {"directory": "Incoming", "size_mb": float("nan")}),
+            ("find_large_files", {"directory": "Incoming", "size_mb": float("inf")}),
+            ("suggest_deletions", {"directory": "Incoming", "size_mb_threshold": -1}),
+            ("suggest_deletions", {"directory": "Incoming", "size_mb_threshold": 10241}),
+            ("suggest_deletions", {"directory": "Incoming", "age_days_threshold": -1}),
+            ("suggest_deletions", {"directory": "Incoming", "age_days_threshold": 3651}),
+            ("find_duplicates", {"directory": "x" * 1025}),
+        )
+        for tool_name, arguments in cases:
+            with self.subTest(tool=tool_name, arguments=arguments):
+                with tempfile.TemporaryDirectory(prefix="steward_tools1_args_") as tmp:
+                    os.makedirs(os.path.join(tmp, "Incoming"))
+                    agent = self.make_agent(tmp)
+                    spy = Mock(return_value="must not run")
+                    with patch(
+                        "agents.file_agent._legacy_tool_functions",
+                        {tool_name: spy},
+                    ):
+                        result = self.execute_tool(agent, tool_name, arguments)
+                    self.assertIn("Error", result)
+                    spy.assert_not_called()
+
+    def test_file_visit_bound_passes_at_limit_and_refuses_at_limit_plus_one(self):
+        tool_arguments = {
+            "find_duplicates": {},
+            "find_large_files": {"size_mb": 100},
+            "suggest_deletions": {"size_mb_threshold": 100, "age_days_threshold": 30},
+        }
+        for tool_name, extra_arguments in tool_arguments.items():
+            with self.subTest(tool=tool_name):
+                with tempfile.TemporaryDirectory(prefix="steward_tools1_files_") as tmp:
+                    incoming = os.path.join(tmp, "Incoming")
+                    os.makedirs(incoming)
+                    for index in range(2):
+                        with open(os.path.join(incoming, f"file-{index}.txt"), "w", encoding="utf-8") as handle:
+                            handle.write("content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_FILES_VISITED", 2):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertNotIn("maximum files visited", result)
+
+                    with open(os.path.join(incoming, "file-2.txt"), "w", encoding="utf-8") as handle:
+                        handle.write("content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_FILES_VISITED", 2):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertIn("maximum files visited", result)
+
+    def test_directory_depth_bound_passes_at_limit_and_refuses_at_limit_plus_one(self):
+        tool_arguments = {
+            "find_duplicates": {},
+            "find_large_files": {"size_mb": 100},
+            "suggest_deletions": {"size_mb_threshold": 100, "age_days_threshold": 30},
+        }
+        for tool_name, extra_arguments in tool_arguments.items():
+            with self.subTest(tool=tool_name):
+                with tempfile.TemporaryDirectory(prefix="steward_tools1_depth_") as tmp:
+                    incoming = os.path.join(tmp, "Incoming")
+                    level_one = os.path.join(incoming, "level-one")
+                    os.makedirs(level_one)
+                    with open(os.path.join(level_one, "file.txt"), "w", encoding="utf-8") as handle:
+                        handle.write("content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_DIRECTORY_DEPTH", 1):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertNotIn("maximum directory depth", result)
+
+                    level_two = os.path.join(level_one, "level-two")
+                    os.makedirs(level_two)
+                    with open(os.path.join(level_two, "file.txt"), "w", encoding="utf-8") as handle:
+                        handle.write("content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_DIRECTORY_DEPTH", 1):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertIn("maximum directory depth", result)
+
+
+    def test_result_entry_bound_passes_at_limit_and_truncates_at_limit_plus_one(self):
+        tool_arguments = {
+            "find_duplicates": {},
+            "find_large_files": {"size_mb": 0},
+            "suggest_deletions": {"size_mb_threshold": 0, "age_days_threshold": 3650},
+        }
+        for tool_name, extra_arguments in tool_arguments.items():
+            with self.subTest(tool=tool_name):
+                with tempfile.TemporaryDirectory(prefix="steward_tools1_entries_") as tmp:
+                    incoming = os.path.join(tmp, "Incoming")
+                    os.makedirs(incoming)
+                    for index in range(5 if tool_name == "find_duplicates" else 4):
+                        with open(os.path.join(incoming, f"file-{index}.txt"), "w", encoding="utf-8") as handle:
+                            handle.write("same content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_RESULT_ENTRIES", 4):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertNotIn("result entries truncated", result)
+
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_RESULT_ENTRIES", 3):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertIn("result entries truncated", result)
+
+    def test_serialized_output_bound_passes_at_limit_and_truncates_at_limit_plus_one(self):
+        tool_arguments = {
+            "find_duplicates": {},
+            "find_large_files": {"size_mb": 0},
+            "suggest_deletions": {"size_mb_threshold": 0, "age_days_threshold": 3650},
+        }
+        for tool_name, extra_arguments in tool_arguments.items():
+            with self.subTest(tool=tool_name):
+                with tempfile.TemporaryDirectory(prefix="steward_tools1_bytes_") as tmp:
+                    incoming = os.path.join(tmp, "Incoming")
+                    os.makedirs(incoming)
+                    with open(os.path.join(incoming, "file.txt"), "w", encoding="utf-8") as handle:
+                        handle.write("same content")
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_SERIALIZED_BYTES", 65536):
+                        full_result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    exact_limit = len(full_result.encode("utf-8"))
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_SERIALIZED_BYTES", exact_limit):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertEqual(len(result.encode("utf-8")), exact_limit)
+                    self.assertNotIn("serialized output truncated", result)
+
+                    agent = self.make_agent(tmp)
+                    with patch("agent.tools.REPORT_MAX_SERIALIZED_BYTES", exact_limit - 1):
+                        result = self.execute_tool(
+                            agent, tool_name, {"directory": incoming, **extra_arguments}
+                        )
+                    self.assertLessEqual(len(result.encode("utf-8")), exact_limit - 1)
+                    self.assertIn("serialized output truncated", result)
+
+
+    def test_all_three_reports_leave_filesystem_snapshot_unchanged(self):
+        with tempfile.TemporaryDirectory(prefix="steward_tools1_snapshot_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            for name in ("one.txt", "two.txt"):
+                with open(os.path.join(incoming, name), "w", encoding="utf-8") as handle:
+                    handle.write("same content")
+
+            def snapshot():
+                state = {}
+                for current, directories, files in os.walk(tmp):
+                    directories.sort()
+                    files.sort()
+                    for name in directories:
+                        path = os.path.join(current, name)
+                        state[os.path.relpath(path, tmp)] = ("directory",)
+                    for name in files:
+                        path = os.path.join(current, name)
+                        with open(path, "rb") as handle:
+                            digest = hashlib.sha256(handle.read()).hexdigest()
+                        state[os.path.relpath(path, tmp)] = ("file", digest)
+                return state
+
+            before = snapshot()
+            for tool_name, arguments in (
+                ("find_duplicates", {"directory": incoming}),
+                ("find_large_files", {"directory": incoming, "size_mb": 0}),
+                ("suggest_deletions", {
+                    "directory": incoming,
+                    "size_mb_threshold": 0,
+                    "age_days_threshold": 3650,
+                }),
+            ):
+                agent = self.make_agent(tmp)
+                result = self.execute_tool(agent, tool_name, arguments)
+                self.assertNotIn("Error", result)
+                self.assertEqual(snapshot(), before)
+
+    def test_suggestions_are_advisory_and_reach_no_delete_path(self):
+        with tempfile.TemporaryDirectory(prefix="steward_tools1_suggest_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            os.makedirs(incoming)
+            with open(os.path.join(incoming, "candidate.txt"), "w", encoding="utf-8") as handle:
+                handle.write("candidate")
+            agent = self.make_agent(tmp)
+            delete_spy = Mock(return_value="deleted")
+            with patch("agent.tools.delete_file", delete_spy), patch(
+                "agent.tools.os.remove"
+            ) as remove_spy, patch("agent.tools.shutil.rmtree") as rmtree_spy:
+                result = self.execute_tool(agent, "suggest_deletions", {
+                    "directory": incoming,
+                    "size_mb_threshold": 0,
+                    "age_days_threshold": 3650,
+                })
+            self.assertIn("RECOMMENDATIONS ONLY", result)
+            self.assertIn("NOT AN APPROVED PLAN", result)
+            delete_spy.assert_not_called()
+            remove_spy.assert_not_called()
+            rmtree_spy.assert_not_called()
+
+
 class ChatWorkflowTests(unittest.TestCase):
     """Chat input locking, plan capture, and deferred error rendering."""
 

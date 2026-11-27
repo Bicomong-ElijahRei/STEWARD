@@ -8,6 +8,7 @@ Includes full undo/redo support via JSON operation log.
 
 import os
 import re
+import math
 from utils.helpers import (
     FILE_PREVIEW_LIMIT,
     get_app_data_dir,
@@ -53,6 +54,10 @@ from agent.tools import (
     list_directory as _list_directory,
     get_file_info as _get_file_info,
     tool_functions as _legacy_tool_functions,
+    bounded_report_output as _bounded_report_output,
+    REPORT_MAX_DIRECTORY_PATH_LENGTH,
+    REPORT_MAX_SIZE_MB,
+    REPORT_MAX_AGE_DAYS,
 )
 from core.router import APIManager
 
@@ -159,8 +164,81 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             f"Sandbox violation: '{path}' is outside the configured Incoming and Sorted directories."
         )
 
+    @staticmethod
+    def _validate_report_arguments(
+        func_name: str, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate the strict runtime contract for a bounded report."""
+        if not isinstance(args, dict):
+            raise TypeError("Report arguments must be a JSON object.")
+        allowed = {
+            "find_duplicates": {"directory"},
+            "find_large_files": {"directory", "size_mb"},
+            "suggest_deletions": {
+                "directory", "size_mb_threshold", "age_days_threshold"
+            },
+        }
+        if func_name not in allowed:
+            raise ValueError(f"Unapproved report: {func_name}")
+        unexpected = set(args) - allowed[func_name]
+        if unexpected:
+            raise ValueError(
+                f"Unexpected argument(s) for {func_name}: "
+                f"{', '.join(sorted(unexpected))}."
+            )
+        required = allowed[func_name]
+        missing = required - set(args)
+        if missing:
+            raise ValueError(
+                f"Missing required argument(s) for {func_name}: "
+                f"{', '.join(sorted(missing))}."
+            )
+        directory = args.get("directory")
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValueError("Report directory must be a non-empty string.")
+        if len(directory) > REPORT_MAX_DIRECTORY_PATH_LENGTH:
+            raise ValueError(
+                "Report directory exceeds the maximum length of "
+                f"{REPORT_MAX_DIRECTORY_PATH_LENGTH} characters."
+            )
+
+        safe_args = {"directory": directory}
+        if func_name == "find_large_files":
+            size_mb = args.get("size_mb")
+            if (
+                isinstance(size_mb, bool)
+                or not isinstance(size_mb, (int, float))
+                or not math.isfinite(size_mb)
+            ):
+                raise ValueError("size_mb must be a finite number.")
+            if size_mb < 0 or size_mb > REPORT_MAX_SIZE_MB:
+                raise ValueError(
+                    f"size_mb must be between 0 and {REPORT_MAX_SIZE_MB}."
+                )
+            safe_args["size_mb"] = size_mb
+        elif func_name == "suggest_deletions":
+            size_mb = args.get("size_mb_threshold")
+            age_days = args.get("age_days_threshold")
+            if isinstance(size_mb, bool) or not isinstance(size_mb, int):
+                raise ValueError("size_mb_threshold must be an integer.")
+            if isinstance(age_days, bool) or not isinstance(age_days, int):
+                raise ValueError("age_days_threshold must be an integer.")
+            if size_mb < 0 or size_mb > REPORT_MAX_SIZE_MB:
+                raise ValueError(
+                    "size_mb_threshold must be between 0 and "
+                    f"{REPORT_MAX_SIZE_MB}."
+                )
+            if age_days < 0 or age_days > REPORT_MAX_AGE_DAYS:
+                raise ValueError(
+                    "age_days_threshold must be between 0 and "
+                    f"{REPORT_MAX_AGE_DAYS}."
+                )
+            safe_args["size_mb_threshold"] = size_mb
+            safe_args["age_days_threshold"] = age_days
+        return safe_args
+
     def _validate_mutation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate mutation paths and return canonical arguments for execution."""
+        """Validate tool paths and arguments, returning canonical safe arguments."""
         safe_args = copy.deepcopy(args)
         if func_name == "move_file":
             safe_args["source"] = self._sandbox_path(args.get("source"))
@@ -192,12 +270,19 @@ Absolute paths supplied by the user or model never bypass this sandbox.
             safe_args["directory"] = self._sandbox_path(args.get("directory"))
         elif func_name == "get_file_info":
             safe_args["file_path"] = self._sandbox_path(args.get("file_path"))
-        elif func_name == "find_duplicates":
-            safe_args["directory"] = self._sandbox_path(args.get("directory"))
-        elif func_name == "find_large_files":
-            safe_args["directory"] = self._sandbox_path(args.get("directory"))
-        elif func_name == "suggest_deletions":
-            safe_args["directory"] = self._sandbox_path(args.get("directory"))
+        elif func_name in ("find_duplicates", "find_large_files", "suggest_deletions"):
+            if not isinstance(args, dict):
+                raise TypeError("Report arguments must be a JSON object.")
+            # Resolve the path before checking non-path arguments so a hostile
+            # path is always refused as a sandbox violation, never dispatched.
+            try:
+                canonical_directory = self._sandbox_path(args.get("directory"))
+            except (OSError, TypeError, ValueError) as exc:
+                raise type(exc)(f"{func_name}: {exc}") from exc
+            canonical_args = copy.deepcopy(args)
+            canonical_args["directory"] = canonical_directory
+            safe_args = self._validate_report_arguments(func_name, canonical_args)
+            safe_args["directory"] = canonical_directory
         return safe_args
 
     def _migrate_legacy_operation_log(self) -> bool:
@@ -981,6 +1066,86 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_duplicates",
+                    "description": (
+                        "Read-only bounded report of duplicate files in a sandbox directory"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Directory within Incoming or Sorted",
+                            },
+                        },
+                        "required": ["directory"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_large_files",
+                    "description": (
+                        "Read-only bounded report of files above a size threshold"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Directory within Incoming or Sorted",
+                            },
+                            "size_mb": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": REPORT_MAX_SIZE_MB,
+                            },
+                        },
+                        "required": ["directory", "size_mb"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "suggest_deletions",
+                    "description": (
+                        "Read-only advisory recommendations; never deletes or approves a plan"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "directory": {
+                                "type": "string",
+                                "maxLength": REPORT_MAX_DIRECTORY_PATH_LENGTH,
+                                "description": "Directory within Incoming or Sorted",
+                            },
+                            "size_mb_threshold": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": REPORT_MAX_SIZE_MB,
+                            },
+                            "age_days_threshold": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": REPORT_MAX_AGE_DAYS,
+                            },
+                        },
+                        "required": [
+                            "directory", "size_mb_threshold", "age_days_threshold"
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         ]
 
     def run(
@@ -1265,8 +1430,8 @@ Absolute paths supplied by the user or model never bypass this sandbox.
     ) -> List[str]:
         if not dry_run:
             # Declared schema (from _get_tool_definitions) is the approved dispatch set.
-            # Undeclared tools (cleanup_temp_files, batch_move, find_duplicates,
-            # cleanup_empty_folders, find_large_files, suggest_deletions) are rejected.
+            # Undeclared tools (cleanup_temp_files, cleanup_empty_folders,
+            # batch_move, ...) are rejected.
             approved = {t["function"]["name"] for t in self._get_tool_definitions()}
             # Reject the whole plan before the first mutation if any path is unsafe
             # or any tool is not in the declared schema.
@@ -1371,7 +1536,16 @@ Absolute paths supplied by the user or model never bypass this sandbox.
         results = self._execute_tool_plan(
             copy.deepcopy(plan), dry_run=False, confirm_callback=None
         )
-        return "\n".join(results)
+        output = "\n".join(results)
+        report_tools = {
+            "find_duplicates", "find_large_files", "suggest_deletions"
+        }
+        if any(
+            call.get("function", {}).get("name") in report_tools
+            for call in plan
+        ):
+            output = _bounded_report_output(output)
+        return output
 
     def discard_pending_plan(self) -> None:
         """Invalidate a preview and any in-flight older preview publication."""

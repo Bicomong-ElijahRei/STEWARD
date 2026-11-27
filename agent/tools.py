@@ -3,6 +3,7 @@ import shutil
 import send2trash
 import hashlib
 import glob
+import time
 import uuid
 import PyPDF2
 from datetime import datetime
@@ -292,52 +293,143 @@ def get_file_info(file_path):
         return f"Error: {e}"
 
 # ----- Phase 4 heavy tools (with progress callback & safe file access) -----
+REPORT_MAX_FILES_VISITED = 1000
+REPORT_MAX_DIRECTORY_DEPTH = 8
+REPORT_MAX_RESULT_ENTRIES = 50
+REPORT_MAX_SERIALIZED_BYTES = 32768
+REPORT_MAX_DIRECTORY_PATH_LENGTH = 1024
+REPORT_MAX_SIZE_MB = 10240
+REPORT_MAX_AGE_DAYS = 3650
+
+
+def _is_link_or_junction(path):
+    """Recognize symbolic links and Windows junctions without a new dependency."""
+    is_junction = getattr(os.path, "isjunction", None)
+    return os.path.islink(path) or (is_junction is not None and is_junction(path))
+
+
+def _collect_report_files(directory, progress_callback=None):
+    """Return a deterministic, bounded inventory of regular files below a root."""
+    canonical_root = os.path.realpath(os.path.abspath(directory))
+    files = []
+    for root, directories, filenames in os.walk(
+        canonical_root, topdown=True, followlinks=False
+    ):
+        directories.sort()
+        filenames.sort()
+        relative = os.path.relpath(root, canonical_root)
+        depth = 0 if relative == "." else len(relative.split(os.sep))
+        if depth == REPORT_MAX_DIRECTORY_DEPTH and directories:
+            return [], (
+                "Error: Report traversal bound exceeded: maximum directory depth is "
+                f"{REPORT_MAX_DIRECTORY_DEPTH}."
+            )
+
+        safe_directories = []
+        for name in directories:
+            path = os.path.join(root, name)
+            if _is_link_or_junction(path):
+                continue
+            resolved = os.path.realpath(os.path.abspath(path))
+            try:
+                inside = os.path.commonpath((resolved, canonical_root)) == canonical_root
+            except ValueError:
+                inside = False
+            if inside:
+                safe_directories.append(name)
+        directories[:] = safe_directories
+
+        for name in filenames:
+            path = os.path.join(root, name)
+            if _is_link_or_junction(path):
+                continue
+            resolved = os.path.realpath(os.path.abspath(path))
+            try:
+                inside = os.path.commonpath((resolved, canonical_root)) == canonical_root
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(resolved):
+                continue
+            if len(files) >= REPORT_MAX_FILES_VISITED:
+                return [], (
+                    "Error: Report traversal bound exceeded: maximum files visited is "
+                    f"{REPORT_MAX_FILES_VISITED}."
+                )
+            files.append(resolved)
+            if progress_callback:
+                progress_callback(len(files), REPORT_MAX_FILES_VISITED, resolved)
+    return files, None
+
+
+def bounded_report_output(text, max_bytes=None):
+    """Bound a report's serialized bytes while retaining a truncation marker."""
+    if max_bytes is None:
+        max_bytes = REPORT_MAX_SERIALIZED_BYTES
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    marker = "\n[serialized output truncated]"
+    marker_bytes = marker.encode("utf-8")
+    if max_bytes <= len(marker_bytes):
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
+    prefix = encoded[:max_bytes - len(marker_bytes)].decode("utf-8", errors="ignore")
+    return prefix + marker
+
+
+def _limit_result_lines(lines):
+    """Apply the result-entry bound and report deterministic omissions."""
+    if len(lines) <= REPORT_MAX_RESULT_ENTRIES:
+        return lines, 0
+    omitted = len(lines) - REPORT_MAX_RESULT_ENTRIES
+    return lines[:REPORT_MAX_RESULT_ENTRIES], omitted
+
+
 def find_duplicates(directory, progress_callback=None):
-    directory = os.path.normpath(directory)
+    """Return a deterministic, bounded report of duplicate files."""
     try:
-        all_files = []
-        for root, dirs, files in os.walk(directory):
-            for file in files:
-                filepath = os.path.join(root, file)
-                if os.path.isfile(filepath):
-                    all_files.append(filepath)
-        total = len(all_files)
-        if total == 0:
-            return "No files found."
+        all_files, traversal_error = _collect_report_files(
+            directory, progress_callback
+        )
+        if traversal_error:
+            return traversal_error
+        if not all_files:
+            return bounded_report_output("No files found.")
 
         hash_map = {}
-        duplicates = []
+        duplicate_pairs = []
         skipped = 0
-        for i, filepath in enumerate(all_files):
-            if progress_callback:
-                progress_callback(i + 1, total, filepath)
+        for filepath in all_files:
             try:
-                with open(filepath, 'rb') as f:
-                    file_hash = hashlib.sha256()
-                    for chunk in iter(lambda: f.read(8192), b''):
+                file_hash = hashlib.sha256()
+                with open(filepath, "rb") as handle:
+                    for chunk in iter(lambda: handle.read(8192), b""):
                         file_hash.update(chunk)
-                    file_hash = file_hash.hexdigest()
-            except (OSError, PermissionError, IOError) as e:
-                print(f"[WARN] Skipping {filepath}: {e}")
+                digest = file_hash.hexdigest()
+            except (OSError, PermissionError, IOError):
                 skipped += 1
                 continue
-            if file_hash in hash_map:
-                duplicates.append((filepath, hash_map[file_hash]))
+            if digest in hash_map:
+                duplicate_pairs.append((filepath, hash_map[digest]))
             else:
-                hash_map[file_hash] = filepath
+                hash_map[digest] = filepath
 
-        if skipped > 0:
-            print(f"[INFO] Skipped {skipped} inaccessible file(s).")
+        if not duplicate_pairs:
+            message = "No duplicate files found."
+            if skipped:
+                message += f" Skipped {skipped} inaccessible file(s)."
+            return bounded_report_output(message)
 
-        if duplicates:
-            result = "Duplicate pairs:\n"
-            for dup, orig in duplicates:
-                result += f"  {dup}  (duplicate of {orig})\n"
-            return result
-        else:
-            return "No duplicate files found."
-    except Exception as e:
-        return f"Error: {e}"
+        lines = [f"  {duplicate}  (duplicate of {original})"
+                 for duplicate, original in duplicate_pairs]
+        lines, omitted = _limit_result_lines(lines)
+        report = "Duplicate pairs:\n" + "\n".join(lines)
+        if omitted:
+            report += f"\n  [result entries truncated: {omitted} omitted]"
+        if skipped:
+            report += f"\nSkipped {skipped} inaccessible file(s)."
+        return bounded_report_output(report)
+    except Exception as exc:
+        return bounded_report_output(f"Error: {exc}")
 
 def cleanup_empty_folders(directory, progress_callback=None):
     directory = os.path.normpath(directory)
@@ -385,35 +477,41 @@ def cleanup_temp_files(directory, progress_callback=None):
     return result
 
 def find_large_files(directory, size_mb, progress_callback=None):
-    directory = os.path.normpath(directory)
-    size_bytes = size_mb * 1024 * 1024
-    all_files = []
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            all_files.append(os.path.join(root, file))
-    total = len(all_files)
-    large_files = []
-    skipped = 0
-    for i, filepath in enumerate(all_files):
-        if progress_callback:
-            progress_callback(i + 1, total, filepath)
-        try:
-            if os.path.getsize(filepath) > size_bytes:
-                large_files.append((filepath, os.path.getsize(filepath)))
-        except (OSError, PermissionError):
-            skipped += 1
-            continue
-    if skipped > 0:
-        print(f"[INFO] Skipped {skipped} inaccessible file(s) in find_large_files")
-    large_files.sort(key=lambda x: x[1], reverse=True)
-    if not large_files:
-        return f"No files larger than {size_mb} MB found."
-    result = f"Files larger than {size_mb} MB:\n"
-    for path, size in large_files[:50]:
-        result += f"  {path} ({size//(1024*1024)} MB)\n"
-    if len(large_files) > 50:
-        result += f"  ... and {len(large_files)-50} more\n"
-    return result
+    """Return a deterministic, bounded report of files above a size threshold."""
+    try:
+        all_files, traversal_error = _collect_report_files(
+            directory, progress_callback
+        )
+        if traversal_error:
+            return traversal_error
+        size_bytes = size_mb * 1024 * 1024
+        large_files = []
+        skipped = 0
+        for filepath in all_files:
+            try:
+                size = os.path.getsize(filepath)
+                if size > size_bytes:
+                    large_files.append((filepath, size))
+            except (OSError, PermissionError):
+                skipped += 1
+        large_files.sort(key=lambda item: (-item[1], item[0]))
+        if not large_files:
+            message = f"No files larger than {size_mb} MB found."
+            if skipped:
+                message += f" Skipped {skipped} inaccessible file(s)."
+            return bounded_report_output(message)
+
+        lines = [f"  {path} ({size // (1024 * 1024)} MB)"
+                 for path, size in large_files]
+        lines, omitted = _limit_result_lines(lines)
+        report = f"Files larger than {size_mb} MB:\n" + "\n".join(lines)
+        if omitted:
+            report += f"\n  [result entries truncated: {omitted} omitted]"
+        if skipped:
+            report += f"\nSkipped {skipped} inaccessible file(s)."
+        return bounded_report_output(report)
+    except Exception as exc:
+        return bounded_report_output(f"Error: {exc}")
 
 def batch_move(source_pattern, destination_folder, progress_callback=None):
     try:
@@ -438,70 +536,51 @@ def batch_move(source_pattern, destination_folder, progress_callback=None):
     except Exception as e:
         return f"Error: {e}"
 
-def suggest_deletions(directory, size_mb_threshold=100, age_days_threshold=30, use_ai=True):
+def suggest_deletions(directory, size_mb_threshold=100, age_days_threshold=30, use_ai=False):
+    """Return bounded, advisory-only deletion recommendations.
+
+    The report never deletes files and is not an approved execution plan. The
+    ``use_ai`` compatibility argument is intentionally ignored: exposing an
+    unbounded external model response would violate the report's size budget.
     """
-    Suggest files for deletion based on size, age, duplicates (heuristics) and optionally AI.
-    Returns a report with recommendations.
-    """
-    import time
-    from datetime import datetime, timedelta
-    directory = os.path.normpath(directory)
-    now = time.time()
-    age_cutoff = now - (age_days_threshold * 86400)
-    size_bytes = size_mb_threshold * 1024 * 1024
-    candidates = []
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            filepath = os.path.join(root, file)
+    try:
+        all_files, traversal_error = _collect_report_files(directory)
+        if traversal_error:
+            return traversal_error
+        age_cutoff = time.time() - (age_days_threshold * 86400)
+        size_bytes = size_mb_threshold * 1024 * 1024
+        candidates = []
+        for filepath in all_files:
             try:
                 stat = os.stat(filepath)
-                size = stat.st_size
-                mtime = stat.st_mtime
-                if size > size_bytes or mtime < age_cutoff:
-                    candidates.append((filepath, size, mtime))
+                if stat.st_size > size_bytes or stat.st_mtime < age_cutoff:
+                    candidates.append((filepath, stat.st_size, stat.st_mtime))
             except (OSError, PermissionError):
                 continue
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    candidates = candidates[:50]  # limit to avoid overwhelming
-    if not candidates:
-        return "No files found for deletion suggestions."
+        candidates.sort(key=lambda item: (-item[1], item[0]))
+        report = (
+            "RECOMMENDATIONS ONLY - NOT AN APPROVED PLAN\n"
+            f"Deletion suggestions for '{directory}':\n"
+            f"Heuristics: files >{size_mb_threshold} MB or older than "
+            f"{age_days_threshold} days.\n"
+            "No files will be deleted or scheduled by this report.\n"
+        )
+        if not candidates:
+            report += "No files found for deletion suggestions."
+            return bounded_report_output(report)
 
-    # Build report with heuristics
-    from datetime import datetime
-    report = f"Deletion suggestions for '{directory}':\nHeuristics: files >{size_mb_threshold} MB or older than {age_days_threshold} days.\n"
-    report += "Top candidates (by size):\n"
-    for path, size, mtime in candidates[:20]:
-        size_mb = size // (1024*1024)
-        mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-        report += f"  {path} ({size_mb} MB, modified {mtime_str})\n"
-
-    if use_ai:
-        # Use AI to recommend deletions via APIManager
-        try:
-            from core.database import init_db
-            from core.router import APIManager
-            init_db()
-            api_manager = APIManager()
-            prompt = "Here are files with large size or old age. Suggest which ones to delete, with reasons. List files by full path.\n\n"
-            for path, size, mtime in candidates:
-                size_mb = size // (1024*1024)
-                mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-                prompt += f"- {path} (Size: {size_mb} MB, Modified: {mtime_str})\n"
-            prompt += "\nReply with a bullet list of files to delete and a short reason for each. Only recommend deletion if it's safe (e.g., duplicates, old large files, temporary files)."
-            response = api_manager.route_request(
-                messages=[{"role": "user", "content": prompt}],
-                agent_name="Foldy",
-            )
-            ai_suggestions = response["choices"][0]["message"].get("content", "").strip()
-            if ai_suggestions:
-                report += f"\n--- AI Recommendations ---\n{ai_suggestions}\n"
-            else:
-                report += "\nNo AI recommendations returned. Consider manual review.\n"
-        except Exception as e:
-            report += f"\n--- AI Unavailable (Fallback) ---\nCould not get AI recommendations: {e}\nConsider manual deletion of large/old files.\n"
-    else:
-        report += "\nNo AI used. Consider manual deletion of large/old files."
-    return report
+        lines = []
+        for path, size, mtime in candidates:
+            modified = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            lines.append(f"  {path} ({size // (1024 * 1024)} MB, modified {modified})")
+        lines, omitted = _limit_result_lines(lines)
+        report += "Top candidates (by size):\n" + "\n".join(lines)
+        if omitted:
+            report += f"\n  [result entries truncated: {omitted} omitted]"
+        report += "\nReview manually before any separately approved deletion."
+        return bounded_report_output(report)
+    except Exception as exc:
+        return bounded_report_output(f"Error: {exc}")
 
 # Dictionary of all tool functions
 tool_functions = {
