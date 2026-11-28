@@ -135,7 +135,9 @@ preview, explicit approval, and undo/redo.
   selected root, and bounds traversal to 2,000 files and 256 KiB per file. The local index
   stores plaintext chunks; retrieved snippets are sent to the configured Syntax provider
   (cloud-first unless explicitly configured otherwise).
-- Undo/redo only records verified success and refuses to overwrite existing files.
+- Undo targets only the most recent successful operation. If that operation is not reversible,
+  including a successful delete or bulk cleanup, undo refuses immediately and leaves earlier
+  operations untouched. Redo only records verified success and refuses to overwrite existing files.
 
 ## Install
 ```
@@ -153,7 +155,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-612 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+614 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
 HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
 concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
 Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
