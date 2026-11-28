@@ -442,6 +442,38 @@ class RecursiveDaemonBehaviorTests(unittest.TestCase):
             finally:
                 handler.stop()
 
+    def test_dynamic_extension_refuses_stop_during_multi_root_schedule(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_mid_stop_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            created = os.path.join(incoming, "created")
+            descendant = os.path.join(created, "child")
+            os.makedirs(descendant)
+            try:
+                def stop_after_first_schedule(*args, **kwargs):
+                    handler._stopped.set()
+
+                observer.schedule.side_effect = stop_after_first_schedule
+                result = extender.extend(created)
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["code"], "daemon_stopped")
+                self.assertEqual(observer.schedule.call_count, 1)
+                self.assertEqual(
+                    scope["watched_roots"], (os.path.realpath(incoming),)
+                )
+            finally:
+                handler.stop()
+
     def test_nested_file_destination_is_flattened_into_existing_category(self):
         from agents.file_agent import FileAgent
 
