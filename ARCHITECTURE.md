@@ -11,8 +11,8 @@ executes sandboxed file operations with undo/redo, a text-only CodingAgent
 (`agents/plan_agent.py`) for approval-gated, text-only meta-prompting. Code context is
 provided by a bounded read-only CodeIndexAgent (`agents/code_index_agent.py`). SQLite + Fernet
 (`core/database.py`) stores providers/usage/traces in `%APPDATA%\STEWARD`. A watchdog daemon
-(`agent/daemon.py`) watches a folder, and a restart-safe scheduled scanner handles recurring
-file categorization.
+(`agent/daemon.py`) watches a folder with an opt-in bounded recursive scope, and a restart-safe
+scheduled scanner handles recurring file categorization with the same scope contract.
 
 ## Module roles
 - `core/router.py`      APIManager: provider selection, cooldown, 429/401/5xx handling, `_steward` metadata
@@ -39,7 +39,7 @@ file categorization.
 - `agent/tools.py`       filesystem helper implementations; `tool_functions` includes legacy mutation helpers, while the active FileAgent dispatch allowlist is derived from its own schema; duplicate hashing has per-file and cumulative read budgets
 - `agent/bulk_deletion_core.py` BULK-1 read-only bulk-cleanup preparation: canonical sandboxed enumeration, link exclusion, traversal bounds, deterministic temporary-file/empty-directory sets, immutable exact-set binding, and typed whole-set re-verification
 - `agent/bulk_cleanup_execution.py` BULK-2 recycle-bin-only execution boundary: its sole removal primitive is `send2trash.send2trash`; it contains no permanent-removal primitive
-- `agent/daemon.py`      watchdog handler and ScheduledScanner; identity-aware dedup, bounded workers, generation-safe cancellation
+- `agent/daemon.py`      watchdog handler and ScheduledScanner; shared bounded recursive scope, identity-aware dedup, bounded workers, generation-safe cancellation
 - `gui/main_window.py`   StewardGUI: builds ONE shared APIManager/Supervisor/FileAgent/CodingAgent/PlanAgent/PatchReviewManager; passes FileAgent to BOTH Chat and Organizer
 - `gui/chat_tab.py`      chat + approval flow + Live Feed wiring + bounded Cortex conversation + epoch-guarded UI
 - `gui/organizer_tab.py` preview table, execute, undo slider, daemon start/stop, scheduled-scan controls
@@ -362,8 +362,19 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   or native-tool context merely by being passed to a caller.
 
 ## Daemon lifecycle
+- Recursive monitoring is opt-in and persists with the Organizer schedule preference. The daemon
+  and scheduled scanner share `build_monitor_scope()`: recursive coverage is deterministically
+  enumerated into ordinary directories before observer start, then every root is observed with
+  `recursive=False`. The default remains the single watched root.
+- The recursive scope refuses start before observation when depth exceeds 8 or the enumerated
+  directory count exceeds 256. It excludes the Sorted root, every configured destination root,
+  and the code-index denied directory names, and it never follows symlinks or Windows junctions.
+  Daemon start returns and logs the actual watched-root set and applied bounds.
+- Recursive files retain the existing category structure by flattening their basename into the
+  selected category destination; recursive observation does not create source-derived folder trees.
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
-  a deleted/recreated path is eligible for processing again.
+  a deleted/recreated path is eligible for processing again. FIFO eviction is bounded and never
+  evicts an in-flight path.
 - Four daemon worker threads consume a bounded queue; at most 32 files are outstanding
   (queued or active). Queue admission uses timed, stop-responsive backpressure.
 - `stop()` prevents new work, discards queued files, and joins workers briefly. Workers are
@@ -372,6 +383,8 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   is checked between file operations; a timed-out stop returns `False`. Restarting creates a new
   isolated generation even if an old worker is still unwinding; the scan mutex prevents
   overlapping scan bodies, and the old generation cannot commit shared state or notifications.
+  Changing the recursive option while scheduling is enabled restarts the scanner with the new
+  scope and persists the preference; generation ownership remains unchanged.
 
 ## Historical issue ledger (all entries below closed)
 Batch 2A: H5 router skips a candidate + double-hits the promoted one (total failure possible
@@ -437,7 +450,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
 - test_hashing_read_budget.py — BULK-1 duplicate-hashing per-file/cumulative budgets, inaccessible files, growth races, and stat-to-open replacement races
 - test_bulk_deletion_core.py — BULK-1 canonical sandbox, link exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, exact-set binding, typed refusals, non-mutation, and ten-tool dispatch regressions
-- Total discovery count is 573 (one expected Windows symlink-privilege skip)
+- test_daemon_recursive.py — DAEMON-1 recursive scope, exclusions, bounds, parity, flattening, preference, dedup, and stop-latency regressions
+- Total discovery count is 604 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)

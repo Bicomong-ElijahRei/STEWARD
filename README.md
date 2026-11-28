@@ -57,9 +57,12 @@ preview, explicit approval, and undo/redo.
   refused; each moved file remains individually undoable.
 - Organizer: per-file preview table with checkboxes, execute, undo/redo timeline, and
   restart-persistent scheduled scans with cooperative cancellation.
-- Watchdog daemon: watches Incoming/, categorizes new files, moves them into Sorted/.
-  Deduplication is filesystem-identity-aware, concurrency is capped at 4 workers and 32
-  outstanding files, and stopping the daemon cancels queued work without holding process exit.
+- Watchdog daemon: watches Incoming/, categorizes new files, and moves them into Sorted/.
+  An optional bounded recursive mode observes nested ordinary directories with the same scope
+  used by scheduled scans; it excludes Sorted/destination roots, denied directories,
+  symlinks, and Windows junctions. Deduplication is filesystem-identity-aware, concurrency is
+  capped at 4 workers and 32 outstanding files, and stopping the daemon cancels queued work
+  without holding process exit.
 - API Hub: add/verify/discover providers, bind them to agent roles, enable/disable, and
   rotate one explicitly selected shared credential by ID with endpoint/link validation. The
   non-streaming health check reports total completed-request elapsed time, not time to first
@@ -149,7 +152,7 @@ first startup. Back up the AppData database/key pair; they are not recoverable f
 python -m unittest discover -v
 python test_validator.py
 ```
-589 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
+604 unit tests covering sandbox enforcement, plan approval, router failover (including persistent
 HTTP 404 accounting), undo/redo, credential rotation/recovery, migration safety, daemon
 concurrency, generation-safe scheduled scans, bounded Cortex memory, provider-backed text-only
 Syntax, document RAG, bounded read-only code indexing/retrieval and static dependency-graph
