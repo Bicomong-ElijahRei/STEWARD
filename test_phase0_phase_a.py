@@ -1797,22 +1797,47 @@ class Batch2BTests(unittest.TestCase):
         agent.OPERATION_LOG_PATH = log_path
         return agent
 
-    def test_delete_entry_skipped_and_never_marked_undone(self):
+    def test_delete_entry_refuses_immediately_and_never_marks_earlier_move_undone(self):
         with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
             incoming = os.path.join(tmp, "Incoming"); os.makedirs(incoming)
             sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(sorted_dir)
             src = os.path.join(incoming, "a.txt")
+            dst = os.path.join(sorted_dir, "a.txt")
             with open(src, "w", encoding="utf-8") as fh: fh.write("x")
             agent = self.make_agent(tmp)
-            agent.move_file(src, os.path.join(sorted_dir, "a.txt"))
-            agent._operation_log.append({
-                "id": "d", "timestamp": "d", "operation": "delete",
-                "source": src, "destination": None, "result": "",
-                "success": True, "undone": False})
+            agent.move_file(src, dst)
+            delete_entry = agent._begin_mutation(
+                "delete", os.path.join(incoming, "deleted.txt")
+            )
+            agent._complete_mutation(delete_entry, "Deleted deleted.txt")
             result = agent.undo_last()
-            self.assertIn("Undid move", result)
+            self.assertIn("Cannot undo delete", result)
+            self.assertNotIn("Undid move", result)
             self.assertFalse(agent._operation_log[-1]["undone"])
-            self.assertTrue(agent._operation_log[0]["undone"])
+            self.assertFalse(agent._operation_log[0]["undone"])
+            self.assertTrue(os.path.isfile(dst))
+            self.assertFalse(os.path.exists(src))
+
+    def test_move_then_delete_then_undo_leaves_earlier_move_untouched(self):
+        with tempfile.TemporaryDirectory(prefix="steward_2b_delete_boundary_") as tmp:
+            incoming = os.path.join(tmp, "Incoming"); os.makedirs(incoming)
+            sorted_dir = os.path.join(tmp, "Sorted"); os.makedirs(sorted_dir)
+            src = os.path.join(incoming, "moved.txt")
+            dst = os.path.join(sorted_dir, "moved.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            agent = self.make_agent(tmp)
+            self.assertTrue(agent.move_file(src, dst).startswith("Moved"))
+            delete_entry = agent._begin_mutation(
+                "delete", os.path.join(incoming, "deleted.txt")
+            )
+            agent._complete_mutation(delete_entry, "Deleted deleted.txt")
+            result = agent.undo_last()
+            self.assertIn("Cannot undo delete", result)
+            self.assertNotIn("Undid move", result)
+            self.assertTrue(os.path.isfile(dst))
+            self.assertFalse(os.path.exists(src))
+            self.assertFalse(agent._operation_log[0]["undone"])
 
     def test_delete_only_log_reports_limitation(self):
         with tempfile.TemporaryDirectory(prefix="steward_2b_") as tmp:
