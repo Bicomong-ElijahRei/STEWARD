@@ -370,6 +370,10 @@ D1-I1 pure MCP resource admission (not user-integrated): explicit server identit
   directory count exceeds 256. It excludes the Sorted root, every configured destination root,
   and the code-index denied directory names, and it never follows symlinks or Windows junctions.
   Daemon start returns and logs the actual watched-root set and applied bounds.
+- In recursive mode, a directory created after startup extends observation to that directory and
+  its eligible descendants under the same global depth, total-directory-count, Sorted/destination,
+  denied-name, and symlink/junction-refusal rules. A bound overflow or other refusal leaves the
+  existing watches intact and does not partially admit the extension.
 - Recursive files retain the existing category structure by flattening their basename into the
   selected category destination; recursive observation does not create source-derived folder trees.
 - `last_processed` keeps path keys for inspection compatibility but stores filesystem identity;
@@ -450,8 +454,8 @@ Batch 3: M2 daemon never moves (dry_run), M3 shared dry_run flag, M7 whole-file 
 - test_mcp_resource_core.py — D1-I1 pure admission regressions: HTTPS/IDNA/IPv6/origin pinning, private-host refusal, tools refusal, allowlisting/duplicates, fingerprint re-verification, bounds/redaction/truncation, transport normalization, revocation/readmission, result immutability/isolation, and no-I/O/dynamic-code purity
 - test_hashing_read_budget.py — BULK-1 duplicate-hashing per-file/cumulative budgets, inaccessible files, growth races, and stat-to-open replacement races
 - test_bulk_deletion_core.py — BULK-1 canonical sandbox, link exclusion, traversal/file/candidate/depth/path bounds, deterministic ordering, immutable records, exact-set binding, typed refusals, non-mutation, and ten-tool dispatch regressions
-- test_daemon_recursive.py — DAEMON-1 recursive scope, exclusions, bounds, parity, flattening, preference, dedup, and stop-latency regressions
-- Total discovery count is 604 (one expected Windows symlink-privilege skip)
+- test_daemon_recursive.py — DAEMON-1 recursive scope, exclusions, bounds, parity, flattening, preference, dedup, and stop-latency regressions plus DAEMON-F1 dynamic scope-extension regressions
+- Total discovery count is 612 (one expected Windows symlink-privilege skip)
 - Security tests MUST enter via execute_pending_plan() with a hostile plan, not convenience methods
 - Proof standard: RED -> fix -> GREEN. Safety items also get mutation proof
   (patch the guard out, show RED, restore, show GREEN)
