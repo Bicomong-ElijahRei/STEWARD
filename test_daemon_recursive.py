@@ -186,6 +186,262 @@ class RecursiveDaemonBehaviorTests(unittest.TestCase):
             finally:
                 handler.stop()
 
+    def test_directory_created_after_start_extends_scope_and_processes_file(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_scope_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            agent = Mock()
+            handler = FileCreationHandler(agent, sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            handler.directory_callback = extender.extend
+            try:
+                created = os.path.join(incoming, "created")
+                os.makedirs(created)
+                result = handler.on_created(SimpleNamespace(
+                    is_directory=True,
+                    src_path=created,
+                ))
+                self.assertTrue(result)
+                observer.schedule.assert_called_once()
+                self.assertEqual(
+                    observer.schedule.call_args.args[1],
+                    os.path.realpath(created),
+                )
+                source = os.path.join(created, "new.txt")
+                with open(source, "w", encoding="utf-8") as handle:
+                    handle.write("new")
+                self.assertTrue(handler.on_created(SimpleNamespace(
+                    is_directory=False,
+                    src_path=source,
+                )))
+                handler._queue.join()
+                agent.categorise_file.assert_called_once()
+            finally:
+                handler.stop()
+
+    def test_dynamic_extension_refuses_at_limits_without_disturbing_watches(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_limits_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(
+                incoming, [sorted_dir], recursive=True,
+                max_depth=1, max_directory_count=2,
+            )
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler,
+                max_depth=1, max_directory_count=2,
+            )
+            handler.directory_callback = extender.extend
+            try:
+                at_limit = os.path.join(incoming, "at_limit")
+                os.makedirs(at_limit)
+                self.assertTrue(extender.extend(at_limit))
+                self.assertEqual(observer.schedule.call_count, 1)
+                self.assertEqual(len(scope["watched_roots"]), 2)
+
+                over_depth = os.path.join(at_limit, "too_deep")
+                os.makedirs(over_depth)
+                result = extender.extend(over_depth)
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["code"], "depth_limit_exceeded")
+                self.assertEqual(observer.schedule.call_count, 1)
+                self.assertEqual(len(scope["watched_roots"]), 2)
+
+                counted = os.path.join(incoming, "over_count")
+                os.makedirs(counted)
+                result = extender.extend(counted)
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["code"], "directory_limit_exceeded")
+                self.assertEqual(observer.schedule.call_count, 1)
+                self.assertEqual(len(scope["watched_roots"]), 2)
+            finally:
+                handler.stop()
+
+    def test_dynamic_extension_excludes_sorted_destination_and_denied_names(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_exclude_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            destination = os.path.join(incoming, "Destination")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(
+                incoming, [sorted_dir, destination], recursive=True
+            )
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir, destination], observer, handler
+            )
+            try:
+                for name in ("Sorted", "Destination", "node_modules"):
+                    path = os.path.join(incoming, name)
+                    os.makedirs(path)
+                    result = extender.extend(path)
+                    self.assertFalse(result["accepted"])
+                    self.assertEqual(result["code"], "directory_excluded")
+                observer.schedule.assert_not_called()
+                self.assertEqual(scope["watched_roots"], (os.path.realpath(incoming),))
+            finally:
+                handler.stop()
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction proof requires Windows")
+    def test_real_windows_junction_created_after_start_is_not_watched(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_junction_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            outside = os.path.join(tmp, "Outside")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            os.makedirs(outside)
+            junction = os.path.join(incoming, "linked")
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", junction, outside],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            try:
+                extension = extender.extend(junction)
+                self.assertFalse(extension["accepted"])
+                self.assertEqual(extension["code"], "directory_link_refused")
+                observer.schedule.assert_not_called()
+                self.assertEqual(scope["watched_roots"], (os.path.realpath(incoming),))
+            finally:
+                handler.stop()
+
+    def test_dynamic_extension_does_not_duplicate_watch(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_dedup_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            try:
+                created = os.path.join(incoming, "created")
+                os.makedirs(created)
+                self.assertTrue(extender.extend(created))
+                duplicate = extender.extend(created)
+                self.assertFalse(duplicate["accepted"])
+                self.assertEqual(duplicate["code"], "already_watched")
+                observer.schedule.assert_called_once()
+            finally:
+                handler.stop()
+
+    def test_recursive_off_ignores_directory_events(self):
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_off_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=False)
+            agent = Mock()
+            handler = FileCreationHandler(agent, sorted_dir, tmp, scope=scope)
+            handler.directory_callback = Mock()
+            try:
+                created = os.path.join(incoming, "created")
+                os.makedirs(created)
+                self.assertFalse(handler.on_created(SimpleNamespace(
+                    is_directory=True,
+                    src_path=created,
+                )))
+                handler.directory_callback.assert_not_called()
+                agent.categorise_file.assert_not_called()
+            finally:
+                handler.stop()
+
+    def test_dynamic_extension_includes_eligible_descendants(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_descendants_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            try:
+                created = os.path.join(incoming, "created")
+                descendant = os.path.join(created, "child")
+                os.makedirs(descendant)
+                result = extender.extend(created)
+                self.assertTrue(result["accepted"])
+                self.assertEqual(
+                    set(result["roots"]),
+                    {
+                        os.path.realpath(created),
+                        os.path.realpath(descendant),
+                    },
+                )
+                self.assertEqual(observer.schedule.call_count, 2)
+                self.assertIn(
+                    os.path.realpath(descendant),
+                    scope["watched_roots"],
+                )
+            finally:
+                handler.stop()
+
+    def test_dynamic_extension_refuses_after_stop(self):
+        from agent.daemon import DynamicScopeExtender
+
+        with tempfile.TemporaryDirectory(prefix="steward_dynamic_stop_") as tmp:
+            incoming = os.path.join(tmp, "Incoming")
+            sorted_dir = os.path.join(tmp, "Sorted")
+            os.makedirs(incoming)
+            os.makedirs(sorted_dir)
+            scope = build_monitor_scope(incoming, [sorted_dir], recursive=True)
+            handler = FileCreationHandler(Mock(), sorted_dir, tmp, scope=scope)
+            observer = Mock()
+            extender = DynamicScopeExtender(
+                scope, incoming, [sorted_dir], observer, handler
+            )
+            try:
+                handler.stop()
+                created = os.path.join(incoming, "created")
+                os.makedirs(created)
+                result = extender.extend(created)
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["code"], "daemon_stopped")
+                observer.schedule.assert_not_called()
+            finally:
+                handler.stop()
+
     def test_nested_file_destination_is_flattened_into_existing_category(self):
         from agents.file_agent import FileAgent
 

@@ -143,6 +143,100 @@ def build_monitor_scope(
     }
 
 
+class DynamicScopeExtender:
+    """Extend a recursive scope using the startup scope builder's admission rules."""
+
+    def __init__(
+        self,
+        scope,
+        watch_root,
+        destination_roots,
+        observer,
+        handler,
+        max_depth=DEFAULT_MAX_WATCH_DEPTH,
+        max_directory_count=DEFAULT_MAX_WATCHED_DIRECTORIES,
+        report=None,
+    ):
+        self.scope = scope
+        self.watch_root = watch_root
+        self.destination_roots = tuple(destination_roots)
+        self.observer = observer
+        self.handler = handler
+        self.max_depth = max_depth
+        self.max_directory_count = max_directory_count
+        self.report = report
+        self._lock = threading.Lock()
+
+    def _refuse(self, code, message):
+        result = {"accepted": False, "code": code, "message": message, "roots": ()}
+        if callable(self.report):
+            self.report(code, message)
+        return result
+
+    def extend(self, directory):
+        """Atomically admit and schedule eligible descendants of a new directory."""
+        if self.handler._stopped.is_set():
+            return self._refuse("daemon_stopped", "Daemon is stopping.")
+        if not self.scope.get("recursive"):
+            return self._refuse("not_recursive", "Recursive monitoring is disabled.")
+        with self._lock:
+            if self.handler._stopped.is_set():
+                return self._refuse("daemon_stopped", "Daemon is stopping.")
+            candidate_path = os.path.abspath(directory)
+            if _is_link_or_junction(candidate_path):
+                return self._refuse("directory_link_refused", "Directory is a link or junction.")
+            candidate = os.path.realpath(candidate_path)
+            if not _is_within(candidate, self.watch_root):
+                return self._refuse("directory_outside_scope", "Directory is outside the watched scope.")
+            if os.path.basename(candidate_path).casefold() == "sorted":
+                return self._refuse("directory_excluded", "Sorted directories are excluded.")
+            if any(_is_within(candidate, item) for item in self.destination_roots):
+                return self._refuse("directory_excluded", "Destination directories are excluded.")
+            if os.path.basename(candidate).casefold() in DENIED_DIRECTORIES:
+                return self._refuse("directory_excluded", "Denied directory names are excluded.")
+            if not os.path.isdir(candidate):
+                return self._refuse("directory_not_found", "Directory does not exist.")
+            if _is_link_or_junction(candidate):
+                return self._refuse("directory_link_refused", "Directory is a link or junction.")
+            try:
+                rebuilt = build_monitor_scope(
+                    self.watch_root,
+                    self.destination_roots,
+                    recursive=True,
+                    max_depth=self.max_depth,
+                    max_directory_count=self.max_directory_count,
+                )
+            except RecursiveScopeRefusal as exc:
+                return self._refuse(exc.code, str(exc))
+            existing = tuple(self.scope.get("watched_roots", ()))
+            existing_keys = {_path_key(item) for item in existing}
+            additions = tuple(
+                item for item in rebuilt["watched_roots"]
+                if _path_key(item) not in existing_keys
+            )
+            if not additions:
+                return {"accepted": False, "code": "already_watched", "message": "Directory is already watched.", "roots": ()}
+            if len(existing) + len(additions) > self.max_directory_count:
+                return self._refuse(
+                    "directory_limit_exceeded",
+                    f"Recursive monitoring exceeds maximum directory count {self.max_directory_count}.",
+                )
+            for watched_root in additions:
+                if self.handler._stopped.is_set():
+                    return self._refuse("daemon_stopped", "Daemon is stopping.")
+                self.observer.schedule(self.handler, watched_root, recursive=False)
+            self.scope["watched_roots"] = existing + additions
+            result = {
+                "accepted": True,
+                "code": "scope_extended",
+                "message": "Recursive monitoring scope extended.",
+                "roots": additions,
+            }
+            if callable(self.report):
+                self.report("scope_extended", f"Watching new recursive roots: {additions}")
+            return result
+
+
 class FileCreationHandler(FileSystemEventHandler):
     """Categorize newly-created files with bounded background concurrency."""
 
@@ -155,6 +249,7 @@ class FileCreationHandler(FileSystemEventHandler):
         self.dest_base = dest_base
         self.root = root
         self.scope = scope
+        self.directory_callback = None
         # filepath -> filesystem identity. Keeping the path as the ordered key
         # preserves the existing inspection contract while allowing a file
         # recreated at the same path to be processed again.
@@ -209,7 +304,12 @@ class FileCreationHandler(FileSystemEventHandler):
         return any(_is_within(canonical, item) for item in watched)
 
     def on_created(self, event):
-        if event.is_directory or self._stopped.is_set():
+        if self._stopped.is_set():
+            return False
+        if event.is_directory:
+            if self.scope and self.scope.get("recursive") and callable(self.directory_callback):
+                result = self.directory_callback(event.src_path)
+                return bool(result and result.get("accepted"))
             return False
         filepath = event.src_path
         if not self._path_in_scope(filepath):

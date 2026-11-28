@@ -16,6 +16,7 @@ import logging
 
 from agent.daemon import (
     FileCreationHandler,
+    DynamicScopeExtender,
     RecursiveScopeRefusal,
     ScheduledScanner,
     build_monitor_scope,
@@ -986,6 +987,17 @@ class OrganizerTab(ctk.CTkFrame):
         self.observer = Observer()
         for watched_root in scope["watched_roots"]:
             self.observer.schedule(event_handler, watched_root, recursive=False)
+        if scope["recursive"]:
+            event_handler.directory_callback = DynamicScopeExtender(
+                scope,
+                os.path.realpath(os.path.abspath(watch_path)),
+                [sorted_root, dest_path],
+                self.observer,
+                event_handler,
+                report=lambda code, message: self._log(
+                    f"Recursive scope extension {code}: {message}"
+                ),
+            ).extend
         self.observer.start()
         self.daemon_handler = event_handler
         self.daemon_running = True
