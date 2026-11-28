@@ -855,7 +855,6 @@ Absolute paths supplied by the user or model never bypass this sandbox.
 
     def _undo_last_locked(self) -> str:
         with self._lock:
-            saw_delete = False
             for entry in reversed(self._operation_log):
                 if entry.get("state") == "uncertain":
                     return (
@@ -868,8 +867,7 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                 if operation == "bulk_cleanup":
                     return "Cannot undo bulk cleanup (sent to recycle bin)"
                 if operation == "delete":
-                    saw_delete = True
-                    continue
+                    return "Cannot undo delete (sent to recycle bin)"
                 if operation not in ("move", "rename", "create_folder"):
                     continue
                 source = entry["source"]
@@ -948,8 +946,6 @@ Absolute paths supplied by the user or model never bypass this sandbox.
                     else:
                         self._mark_transition_failed(entry, "undo")
                     return f"Undo failed: {exc}"
-            if saw_delete:
-                return "Cannot undo delete (sent to recycle bin)"
             return "No operations to undo."
 
     def redo_last(self) -> str:
